@@ -1,0 +1,25 @@
+# Streamlit UI framework
+streamlit==1.35.0
+
+# Core data handling
+pandas==2.2.2
+numpy==1.26.4
+
+# Excel support (for reading .xlsx metadata files)
+openpyxl==3.1.2
+xlrd==2.0.1
+
+# Fuzzy matching & similarity search
+fuzzywuzzy==0.18.0
+python-Levenshtein==0.25.0
+scikit-learn==1.5.0
+
+# OpenAI GPT API access
+openai==1.30.1
+
+# Visualization (optional but useful for Menu 3)
+matplotlib==3.8.4
+altair==5.3.0
+
+# PDF parsing for Menu 4 (if needed)
+PyMuPDF==1.24.1
