@@ -2,70 +2,31 @@
 
 import streamlit as st
 import pandas as pd
-import tempfile
-import os
+from metadata_loader import load_required_metadata, validate_dataset
 
-# ==== UI SETUP ====
-
+# === Page Setup ===
 st.set_page_config(page_title="PSES Explorer", layout="wide")
+
+# === Top Banner ===
+st.image("ANC006-PSES_banner825x200_EN.png", use_column_width=True)
+
+# === Title ===
 st.title("📋 Welcome to the Public Service Employee Survey (PSES) Explorer")
 
-# ==== FILE UPLOAD SECTION ====
-
-st.subheader("🔁 Upload Required Files")
-
-uploaded_csv = st.file_uploader("1️⃣ Upload PSES Dataset (.csv)", type="csv")
-uploaded_layout = st.file_uploader("2️⃣ Upload filelayout.xlsx", type="xlsx")
-uploaded_questions = st.file_uploader("3️⃣ Upload Survey Questions.xlsx", type="xlsx")
-uploaded_themes = st.file_uploader("4️⃣ Upload Survey Themes.xlsx", type="xlsx")
-uploaded_scales = st.file_uploader("5️⃣ Upload Survey Scales.xlsx", type="xlsx")
-uploaded_demographics = st.file_uploader("6️⃣ Upload Demographics.xlsx", type="xlsx")
-
-files_ready = all([
-    uploaded_csv,
-    uploaded_layout,
-    uploaded_questions,
-    uploaded_themes,
-    uploaded_scales,
-    uploaded_demographics,
-])
-
-if not files_ready:
-    st.warning("Please upload all 6 required files to enable the menu system.")
+# === Load Metadata and Dataset ===
+try:
+    metadata = load_required_metadata()
+    dataset_path = validate_dataset(metadata["layout"])
+except RuntimeError as err:
+    st.error(f"❌ Startup error: {err}")
     st.stop()
 
-st.success("✅ All required files uploaded.")
+st.success("✅ All metadata and dataset loaded successfully.")
 
-# ==== TEMP STORAGE FOR LARGE CSV ====
-
-with tempfile.NamedTemporaryFile(delete=False, suffix=".csv") as tmp:
-    tmp.write(uploaded_csv.read())
-    dataset_path = tmp.name
-
-st.session_state["DATASET_PATH"] = dataset_path
-
-# ==== LOAD METADATA FILES ====
-
-@st.cache_data
-def load_metadata():
-    try:
-        layout = pd.read_excel(uploaded_layout)
-        questions = pd.read_excel(uploaded_questions)
-        themes = pd.read_excel(uploaded_themes)
-        scales = pd.read_excel(uploaded_scales)
-        demographics = pd.read_excel(uploaded_demographics)
-        return layout, questions, themes, scales, demographics
-    except Exception as e:
-        st.error(f"❌ Metadata loading error: {e}")
-        st.stop()
-
-filelayout_df, questions_df, themes_df, scales_df, demo_df = load_metadata()
-
-# ==== MAIN MENU ====
-
+# === Main Menu ===
 st.header("🧭 Main Menu")
 menu_option = st.radio(
-    "Please select an option:",
+    "Please select an option to begin:",
     [
         "1. 🔍 Search by Question",
         "2. 🧩 Search by Theme",
@@ -74,24 +35,27 @@ menu_option = st.radio(
     ]
 )
 
-# ==== ROUTE TO MENUS ====
-
+# === Route to Menu Pages ===
 if menu_option.startswith("1"):
     st.subheader("🔍 Menu 1: Search by Question")
-    st.info("Feature coming soon – will allow filtering by question number, year, and demographics.")
+    st.info("This feature will let you view results for a specific survey question across years and demographics.")
 
 elif menu_option.startswith("2"):
     st.subheader("🧩 Menu 2: Search by Theme")
-    st.info("Feature coming soon – will allow browsing and querying by survey themes and sub-themes.")
+    st.info("This feature will allow exploration of questions grouped by theme.")
 
 elif menu_option.startswith("3"):
     st.subheader("📊 Menu 3: Analyze Data")
-    st.info("Feature coming soon – will support trend analysis and demographic comparisons.")
+    st.info("This feature will let you analyze trends by year, group, or region.")
 
 elif menu_option.startswith("4"):
     st.subheader("📜 Menu 4: View the Questionnaire")
-    st.info("PDF viewer and section browser to be implemented.")
+    st.info("This will provide a browsable list of all PSES questions by year.")
 
-# ==== FOOTER ====
+# === Footer Visual (Optional Promo Image) ===
 st.markdown("---")
+st.image("ANC006-PSES-SM_EN.png", width=600)
+st.caption("Source: Government of Canada – Public Service Employee Survey 2024")
+
+# === End Marker ===
 st.caption("Type `menu` to return to the main menu. PSES Explorer v0.1 © 2025")

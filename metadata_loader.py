@@ -2,15 +2,27 @@
 
 import pandas as pd
 import os
+import gdown
 
+# Required metadata files
 REQUIRED_METADATA_FILES = {
     "layout": "metadata/filelayout.xlsx",
     "questions": "metadata/Survey Questions.xlsx",
     "themes": "metadata/Survey Themes.xlsx",
     "scales": "metadata/Survey Scales.xlsx",
-    "demographics": "metadata/Demographics.xlsx",
-    "mapping": "metadata/Unified_Column_Mapping.xlsx"
+    "demographics": "metadata/Demographics.xlsx"
 }
+
+# Dataset config
+DATASET_URL_ID = "1Se-MqDGvcZWNftv7pstp1y-G_4N_LDMN"  # <- Your shared file ID
+DATASET_LOCAL_PATH = "data/Main_Subset_2022_2023.csv.gz"
+
+def download_csv_from_drive():
+    url = f"https://drive.google.com/uc?id={DATASET_URL_ID}"
+    os.makedirs("data", exist_ok=True)
+    if not os.path.exists(DATASET_LOCAL_PATH):
+        gdown.download(url, DATASET_LOCAL_PATH, quiet=False)
+    return DATASET_LOCAL_PATH
 
 def load_required_metadata():
     metadata = {}
@@ -25,27 +37,21 @@ def load_required_metadata():
             raise RuntimeError(f"Error loading metadata file `{path}`: {e}")
     return metadata
 
-def validate_dataset(dataset_path, mapping_df):
-    if not os.path.exists(dataset_path):
-        raise RuntimeError(f"Missing main dataset file: {dataset_path}")
-
+def validate_dataset(layout_df):
+    dataset_path = download_csv_from_drive()
     try:
-        sample = pd.read_csv(dataset_path, nrows=5)
-        normalized_headers = [c.upper().strip() for c in sample.columns]
+        sample = pd.read_csv(dataset_path, compression='gzip', nrows=5)
+        normalized_headers = [col.upper().strip() for col in sample.columns]
     except Exception as e:
         raise RuntimeError(f"Failed to read dataset headers: {e}")
 
-    required_logical = ["QUESTION", "SURVEYR", "DEMCODE", "ANSWER1"]
-    for logical_name in required_logical:
-        if logical_name not in mapping_df["LOGICAL_NAME"].str.upper().values:
-            raise RuntimeError(f"Missing required logical column in Unified_Column_Mapping: {logical_name}")
+    required_fields = ["QUESTION", "SURVEYR", "DEMCODE", "ANSWER1"]
+    layout_column_names = layout_df["COLUMN_NAME"].str.upper().unique()
 
-        mapped_column = mapping_df.loc[
-            mapping_df["LOGICAL_NAME"].str.upper() == logical_name,
-            "IN_DATASET"
-        ].values[0].upper().strip()
-
-        if mapped_column not in normalized_headers:
-            raise RuntimeError(f"Mapped column `{mapped_column}` for `{logical_name}` not found in dataset.")
+    for field in required_fields:
+        if field not in layout_column_names:
+            raise RuntimeError(f"`filelayout.xlsx` is missing required column: {field}")
+        if field not in normalized_headers:
+            raise RuntimeError(f"Dataset is missing required column: {field}")
 
     return dataset_path
