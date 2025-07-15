@@ -4,13 +4,13 @@ from metadata_loader import load_required_metadata, validate_dataset
 # === Page Setup ===
 st.set_page_config(page_title="PSES Explorer", layout="wide")
 
-# === Custom Styling ===
+# === Custom CSS Styling ===
 st.markdown("""
     <style>
         .main-container {
             display: flex;
             justify-content: center;
-            gap: 40px;
+            gap: 30px;
             margin-top: 40px;
             flex-wrap: wrap;
         }
@@ -54,54 +54,40 @@ st.markdown("""
 
 st.markdown("<br>", unsafe_allow_html=True)
 
-# === MENU GRID ===
-cols = st.columns(4)
-
-with cols[0]:
-    if st.markdown("""
+# === Menu Grid ===
+st.markdown("""
+    <div class="main-container">
         <div class="menu-tile" onclick="window.parent.postMessage({ type: 'select', key: 'menu_1' }, '*')">
             <div class="menu-icon">🔍</div>
             Search by Question
         </div>
-    """, unsafe_allow_html=True):
-        pass
-
-with cols[1]:
-    if st.markdown("""
         <div class="menu-tile" onclick="window.parent.postMessage({ type: 'select', key: 'menu_2' }, '*')">
             <div class="menu-icon">🧩</div>
             Search by Theme
         </div>
-    """, unsafe_allow_html=True):
-        pass
-
-with cols[2]:
-    if st.markdown("""
         <div class="menu-tile" onclick="window.parent.postMessage({ type: 'select', key: 'menu_3' }, '*')">
             <div class="menu-icon">📊</div>
             Analyze Data
         </div>
-    """, unsafe_allow_html=True):
-        pass
-
-with cols[3]:
-    if st.markdown("""
         <div class="menu-tile" onclick="window.parent.postMessage({ type: 'select', key: 'menu_4' }, '*')">
             <div class="menu-icon">📋</div>
             View Questionnaire
         </div>
-    """, unsafe_allow_html=True):
-        pass
+    </div>
+""", unsafe_allow_html=True)
 
-# === Handle Menu Selection (Fallback for routing inside Streamlit)
+# === Session Fallback (manual click override) ===
 selected = st.session_state.get("menu_selection", None)
 
 if selected == "menu_1":
     st.success("➡ You selected: Search by Question")
-    # Call menu logic
+    # Menu 1 logic here
 elif selected == "menu_2":
     st.success("➡ You selected: Search by Theme")
+    # Menu 2 logic here
 elif selected == "menu_3":
     st.success("➡ You selected: Analyze Data")
+    # Menu 3 logic here
 elif selected == "menu_4":
     st.success("➡ You selected: View Questionnaire")
+    # Menu 4 logic here
