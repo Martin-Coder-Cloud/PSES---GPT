@@ -40,6 +40,9 @@ st.markdown("""
     </style>
 """, unsafe_allow_html=True)
 
+# === Banner (Optional) ===
+st.image("assets/ANC006-PSES_banner825x200_EN.png", use_column_width=True)
+
 # === Title and Subtitle ===
 st.markdown("""
     <div style='text-align: center; margin-top: 20px;'>
@@ -50,7 +53,6 @@ st.markdown("""
         </p>
     </div>
 """, unsafe_allow_html=True)
-
 
 st.markdown("<div style='margin-top: 30px;'></div>", unsafe_allow_html=True)
 
