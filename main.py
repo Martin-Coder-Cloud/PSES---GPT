@@ -1,61 +1,83 @@
-# main.py
-
 import streamlit as st
-import pandas as pd
 from metadata_loader import load_required_metadata, validate_dataset
 
 # === Page Setup ===
 st.set_page_config(page_title="PSES Explorer", layout="wide")
 
-# === Top Banner ===
-st.image("ANC006-PSES_banner825x200_EN.png", use_column_width=True)
+# === Custom CSS for clean UI ===
+st.markdown("""
+    <style>
+        .menu-container {
+            display: flex;
+            flex-wrap: wrap;
+            justify-content: center;
+            gap: 30px;
+            margin-top: 30px;
+        }
+        .menu-button {
+            background-color: #F0F2F6;
+            border: 2px solid #DEE2E6;
+            border-radius: 12px;
+            padding: 30px 20px;
+            text-align: center;
+            width: 220px;
+            font-size: 18px;
+            transition: all 0.3s ease;
+            cursor: pointer;
+            box-shadow: 1px 1px 3px rgba(0,0,0,0.05);
+        }
+        .menu-button:hover {
+            background-color: #E0ECF8;
+            border-color: #4682B4;
+            transform: scale(1.03);
+        }
+    </style>
+""", unsafe_allow_html=True)
 
-# === Title ===
-st.title("📋 Welcome to the Public Service Employee Survey (PSES) Explorer")
+# === Banner (Optional) ===
+st.image("assets/ANC006-PSES_banner825x200_EN.png", use_column_width=True)
 
-# === Load Metadata and Dataset ===
-try:
-    metadata = load_required_metadata()
-    dataset_path = validate_dataset(metadata["layout"])
-except RuntimeError as err:
-    st.error(f"❌ Startup error: {err}")
-    st.stop()
+# === Title and Subtitle ===
+st.markdown("""
+    ## Welcome to the AI Explorer of the Public Service Employee Survey (PSES) results.
+    <div style='font-size:18px; color:#555; margin-top:-10px'>
+        This AI app provides survey results and analysis on the latest iterations of the survey 
+        (2018, 2019, 2020, 2022, 2024).
+    </div>
+""", unsafe_allow_html=True)
 
-st.success("✅ All metadata and dataset loaded successfully.")
+# === Menu Buttons ===
+st.markdown('<div class="menu-container">', unsafe_allow_html=True)
 
-# === Main Menu ===
-st.header("🧭 Main Menu")
-menu_option = st.radio(
-    "Please select an option to begin:",
-    [
-        "1. 🔍 Search by Question",
-        "2. 🧩 Search by Theme",
-        "3. 📊 Analyze Data",
-        "4. 📜 View the Questionnaire",
-    ]
-)
+if st.button("🔍\nSearch by Question", key="menu_1"):
+    st.session_state.menu_selection = "menu_1"
 
-# === Route to Menu Pages ===
-if menu_option.startswith("1"):
-    st.subheader("🔍 Menu 1: Search by Question")
-    st.info("This feature will let you view results for a specific survey question across years and demographics.")
+if st.button("🧩\nSearch by Theme", key="menu_2"):
+    st.session_state.menu_selection = "menu_2"
 
-elif menu_option.startswith("2"):
-    st.subheader("🧩 Menu 2: Search by Theme")
-    st.info("This feature will allow exploration of questions grouped by theme.")
+if st.button("📊\nAnalyze Data", key="menu_3"):
+    st.session_state.menu_selection = "menu_3"
 
-elif menu_option.startswith("3"):
-    st.subheader("📊 Menu 3: Analyze Data")
-    st.info("This feature will let you analyze trends by year, group, or region.")
+if st.button("📋\nView Questionnaire", key="menu_4"):
+    st.session_state.menu_selection = "menu_4"
 
-elif menu_option.startswith("4"):
-    st.subheader("📜 Menu 4: View the Questionnaire")
-    st.info("This will provide a browsable list of all PSES questions by year.")
+st.markdown('</div>', unsafe_allow_html=True)
 
-# === Footer Visual (Optional Promo Image) ===
-st.markdown("---")
-st.image("ANC006-PSES-SM_EN.png", width=600)
-st.caption("Source: Government of Canada – Public Service Employee Survey 2024")
+# === Route to Menu Logic ===
+menu = st.session_state.get("menu_selection", None)
 
-# === End Marker ===
-st.caption("Type `menu` to return to the main menu. PSES Explorer v0.1 © 2025")
+if menu == "menu_1":
+    st.success("➡ You selected: Search by Question")
+    # Call menu 1 logic
+
+elif menu == "menu_2":
+    st.success("➡ You selected: Search by Theme")
+    # Call menu 2 logic
+
+elif menu == "menu_3":
+    st.success("➡ You selected: Analyze Data")
+    # Call menu 3 logic
+
+elif menu == "menu_4":
+    st.success("➡ You selected: View Questionnaire")
+    # Call menu 4 logic
