@@ -4,32 +4,38 @@ from metadata_loader import load_required_metadata, validate_dataset
 # === Page Setup ===
 st.set_page_config(page_title="PSES Explorer", layout="wide")
 
-# === Custom CSS for clean UI ===
+# === Custom Styling ===
 st.markdown("""
     <style>
-        .menu-container {
+        .main-container {
             display: flex;
-            flex-wrap: wrap;
             justify-content: center;
-            gap: 30px;
-            margin-top: 30px;
+            gap: 40px;
+            margin-top: 40px;
+            flex-wrap: wrap;
         }
-        .menu-button {
-            background-color: #F0F2F6;
-            border: 2px solid #DEE2E6;
+        .menu-tile {
+            background-color: #f1f3f6;
             border-radius: 12px;
-            padding: 30px 20px;
-            text-align: center;
+            padding: 40px 20px;
             width: 220px;
-            font-size: 18px;
-            transition: all 0.3s ease;
+            height: 220px;
+            text-align: center;
+            font-size: 20px;
+            font-weight: 600;
+            color: #222;
             cursor: pointer;
-            box-shadow: 1px 1px 3px rgba(0,0,0,0.05);
+            border: 2px solid transparent;
+            transition: all 0.3s ease;
         }
-        .menu-button:hover {
-            background-color: #E0ECF8;
-            border-color: #4682B4;
-            transform: scale(1.03);
+        .menu-tile:hover {
+            background-color: #e0ecf8;
+            border-color: #5b9bd5;
+            transform: scale(1.05);
+        }
+        .menu-icon {
+            font-size: 48px;
+            margin-bottom: 15px;
         }
     </style>
 """, unsafe_allow_html=True)
@@ -46,38 +52,56 @@ st.markdown("""
     </div>
 """, unsafe_allow_html=True)
 
-# === Menu Buttons ===
-st.markdown('<div class="menu-container">', unsafe_allow_html=True)
+st.markdown("<br>", unsafe_allow_html=True)
 
-if st.button("🔍\nSearch by Question", key="menu_1"):
-    st.session_state.menu_selection = "menu_1"
+# === MENU GRID ===
+cols = st.columns(4)
 
-if st.button("🧩\nSearch by Theme", key="menu_2"):
-    st.session_state.menu_selection = "menu_2"
+with cols[0]:
+    if st.markdown("""
+        <div class="menu-tile" onclick="window.parent.postMessage({ type: 'select', key: 'menu_1' }, '*')">
+            <div class="menu-icon">🔍</div>
+            Search by Question
+        </div>
+    """, unsafe_allow_html=True):
+        pass
 
-if st.button("📊\nAnalyze Data", key="menu_3"):
-    st.session_state.menu_selection = "menu_3"
+with cols[1]:
+    if st.markdown("""
+        <div class="menu-tile" onclick="window.parent.postMessage({ type: 'select', key: 'menu_2' }, '*')">
+            <div class="menu-icon">🧩</div>
+            Search by Theme
+        </div>
+    """, unsafe_allow_html=True):
+        pass
 
-if st.button("📋\nView Questionnaire", key="menu_4"):
-    st.session_state.menu_selection = "menu_4"
+with cols[2]:
+    if st.markdown("""
+        <div class="menu-tile" onclick="window.parent.postMessage({ type: 'select', key: 'menu_3' }, '*')">
+            <div class="menu-icon">📊</div>
+            Analyze Data
+        </div>
+    """, unsafe_allow_html=True):
+        pass
 
-st.markdown('</div>', unsafe_allow_html=True)
+with cols[3]:
+    if st.markdown("""
+        <div class="menu-tile" onclick="window.parent.postMessage({ type: 'select', key: 'menu_4' }, '*')">
+            <div class="menu-icon">📋</div>
+            View Questionnaire
+        </div>
+    """, unsafe_allow_html=True):
+        pass
 
-# === Route to Menu Logic ===
-menu = st.session_state.get("menu_selection", None)
+# === Handle Menu Selection (Fallback for routing inside Streamlit)
+selected = st.session_state.get("menu_selection", None)
 
-if menu == "menu_1":
+if selected == "menu_1":
     st.success("➡ You selected: Search by Question")
-    # Call menu 1 logic
-
-elif menu == "menu_2":
+    # Call menu logic
+elif selected == "menu_2":
     st.success("➡ You selected: Search by Theme")
-    # Call menu 2 logic
-
-elif menu == "menu_3":
+elif selected == "menu_3":
     st.success("➡ You selected: Analyze Data")
-    # Call menu 3 logic
-
-elif menu == "menu_4":
+elif selected == "menu_4":
     st.success("➡ You selected: View Questionnaire")
-    # Call menu 4 logic
