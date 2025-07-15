@@ -40,19 +40,20 @@ st.markdown("""
     </style>
 """, unsafe_allow_html=True)
 
-# === Banner (Optional) ===
-st.image("assets/ANC006-PSES_banner825x200_EN.png", use_column_width=True)
-
 # === Title and Subtitle ===
 st.markdown("""
-    ## Welcome to the AI Explorer of the Public Service Employee Survey (PSES) results.
-    <div style='font-size:18px; color:#555; margin-top:-10px'>
-        This AI app provides survey results and analysis on the latest iterations of the survey 
-        (2018, 2019, 2020, 2022, 2024).
+    <div style='text-align: center; margin-top: 20px;'>
+        <h2>Welcome to the AI Explorer of the Public Service Employee Survey (PSES) results.</h2>
+        <p style='font-size:18px; color:#555; max-width: 800px; margin: 0 auto;'>
+            This AI app provides survey results and analysis on the latest iterations of the survey 
+            (2018, 2019, 2020, 2022, 2024).
+        </p>
     </div>
 """, unsafe_allow_html=True)
 
-st.markdown("<br>", unsafe_allow_html=True)
+
+st.markdown("<div style='margin-top: 30px;'></div>", unsafe_allow_html=True)
+
 
 # === Menu Grid ===
 st.markdown("""
