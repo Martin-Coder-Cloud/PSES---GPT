@@ -38,6 +38,19 @@ st.markdown("""
             margin-bottom: 15px;
         }
     </style>
+
+    <script>
+        const streamlitEvents = window.parent || window;
+        document.addEventListener("DOMContentLoaded", () => {
+            const tiles = document.querySelectorAll(".menu-tile");
+            tiles.forEach(tile => {
+                tile.addEventListener("click", () => {
+                    const key = tile.getAttribute("data-menu");
+                    streamlitEvents.postMessage({ type: "streamlit:setComponentValue", value: key }, "*");
+                });
+            });
+        });
+    </script>
 """, unsafe_allow_html=True)
 
 # === Banner (Optional) ===
@@ -49,48 +62,47 @@ st.markdown("""
         <h2>Welcome to the AI Explorer of the Public Service Employee Survey (PSES) results.</h2>
         <p style='font-size:18px; color:#555; max-width: 800px; margin: 0 auto;'>
             This AI app provides survey results and analysis on the latest iterations of the survey 
-            (2018, 2019, 2020, 2022, 2024).
+            (2019, 2020, 2022, 2024).
         </p>
     </div>
 """, unsafe_allow_html=True)
 
 st.markdown("<div style='margin-top: 30px;'></div>", unsafe_allow_html=True)
 
-
 # === Menu Grid ===
 st.markdown("""
     <div class="main-container">
-        <div class="menu-tile" onclick="window.parent.postMessage({ type: 'select', key: 'menu_1' }, '*')">
+        <div class="menu-tile" data-menu="menu_1">
             <div class="menu-icon">🔍</div>
             Search by Question
         </div>
-        <div class="menu-tile" onclick="window.parent.postMessage({ type: 'select', key: 'menu_2' }, '*')">
+        <div class="menu-tile" data-menu="menu_2">
             <div class="menu-icon">🧩</div>
             Search by Theme
         </div>
-        <div class="menu-tile" onclick="window.parent.postMessage({ type: 'select', key: 'menu_3' }, '*')">
+        <div class="menu-tile" data-menu="menu_3">
             <div class="menu-icon">📊</div>
             Analyze Data
         </div>
-        <div class="menu-tile" onclick="window.parent.postMessage({ type: 'select', key: 'menu_4' }, '*')">
+        <div class="menu-tile" data-menu="menu_4">
             <div class="menu-icon">📋</div>
             View Questionnaire
         </div>
     </div>
 """, unsafe_allow_html=True)
 
-# === Session Fallback (manual click override) ===
-selected = st.session_state.get("menu_selection", None)
+# === Interactive Menu Logic ===
+selected = st.experimental_get_query_params().get("menu", [None])[0] or st.session_state.get("menu_selection")
 
 if selected == "menu_1":
-    st.success("➡ You selected: Search by Question")
-    # Menu 1 logic here
+    from menu1_question.main import run_menu1
+    run_menu1()
+
 elif selected == "menu_2":
-    st.success("➡ You selected: Search by Theme")
-    # Menu 2 logic here
+    st.info("🔧 Theme search under construction.")
+
 elif selected == "menu_3":
-    st.success("➡ You selected: Analyze Data")
-    # Menu 3 logic here
+    st.info("📊 Analysis view coming soon.")
+
 elif selected == "menu_4":
-    st.success("➡ You selected: View Questionnaire")
-    # Menu 4 logic here
+    st.info("📄 Questionnaire viewer will be available shortly.")
