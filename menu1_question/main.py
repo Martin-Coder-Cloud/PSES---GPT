@@ -77,18 +77,17 @@ def run_menu1():
 
         # === YEAR SELECTION ===
         st.markdown('<div class="field-label">Select survey year(s):</div>', unsafe_allow_html=True)
-        cols = st.columns([1, 5])
-        with cols[0]:
-            select_all = st.checkbox("All years", value=True, key="select_all_years")
+        select_all = st.checkbox("All years", value=True, key="select_all_years")
+
         all_years = [2024, 2022, 2020, 2019]
         selected_years = []
-        with cols[1]:
-            year_cols = st.columns(len(all_years))
-            for i, year in enumerate(all_years):
-                with year_cols[i]:
-                    is_checked = True if select_all else False
-                    if st.checkbox(str(year), value=is_checked, key=f"year_{year}"):
-                        selected_years.append(year)
+
+        year_checkbox_cols = st.columns(len(all_years))
+        for idx, year in enumerate(all_years):
+            with year_checkbox_cols[idx]:
+                is_checked = True if select_all else False
+                if st.checkbox(str(year), value=is_checked, key=f"year_{year}"):
+                    selected_years.append(year)
 
         # === DEMOGRAPHIC SELECTION ===
         st.markdown('<div class="field-label">Select a demographic category (optional):</div>', unsafe_allow_html=True)
