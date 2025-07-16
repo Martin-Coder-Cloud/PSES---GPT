@@ -57,7 +57,7 @@ st.markdown("""
             font-size: 18px;
             color: #444;
             text-align: left;
-            margin-left: 10%;
+            margin-left: 15%;
             margin-top: 20px;
         }
     </style>
@@ -69,13 +69,13 @@ if not menu:
     st.markdown("""
         <div style='text-align: center; margin-top: 20px;'>
             <h2>Welcome to the AI Explorer of the Public Service Employee Survey (PSES) results.</h2>
-            <p style='font-size:18px; color:#555; max-width: 800px; margin: 0 auto;'>
+            <p style='font-size:18px; color:#555; max-width: 1000px; margin: 0 auto; white-space: nowrap;'>
                 This AI app provides survey results and analysis on the latest iterations of the survey (2019, 2020, 2022, 2024).
             </p>
         </div>
     """, unsafe_allow_html=True)
 
-    # Left-aligned instruction line
+    # Aligned instruction line (closer to tile start)
     st.markdown("<div class='instruction-text'>To start your analysis, please select one of the menu options below:</div>", unsafe_allow_html=True)
 
     # Menu tiles
