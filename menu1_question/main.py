@@ -1,128 +1,69 @@
 import streamlit as st
-from urllib.parse import urlencode
-from PIL import Image
+import pandas as pd
 
-# === Get menu param from URL query param ===
-query_params = st.experimental_get_query_params()
-menu = query_params.get("menu", [None])[0]
+# === Load Metadata ===
+demo_df = pd.read_excel("metadata/Demographics.xlsx")
+demo_df.columns = [col.strip() for col in demo_df.columns]  # Normalize headers
 
-# === CSS Styling ===
-st.markdown("""
-    <style>
-        .tile-container {
-            display: flex;
-            justify-content: center;
-            gap: 30px;
-            margin-top: 40px;
-            flex-wrap: wrap;
-        }
-        .tile {
-            background-color: #f1f3f6;
-            border-radius: 12px;
-            padding: 40px 20px;
-            width: 220px;
-            height: 220px;
-            text-align: center;
-            font-size: 20px;
-            font-weight: 600;
-            color: #222;
-            cursor: pointer;
-            border: 2px solid transparent;
-            transition: all 0.3s ease;
-            text-decoration: none;
-        }
-        .tile:hover {
-            background-color: #e0ecf8;
-            border-color: #5b9bd5;
-            transform: scale(1.05);
-            text-decoration: none;
-        }
-        .icon {
-            font-size: 48px;
-            margin-bottom: 15px;
-            display: block;
-        }
-        .instruction-text {
-            font-size: 18px;
-            color: #444;
-            text-align: left;
-            margin-left: 15%;
-            margin-top: 20px;
-        }
-    </style>
-""", unsafe_allow_html=True)
+# === Constants ===
+DEMO_CAT_COL = "DEMCODE Category"
+LABEL_COL = "DESCRIP_E"
 
-# === Landing Page Only ===
-if not menu:
-    # Banner (resize and show only on landing)
-    banner_img = Image.open("assets/ANC006-PSES_banner825x200_EN.png")
-    banner_resized = banner_img.resize((banner_img.width, 120))
-    st.image(banner_resized, use_column_width=True)
+long_list_categories = {
+    "2SLGBTQIA+ sub group",
+    "Ethnic origins",
+    "Occ. Group and Level",
+    "Occupational group",
+    "Person with a disability sub group",
+    "Racial sub group",
+    "Work Community"
+}
 
-    # Title and subtitle
+# === Menu 1 Function ===
+def run_menu1():
+    # --- Menu Header ---
+    st.subheader("🔍 Search by Question")
+
+    # --- Instructions ---
     st.markdown("""
-        <div style='text-align: center; margin-top: 20px;'>
-            <h2>Welcome to the AI Explorer of the Public Service Employee Survey (PSES) results.</h2>
-            <p style='font-size:18px; color:#555; max-width: 1000px; margin: 0 auto; white-space: nowrap;'>
-                This AI app provides survey results and analysis on the latest iterations of the survey (2019, 2020, 2022, 2024).
-            </p>
-        </div>
-    """, unsafe_allow_html=True)
+    Use this menu if you already know the specific survey question you wish to explore (e.g., **Q58**).
 
-    # Instruction line
-    st.markdown("<div class='instruction-text'>To start your analysis, please select one of the menu options below:</div>", unsafe_allow_html=True)
+    You can:
+    - Use the dropdown menus below to select the year and demographic category
+    - Or use natural language to describe your request
 
-    # Menu tiles
-    st.markdown(f"""
-        <div class="tile-container">
-            <a href="?menu=1" class="tile" target="_self">
-                <span class="icon">🔎</span>
-                Search by Question
-            </a>
-            <a href="?menu=2" class="tile" target="_self">
-                <span class="icon">🧩</span>
-                Search by Theme
-            </a>
-            <a href="?menu=3" class="tile" target="_self">
-                <span class="icon">📈</span>
-                Analyze Data
-            </a>
-            <a href="?menu=4" class="tile" target="_self">
-                <span class="icon">📄</span>
-                View Questionnaire
-            </a>
-        </div>
-    """, unsafe_allow_html=True)
+    The system will confirm your query before retrieving official PSES results.
+    """)
 
-# === Menu Pages ===
-else:
-    if menu == "1":
-        import menu1_question.main as menu1
-        menu1.run_menu1()
+    st.markdown("""
+    - 📜 [View the list of survey questions (2024)](https://www.canada.ca/en/treasury-board-secretariat/services/innovation/public-service-employee-survey/2024-25/2024-25-public-service-employee-survey.html)
+    """)
 
-    elif menu == "2":
-        try:
-            import menu2_theme.main as menu2
-            menu2.run_menu2()
-        except Exception:
-            st.warning("🧩 Search by Theme is under construction.")
+    # --- Input Controls ---
+    year = st.multiselect("Select survey year(s):", [2024, 2022, 2020, 2019], default=[2024])
 
-    elif menu == "3":
-        try:
-            import menu3_analysis.main as menu3
-            menu3.run_menu3()
-        except Exception:
-            st.warning("📊 Analyze Data is under construction.")
+    demo_categories = sorted(demo_df[DEMO_CAT_COL].dropna().unique().tolist())
+    demo_selection = st.selectbox("Select a demographic category (optional):", ["All respondents"] + demo_categories)
 
-    elif menu == "4":
-        try:
-            import menu4_questionnaire.main as menu4
-            menu4.run_menu4()
-        except Exception:
-            st.warning("📋 View Questionnaire is under construction.")
+    sub_selection = None
+    if demo_selection in long_list_categories:
+        sub_items = demo_df[demo_df[DEMO_CAT_COL] == demo_selection][LABEL_COL].dropna().unique().tolist()
+        if len(sub_items) > 25:
+            sub_selection = st.text_input(f"Search or enter a {demo_selection} value:")
+        else:
+            sub_selection = st.selectbox(f"Select a {demo_selection} value:", sub_items)
 
-    # Back button
-    st.markdown("---")
-    if st.button("⬅️ Back to Main Menu"):
-        st.experimental_set_query_params()
-        st.experimental_rerun()
+    # --- Question and Prompt ---
+    question_input = st.text_input("Enter a specific question number (e.g., Q58):")
+    prompt_text = st.text_area("Or describe what you're looking for:")
+
+    # --- Trigger Search ---
+    if st.button("Search"):
+        st.markdown("🔄 *Processing your request...*")
+        st.write("Selected Year(s):", year)
+        st.write("Demographic Category:", demo_selection)
+        if sub_selection:
+            st.write("Sub-category value:", sub_selection)
+        st.write("Question:", question_input)
+        st.write("Prompt:", prompt_text)
+        st.success("✅ Query received. (Back-end connection coming soon)")
