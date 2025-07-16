@@ -29,9 +29,9 @@ def run_menu1():
                 margin-bottom: 10px;
             }
             .custom-instruction {
-                font-size: 18px !important;
-                line-height: 1.6;
-                margin-bottom: 20px;
+                font-size: 17px !important;
+                line-height: 1.5;
+                margin-bottom: 25px;
                 color: #333;
             }
             .field-label {
@@ -40,6 +40,12 @@ def run_menu1():
                 margin-top: 25px !important;
                 margin-bottom: 6px !important;
                 color: #222 !important;
+            }
+            .checkbox-group {
+                display: flex;
+                flex-wrap: wrap;
+                gap: 20px;
+                margin-bottom: 10px;
             }
         </style>
     """, unsafe_allow_html=True)
@@ -50,20 +56,13 @@ def run_menu1():
         # --- Header ---
         st.markdown('<div class="custom-header">🔍 Search by Question</div>', unsafe_allow_html=True)
 
-        # --- Instructions ---
+        # --- Condensed Instructions ---
         st.markdown("""
             <div class="custom-instruction">
-                Use this menu if you already know the specific survey question you wish to explore (e.g., <b>Q58</b>).<br><br>
-                The list of survey questions is available here: 
+                Use this menu to explore a specific survey question (e.g., <b>Q58</b>).<br>
                 <a href="https://www.canada.ca/en/treasury-board-secretariat/services/innovation/public-service-employee-survey/2024-25/2024-25-public-service-employee-survey.html" target="_blank">
-                View the 2024 Questionnaire</a>.<br><br>
-                You can:
-                <ul>
-                    <li>Enter a question number</li>
-                    <li>Select year(s) of interest</li>
-                    <li>Apply optional demographic filters</li>
-                </ul>
-                The system will confirm your query before retrieving official PSES results.
+                View the list of 2024 survey questions</a>.<br>
+                You may select a year, add a demographic filter, or type a request in your own words.
             </div>
         """, unsafe_allow_html=True)
 
@@ -71,20 +70,18 @@ def run_menu1():
         st.markdown('<div class="field-label">Enter a specific question number (e.g., Q58):</div>', unsafe_allow_html=True)
         question_input = st.text_input("", key="question_number")
 
-        # === YEAR SELECTION ===
+        # === YEAR SELECTION (horizontal) ===
         st.markdown('<div class="field-label">Select survey year(s):</div>', unsafe_allow_html=True)
         all_years = [2024, 2022, 2020, 2019]
         select_all = st.checkbox("Select all years", value=True, key="select_all_years")
 
         selected_years = []
-        for year in all_years:
+        cols = st.columns(len(all_years))
+        for idx, year in enumerate(all_years):
             is_checked = True if select_all else False
-            if st.checkbox(str(year), value=is_checked, key=f"year_{year}"):
-                selected_years.append(year)
-
-        # === NATURAL LANGUAGE PROMPT ===
-        st.markdown('<div class="field-label">Or describe what you’re looking for:</div>', unsafe_allow_html=True)
-        prompt_text = st.text_area("", key="search_prompt")
+            with cols[idx]:
+                if st.checkbox(str(year), value=is_checked, key=f"year_{year}"):
+                    selected_years.append(year)
 
         # === DEMOGRAPHIC SELECTION ===
         st.markdown('<div class="field-label">Select a demographic category (optional):</div>', unsafe_allow_html=True)
@@ -102,6 +99,10 @@ def run_menu1():
             else:
                 st.markdown(f'<div class="field-label">Select a {demo_selection} value:</div>', unsafe_allow_html=True)
                 sub_selection = st.selectbox("", sub_items, key=f"selectbox_{widget_key}")
+
+        # === NATURAL LANGUAGE PROMPT AT THE END ===
+        st.markdown('<div class="field-label">Or describe what you’re looking for:</div>', unsafe_allow_html=True)
+        prompt_text = st.text_area("", key="search_prompt")
 
         # === SUBMIT BUTTON ===
         if st.button("Search"):
