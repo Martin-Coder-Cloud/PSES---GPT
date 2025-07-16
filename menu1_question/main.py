@@ -1,5 +1,3 @@
-# menu1_question/main.py
-
 import streamlit as st
 import pandas as pd
 
@@ -23,14 +21,10 @@ long_list_categories = {
 }
 
 def run_menu1():
-    # --- Page Setup ---
-    st.markdown("<h1 style='text-align: center;'>Welcome to the AI Explorer of the Public Service Employee Survey (PSES) results</h1>", unsafe_allow_html=True)
-    st.markdown("<p style='text-align: center; font-size: 18px;'>This AI app provides survey results and analysis on the latest iterations of the survey (2019, 2020, 2022, 2024).</p>", unsafe_allow_html=True)
-    st.markdown("---")
-
-    # --- Menu 1: Instructions ---
+    # --- Menu Title ---
     st.subheader("🔍 Search by Question")
 
+    # --- Instructions ---
     st.markdown("""
     Use this menu if you already know the specific survey question you wish to explore (e.g., **Q58**).
 
@@ -60,18 +54,4 @@ def run_menu1():
             sub_selection = st.selectbox(f"Select a {demo_selection} value:", sub_items)
 
     # --- Question and Prompt ---
-    question_input = st.text_input("Enter a specific question number (e.g., Q58):")
-    prompt_text = st.text_area("Or describe what you're looking for:")
-
-    # --- Trigger Search ---
-    if st.button("Search"):
-        st.markdown("🔄 *Processing your request...*")
-        # Debug preview
-        st.write("Selected Year(s):", year)
-        st.write("Demographic Category:", demo_selection)
-        if sub_selection:
-            st.write("Sub-category value:", sub_selection)
-        st.write("Question:", question_input)
-        st.write("Prompt:", prompt_text)
-
-        st.success("✅ Query received. (Back-end connection coming soon)")
+    question_input = st.text_input("Enter a specific question numb
