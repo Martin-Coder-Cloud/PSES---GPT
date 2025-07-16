@@ -1,28 +1,23 @@
 import streamlit as st
 from urllib.parse import urlencode
+from PIL import Image
 
 # Set page config
 st.set_page_config(page_title="PSES Explorer", layout="wide")
 
-# Full-width, reduced-height banner
-st.markdown("""
-    <style>
-        .banner {
-            width: 100%;
-            max-height: 120px;
-            object-fit: contain;
-            display: block;
-            margin: 0 auto;
-        }
-    </style>
-    <img class="banner" src="assets/ANC006-PSES_banner825x200_EN.png" />
-""", unsafe_allow_html=True)
+# === Banner ===
+# Load and resize image to reduce height
+banner_img = Image.open("assets/ANC006-PSES_banner825x200_EN.png")
+banner_resized = banner_img.resize((banner_img.width, 120))  # Adjust height as needed
 
-# Get current menu from URL query param
+# Display full-width resized banner
+st.image(banner_resized, use_column_width=True)
+
+# === Get menu param from URL ===
 query_params = st.experimental_get_query_params()
 menu = query_params.get("menu", [None])[0]
 
-# CSS styling for tile layout
+# === CSS Styling ===
 st.markdown("""
     <style>
         .tile-container {
@@ -67,9 +62,9 @@ st.markdown("""
     </style>
 """, unsafe_allow_html=True)
 
-# === Main Menu View ===
+# === Main Menu ===
 if not menu:
-    # Title and subtitle below banner
+    # Title and subtitle
     st.markdown("""
         <div style='text-align: center; margin-top: 20px;'>
             <h2>Welcome to the AI Explorer of the Public Service Employee Survey (PSES) results.</h2>
@@ -79,10 +74,10 @@ if not menu:
         </div>
     """, unsafe_allow_html=True)
 
-    # Instruction line (smaller, less prominent)
+    # Instruction (smaller text)
     st.markdown("<div class='instruction-text'>To start your analysis, please select one of the menu options below:</div>", unsafe_allow_html=True)
 
-    # Tile-based menu
+    # Menu tiles
     st.markdown(f"""
         <div class="tile-container">
             <a href="?menu=1" class="tile" target="_self">
