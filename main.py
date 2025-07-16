@@ -4,11 +4,18 @@ from urllib.parse import urlencode
 # Set page config
 st.set_page_config(page_title="PSES Explorer", layout="wide")
 
-# Resized and centered banner
+# Full-width, reduced-height banner
 st.markdown("""
-    <div style="text-align: center; margin-top: 10px;">
-        <img src="assets/ANC006-PSES_banner825x200_EN.png" style="max-width: 600px; height: auto;" />
-    </div>
+    <style>
+        .banner {
+            width: 100%;
+            max-height: 120px;
+            object-fit: contain;
+            display: block;
+            margin: 0 auto;
+        }
+    </style>
+    <img class="banner" src="assets/ANC006-PSES_banner825x200_EN.png" />
 """, unsafe_allow_html=True)
 
 # Get current menu from URL query param
@@ -51,6 +58,12 @@ st.markdown("""
             margin-bottom: 15px;
             display: block;
         }
+        .instruction-text {
+            font-size: 16px;
+            color: #666;
+            text-align: center;
+            margin-top: 10px;
+        }
     </style>
 """, unsafe_allow_html=True)
 
@@ -66,8 +79,8 @@ if not menu:
         </div>
     """, unsafe_allow_html=True)
 
-    # Instruction line
-    st.markdown("### To start your analysis, please select one of the menu options below:")
+    # Instruction line (smaller, less prominent)
+    st.markdown("<div class='instruction-text'>To start your analysis, please select one of the menu options below:</div>", unsafe_allow_html=True)
 
     # Tile-based menu
     st.markdown(f"""
