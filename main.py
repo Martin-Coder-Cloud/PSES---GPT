@@ -1,77 +1,116 @@
-# menu1_question/main.py
+# main.py
 
 import streamlit as st
-import pandas as pd
 
-# Load demographics metadata
-demo_df = pd.read_excel("metadata/Demographics.xlsx")
-demo_df.columns = [col.strip() for col in demo_df.columns]  # Normalize headers
+# Set up page
+st.set_page_config(page_title="PSES Explorer", layout="wide")
 
-# Normalize column name
-DEMO_CAT_COL = "DEMCODE Category"
-LABEL_COL = "DESCRIP_E"
+# Initialize session state
+if "menu" not in st.session_state:
+    st.session_state.menu = None
 
-# Define which categories require a second-level dropdown
-long_list_categories = {
-    "2SLGBTQIA+ sub group",
-    "Ethnic origins",
-    "Occ. Group and Level",
-    "Occupational group",
-    "Person with a disability sub group",
-    "Racial sub group",
-    "Work Community"
-}
+# Banner
+st.image("assets/ANC006-PSES_banner825x200_EN.png", use_column_width=True)
 
-def run_menu1():
-    # --- Page Setup ---
-    st.markdown("<h1 style='text-align: center;'>Welcome to the AI Explorer of the Public Service Employee Survey (PSES) results</h1>", unsafe_allow_html=True)
-    st.markdown("<p style='text-align: center; font-size: 18px;'>This AI app provides survey results and analysis on the latest iterations of the survey (2019, 2020, 2022, 2024).</p>", unsafe_allow_html=True)
-    st.markdown("---")
+# Title and subtitle
+st.markdown("""
+    <div style='text-align: center; margin-top: 20px;'>
+        <h2>Welcome to the AI Explorer of the Public Service Employee Survey (PSES) results.</h2>
+        <p style='font-size:18px; color:#555; max-width: 800px; margin: 0 auto;'>
+            This AI app provides survey results and analysis on the latest iterations of the survey (2019, 2020, 2022, 2024).
+        </p>
+    </div>
+""", unsafe_allow_html=True)
 
-    # --- Menu 1: Instructions ---
-    st.subheader("🔍 Search by Question")
+# Custom CSS for tile buttons
+st.markdown("""
+    <style>
+        .main-container {
+            display: flex;
+            justify-content: center;
+            gap: 30px;
+            margin-top: 40px;
+            flex-wrap: wrap;
+        }
+        .menu-tile {
+            background-color: #f1f3f6;
+            border-radius: 12px;
+            padding: 40px 20px;
+            width: 220px;
+            height: 220px;
+            text-align: center;
+            font-size: 20px;
+            font-weight: 600;
+            color: #222;
+            cursor: pointer;
+            border: 2px solid transparent;
+            transition: all 0.3s ease;
+        }
+        .menu-tile:hover {
+            background-color: #e0ecf8;
+            border-color: #5b9bd5;
+            transform: scale(1.05);
+        }
+        .menu-icon {
+            font-size: 48px;
+            margin-bottom: 15px;
+        }
+    </style>
+""", unsafe_allow_html=True)
 
+# === Main Menu View ===
+if st.session_state.menu is None:
     st.markdown("""
-    Use this menu if you already know the specific survey question you wish to explore (e.g., **Q58**).
+        <div class="main-container">
+            <div class="menu-tile" onclick="selectMenu('menu_1')">
+                <div class="menu-icon">🔍</div>
+                Search by Question
+            </div>
+            <div class="menu-tile" onclick="selectMenu('menu_2')">
+                <div class="menu-icon">🧩</div>
+                Search by Theme
+            </div>
+            <div class="menu-tile" onclick="selectMenu('menu_3')">
+                <div class="menu-icon">📊</div>
+                Analyze Data
+            </div>
+            <div class="menu-tile" onclick="selectMenu('menu_4')">
+                <div class="menu-icon">📋</div>
+                View Questionnaire
+            </div>
+        </div>
+        <script>
+            function selectMenu(menuName) {
+                window.parent.postMessage({isStreamlitMessage: true, type: 'streamlit:setComponentValue', value: menuName}, '*');
+            }
+        </script>
+    """, unsafe_allow_html=True)
 
-    You can:
-    - Use the dropdown menus below to select the year and demographic category
-    - Or use natural language to describe your request
+    # Fallback buttons (invisible to users, necessary for routing)
+    if st.button("Go to Menu 1"):
+        st.session_state.menu = "menu_1"
+    if st.button("Go to Menu 2"):
+        st.session_state.menu = "menu_2"
+    if st.button("Go to Menu 3"):
+        st.session_state.menu = "menu_3"
+    if st.button("Go to Menu 4"):
+        st.session_state.menu = "menu_4"
 
-    The system will confirm your query before retrieving official PSES results.
-    """)
+# === Menu Routing Logic ===
+else:
+    if st.session_state.menu == "menu_1":
+        from menu1_question.main import run_menu1
+        run_menu1()
 
-    st.markdown("""
-    - 📜 [View the list of survey questions (2024)](https://www.canada.ca/en/treasury-board-secretariat/services/innovation/public-service-employee-survey/2024-25/2024-25-public-service-employee-survey.html)
-    """)
+    elif st.session_state.menu == "menu_2":
+        st.info("🧩 Search by Theme is under construction.")
 
-    # --- Input Controls ---
-    year = st.multiselect("Select survey year(s):", [2024, 2022, 2020, 2019], default=[2024])
+    elif st.session_state.menu == "menu_3":
+        st.info("📊 Analyze Data is under construction.")
 
-    demo_categories = sorted(demo_df[DEMO_CAT_COL].dropna().unique().tolist())
-    demo_selection = st.selectbox("Select a demographic category (optional):", ["All respondents"] + demo_categories)
+    elif st.session_state.menu == "menu_4":
+        st.info("📋 View Questionnaire is under construction.")
 
-    sub_selection = None
-    if demo_selection in long_list_categories:
-        sub_items = demo_df[demo_df[DEMO_CAT_COL] == demo_selection][LABEL_COL].dropna().unique().tolist()
-        if len(sub_items) > 25:
-            sub_selection = st.text_input(f"Search or enter a {demo_selection} value:")
-        else:
-            sub_selection = st.selectbox(f"Select a {demo_selection} value:", sub_items)
-
-    # --- Question and Prompt ---
-    question_input = st.text_input("Enter a specific question number (e.g., Q58):")
-    prompt_text = st.text_area("Or describe what you're looking for:")
-
-    # --- Trigger Search ---
-    if st.button("Search"):
-        st.markdown("🔄 *Processing your request...*")
-        # Debug preview
-        st.write("Selected Year(s):", year)
-        st.write("Demographic Category:", demo_selection)
-        if sub_selection:
-            st.write("Sub-category value:", sub_selection)
-        st.write("Question:", question_input)
-        st.write("Prompt:", prompt_text)
-
-        st.success("✅ Query received. (Back-end connection coming soon)")
+    st.markdown("⬅️ [Return to Main Menu](#)", unsafe_allow_html=True)
+    if st.button("Back to Main Menu"):
+        st.session_state.menu = None
