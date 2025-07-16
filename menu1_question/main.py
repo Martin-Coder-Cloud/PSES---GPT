@@ -21,25 +21,68 @@ long_list_categories = {
 
 # === Menu 1 Function ===
 def run_menu1():
-    # --- Menu Header ---
-    st.subheader("🔍 Search by Question")
+    # --- Custom CSS ---
+    st.markdown("""
+        <style>
+            .menu1-container {
+                max-width: 900px;
+                margin: 0 auto;
+                padding: 10px 20px;
+            }
+            .menu1-title {
+                text-align: center;
+                font-size: 32px;
+                font-weight: 700;
+                margin-bottom: 10px;
+            }
+            .menu1-instruction {
+                font-size: 18px;
+                color: #333;
+                margin-bottom: 25px;
+                line-height: 1.6;
+            }
+            .menu1-section {
+                margin-top: 30px;
+            }
+            .stTextInput > div > input,
+            .stTextArea > div > textarea,
+            .stSelectbox > div,
+            .stMultiSelect > div {
+                font-size: 16px;
+            }
+        </style>
+    """, unsafe_allow_html=True)
+
+    # --- Layout Container ---
+    st.markdown('<div class="menu1-container">', unsafe_allow_html=True)
+
+    # --- Title ---
+    st.markdown('<div class="menu1-title">🔍 Search by Question</div>', unsafe_allow_html=True)
 
     # --- Instructions ---
     st.markdown("""
-    Use this menu if you already know the specific survey question you wish to explore (e.g., **Q58**).
+        <div class="menu1-instruction">
+            Use this menu if you already know the specific survey question you wish to explore (e.g., <b>Q58</b>).<br><br>
+            You can:
+            <ul>
+                <li>Use the dropdown menus below to select the year and demographic category</li>
+                <li>Or describe your question in plain language</li>
+            </ul>
+            The system will confirm your query before retrieving official PSES results.
+        </div>
+    """, unsafe_allow_html=True)
 
-    You can:
-    - Use the dropdown menus below to select the year and demographic category
-    - Or use natural language to describe your request
-
-    The system will confirm your query before retrieving official PSES results.
-    """)
-
+    # --- Link to Questions ---
     st.markdown("""
-    - 📜 [View the list of survey questions (2024)](https://www.canada.ca/en/treasury-board-secretariat/services/innovation/public-service-employee-survey/2024-25/2024-25-public-service-employee-survey.html)
-    """)
+        <div class="menu1-section">
+            📜 <a href="https://www.canada.ca/en/treasury-board-secretariat/services/innovation/public-service-employee-survey/2024-25/2024-25-public-service-employee-survey.html" target="_blank">
+            View the list of survey questions (2024)</a>
+        </div>
+    """, unsafe_allow_html=True)
 
     # --- Input Controls ---
+    st.markdown('<div class="menu1-section">', unsafe_allow_html=True)
+
     year = st.multiselect("Select survey year(s):", [2024, 2022, 2020, 2019], default=[2024])
 
     demo_categories = sorted(demo_df[DEMO_CAT_COL].dropna().unique().tolist())
@@ -53,7 +96,6 @@ def run_menu1():
         else:
             sub_selection = st.selectbox(f"Select a {demo_selection} value:", sub_items)
 
-    # --- Question and Prompt ---
     question_input = st.text_input("Enter a specific question number (e.g., Q58):")
     prompt_text = st.text_area("Or describe what you're looking for:")
 
@@ -67,3 +109,5 @@ def run_menu1():
         st.write("Question:", question_input)
         st.write("Prompt:", prompt_text)
         st.success("✅ Query received. (Back-end connection coming soon)")
+
+    st.markdown('</div>', unsafe_allow_html=True)  # Close menu1-container
