@@ -1,83 +1,95 @@
 import streamlit as st
+from urllib.parse import urlencode
 
-# Set up page
+# Set page config
 st.set_page_config(page_title="PSES Explorer", layout="wide")
-
-# Initialize session state
-if "menu" not in st.session_state:
-    st.session_state.menu = None
 
 # Banner
 st.image("assets/ANC006-PSES_banner825x200_EN.png", use_column_width=True)
 
-# Title and subtitle
-st.markdown("""
-    <div style='text-align: center; margin-top: 20px;'>
-        <h2>Welcome to the AI Explorer of the Public Service Employee Survey (PSES) results.</h2>
-        <p style='font-size:18px; color:#555; max-width: 800px; margin: 0 auto;'>
-            This AI app provides survey results and analysis on the latest iterations of the survey (2019, 2020, 2022, 2024).
-        </p>
-    </div>
-""", unsafe_allow_html=True)
+# Get current menu from URL query param
+query_params = st.experimental_get_query_params()
+menu = query_params.get("menu", [None])[0]
 
-# Custom tile button styling
+# CSS styling for tile layout
 st.markdown("""
     <style>
-        .menu-button {
+        .tile-container {
+            display: flex;
+            justify-content: center;
+            gap: 30px;
+            margin-top: 40px;
+            flex-wrap: wrap;
+        }
+        .tile {
+            background-color: #f1f3f6;
+            border-radius: 12px;
+            padding: 40px 20px;
+            width: 220px;
             height: 220px;
-            width: 100%;
+            text-align: center;
             font-size: 20px;
             font-weight: 600;
-            border-radius: 12px;
-            border: 2px solid #ccc;
-            background-color: #f1f3f6;
-            transition: 0.3s;
+            color: #222;
+            cursor: pointer;
+            border: 2px solid transparent;
+            transition: all 0.3s ease;
+            text-decoration: none;
         }
-        .menu-button:hover {
+        .tile:hover {
             background-color: #e0ecf8;
             border-color: #5b9bd5;
-            transform: scale(1.02);
+            transform: scale(1.05);
+        }
+        .icon {
+            font-size: 48px;
+            margin-bottom: 15px;
+            display: block;
         }
     </style>
 """, unsafe_allow_html=True)
 
 # === Main Menu View ===
-if st.session_state.menu is None:
-    st.markdown("### Select a menu below:")
+if not menu:
+    st.markdown("### To start your analysis, please select one of the menu options below:")
 
-    col1, col2, col3, col4 = st.columns(4)
-
-    with col1:
-        if st.button("🔍\nSearch by Question", key="menu1", use_container_width=True):
-            st.session_state.menu = "menu_1"
-
-    with col2:
-        if st.button("🧩\nSearch by Theme", key="menu2", use_container_width=True):
-            st.session_state.menu = "menu_2"
-
-    with col3:
-        if st.button("📊\nAnalyze Data", key="menu3", use_container_width=True):
-            st.session_state.menu = "menu_3"
-
-    with col4:
-        if st.button("📋\nView Questionnaire", key="menu4", use_container_width=True):
-            st.session_state.menu = "menu_4"
+    st.markdown(f"""
+        <div class="tile-container">
+            <a href="?menu=1" class="tile">
+                <span class="icon">🔍</span>
+                Search by Question
+            </a>
+            <a href="?menu=2" class="tile">
+                <span class="icon">🧩</span>
+                Search by Theme
+            </a>
+            <a href="?menu=3" class="tile">
+                <span class="icon">📊</span>
+                Analyze Data
+            </a>
+            <a href="?menu=4" class="tile">
+                <span class="icon">📋</span>
+                View Questionnaire
+            </a>
+        </div>
+    """, unsafe_allow_html=True)
 
 # === Menu Routing Logic ===
 else:
-    if st.session_state.menu == "menu_1":
+    if menu == "1":
         from menu1_question.main import run_menu1
         run_menu1()
 
-    elif st.session_state.menu == "menu_2":
+    elif menu == "2":
         st.info("🧩 Search by Theme is under construction.")
 
-    elif st.session_state.menu == "menu_3":
+    elif menu == "3":
         st.info("📊 Analyze Data is under construction.")
 
-    elif st.session_state.menu == "menu_4":
+    elif menu == "4":
         st.info("📋 View Questionnaire is under construction.")
 
-    st.markdown("⬅️ [Return to Main Menu](#)", unsafe_allow_html=True)
-    if st.button("Back to Main Menu"):
-        st.session_state.menu = None
+    # Back to Main Menu link
+    st.markdown("---")
+    if st.button("⬅️ Back to Main Menu"):
+        st.experimental_set_query_params()
