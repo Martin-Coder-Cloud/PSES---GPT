@@ -21,93 +21,71 @@ long_list_categories = {
 
 # === Menu 1 Function ===
 def run_menu1():
-    # --- Custom CSS ---
+    # --- CSS Styling ---
     st.markdown("""
         <style>
-            .menu1-container {
-                max-width: 700px;
-                margin: 0 auto;
-                padding: 30px 20px 10px 20px;
-                background-color: #f9f9f9;
-                border-radius: 8px;
-            }
-            .menu1-title {
-                font-size: 28px;
+            .custom-header {
+                font-size: 30px !important;
                 font-weight: 700;
-                color: #222;
-                margin-bottom: 20px;
+                margin-bottom: 10px;
             }
-            .menu1-instruction {
-                font-size: 17px;
-                color: #333;
-                margin-bottom: 20px;
+            .custom-instruction {
+                font-size: 18px !important;
                 line-height: 1.6;
-            }
-            .menu1-section {
-                margin-top: 30px;
-                font-size: 16px;
-            }
-            .stTextInput input, .stTextArea textarea, .stSelectbox, .stMultiSelect {
-                font-size: 16px !important;
+                margin-bottom: 25px;
+                color: #333;
             }
         </style>
     """, unsafe_allow_html=True)
 
-    # --- Layout Container ---
-    st.markdown('<div class="menu1-container">', unsafe_allow_html=True)
+    # --- Centered Layout using Streamlit columns ---
+    left, center, right = st.columns([1, 3, 1])
 
-    # --- Title ---
-    st.markdown('<div class="menu1-title">🔍 Search by Question</div>', unsafe_allow_html=True)
+    with center:
+        # Title
+        st.markdown('<div class="custom-header">🔍 Search by Question</div>', unsafe_allow_html=True)
 
-    # --- Instructions ---
-    st.markdown("""
-        <div class="menu1-instruction">
-            Use this menu if you already know the specific survey question you wish to explore (e.g., <b>Q58</b>).<br><br>
-            You can:
-            <ul>
-                <li>Use the dropdown menus below to select the year and demographic category</li>
-                <li>Or describe your question in plain language</li>
-            </ul>
-            The system will confirm your query before retrieving official PSES results.
-        </div>
-    """, unsafe_allow_html=True)
+        # Instructions
+        st.markdown("""
+            <div class="custom-instruction">
+                Use this menu if you already know the specific survey question you wish to explore (e.g., <b>Q58</b>).<br><br>
+                You can:
+                <ul>
+                    <li>Select the year and demographic category using dropdowns</li>
+                    <li>Or describe your question in plain language</li>
+                </ul>
+                The system will confirm your query before retrieving official PSES results.
+            </div>
+        """, unsafe_allow_html=True)
 
-    # --- Link to Questions ---
-    st.markdown("""
-        <div class="menu1-section">
-            📜 <a href="https://www.canada.ca/en/treasury-board-secretariat/services/innovation/public-service-employee-survey/2024-25/2024-25-public-service-employee-survey.html" target="_blank">
-            View the list of survey questions (2024)</a>
-        </div>
-    """, unsafe_allow_html=True)
+        # Question list link
+        st.markdown("📜 [View the list of survey questions (2024)](https://www.canada.ca/en/treasury-board-secretariat/services/innovation/public-service-employee-survey/2024-25/2024-25-public-service-employee-survey.html)")
 
-    # --- Input Controls ---
-    st.markdown('<div class="menu1-section">', unsafe_allow_html=True)
+        # Input controls
+        st.markdown("### Survey Filters")
 
-    year = st.multiselect("Select survey year(s):", [2024, 2022, 2020, 2019], default=[2024])
+        year = st.multiselect("Select survey year(s):", [2024, 2022, 2020, 2019], default=[2024])
 
-    demo_categories = sorted(demo_df[DEMO_CAT_COL].dropna().unique().tolist())
-    demo_selection = st.selectbox("Select a demographic category (optional):", ["All respondents"] + demo_categories)
+        demo_categories = sorted(demo_df[DEMO_CAT_COL].dropna().unique().tolist())
+        demo_selection = st.selectbox("Select a demographic category (optional):", ["All respondents"] + demo_categories)
 
-    sub_selection = None
-    if demo_selection in long_list_categories:
-        sub_items = demo_df[demo_df[DEMO_CAT_COL] == demo_selection][LABEL_COL].dropna().unique().tolist()
-        if len(sub_items) > 25:
-            sub_selection = st.text_input(f"Search or enter a {demo_selection} value:")
-        else:
-            sub_selection = st.selectbox(f"Select a {demo_selection} value:", sub_items)
+        sub_selection = None
+        if demo_selection in long_list_categories:
+            sub_items = demo_df[demo_df[DEMO_CAT_COL] == demo_selection][LABEL_COL].dropna().unique().tolist()
+            if len(sub_items) > 25:
+                sub_selection = st.text_input(f"Search or enter a {demo_selection} value:")
+            else:
+                sub_selection = st.selectbox(f"Select a {demo_selection} value:", sub_items)
 
-    question_input = st.text_input("Enter a specific question number (e.g., Q58):")
-    prompt_text = st.text_area("Or describe what you're looking for:")
+        question_input = st.text_input("Enter a specific question number (e.g., Q58):")
+        prompt_text = st.text_area("Or describe what you're looking for:")
 
-    if st.button("Search"):
-        st.markdown("🔄 *Processing your request...*")
-        st.write("Selected Year(s):", year)
-        st.write("Demographic Category:", demo_selection)
-        if sub_selection:
-            st.write("Sub-category value:", sub_selection)
-        st.write("Question:", question_input)
-        st.write("Prompt:", prompt_text)
-        st.success("✅ Query received. (Back-end connection coming soon)")
-
-    # --- Close layout div ---
-    st.markdown('</div>', unsafe_allow_html=True)
+        if st.button("Search"):
+            st.markdown("🔄 *Processing your request...*")
+            st.write("Selected Year(s):", year)
+            st.write("Demographic Category:", demo_selection)
+            if sub_selection:
+                st.write("Sub-category value:", sub_selection)
+            st.write("Question:", question_input)
+            st.write("Prompt:", prompt_text)
+            st.success("✅ Query received. (Back-end connection coming soon)")
