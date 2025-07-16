@@ -13,7 +13,7 @@ banner_resized = banner_img.resize((banner_img.width, 120))  # Adjust height as 
 # Display full-width resized banner
 st.image(banner_resized, use_column_width=True)
 
-# === Get menu param from URL ===
+# === Get menu param from URL query param ===
 query_params = st.experimental_get_query_params()
 menu = query_params.get("menu", [None])[0]
 
@@ -54,15 +54,16 @@ st.markdown("""
             display: block;
         }
         .instruction-text {
-            font-size: 16px;
-            color: #666;
-            text-align: center;
-            margin-top: 10px;
+            font-size: 18px;
+            color: #444;
+            text-align: left;
+            margin-left: 10%;
+            margin-top: 20px;
         }
     </style>
 """, unsafe_allow_html=True)
 
-# === Main Menu ===
+# === Main Menu View ===
 if not menu:
     # Title and subtitle
     st.markdown("""
@@ -74,7 +75,7 @@ if not menu:
         </div>
     """, unsafe_allow_html=True)
 
-    # Instruction (smaller text)
+    # Left-aligned instruction line
     st.markdown("<div class='instruction-text'>To start your analysis, please select one of the menu options below:</div>", unsafe_allow_html=True)
 
     # Menu tiles
