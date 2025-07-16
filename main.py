@@ -4,8 +4,12 @@ from urllib.parse import urlencode
 # Set page config
 st.set_page_config(page_title="PSES Explorer", layout="wide")
 
-# Banner
-st.image("assets/ANC006-PSES_banner825x200_EN.png", use_column_width=True)
+# Resized and centered banner
+st.markdown("""
+    <div style="text-align: center; margin-top: 10px;">
+        <img src="assets/ANC006-PSES_banner825x200_EN.png" style="max-width: 600px; height: auto;" />
+    </div>
+""", unsafe_allow_html=True)
 
 # Get current menu from URL query param
 query_params = st.experimental_get_query_params()
@@ -34,13 +38,13 @@ st.markdown("""
             cursor: pointer;
             border: 2px solid transparent;
             transition: all 0.3s ease;
-            text-decoration: none;  /* Prevent underline */
+            text-decoration: none;
         }
         .tile:hover {
             background-color: #e0ecf8;
             border-color: #5b9bd5;
             transform: scale(1.05);
-            text-decoration: none;  /* Prevent underline on hover */
+            text-decoration: none;
         }
         .icon {
             font-size: 48px;
@@ -52,8 +56,20 @@ st.markdown("""
 
 # === Main Menu View ===
 if not menu:
+    # Title and subtitle below banner
+    st.markdown("""
+        <div style='text-align: center; margin-top: 20px;'>
+            <h2>Welcome to the AI Explorer of the Public Service Employee Survey (PSES) results.</h2>
+            <p style='font-size:18px; color:#555; max-width: 800px; margin: 0 auto;'>
+                This AI app provides survey results and analysis on the latest iterations of the survey (2019, 2020, 2022, 2024).
+            </p>
+        </div>
+    """, unsafe_allow_html=True)
+
+    # Instruction line
     st.markdown("### To start your analysis, please select one of the menu options below:")
 
+    # Tile-based menu
     st.markdown(f"""
         <div class="tile-container">
             <a href="?menu=1" class="tile" target="_self">
