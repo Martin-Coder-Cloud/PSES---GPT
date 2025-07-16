@@ -25,30 +25,30 @@ def run_menu1():
     st.markdown("""
         <style>
             .menu1-container {
-                max-width: 900px;
+                max-width: 700px;
                 margin: 0 auto;
-                padding: 10px 20px;
+                padding: 30px 20px 10px 20px;
+                background-color: #f9f9f9;
+                border-radius: 8px;
             }
             .menu1-title {
-                text-align: center;
-                font-size: 32px;
+                font-size: 28px;
                 font-weight: 700;
-                margin-bottom: 10px;
+                color: #222;
+                margin-bottom: 20px;
             }
             .menu1-instruction {
-                font-size: 18px;
+                font-size: 17px;
                 color: #333;
-                margin-bottom: 25px;
+                margin-bottom: 20px;
                 line-height: 1.6;
             }
             .menu1-section {
                 margin-top: 30px;
-            }
-            .stTextInput > div > input,
-            .stTextArea > div > textarea,
-            .stSelectbox > div,
-            .stMultiSelect > div {
                 font-size: 16px;
+            }
+            .stTextInput input, .stTextArea textarea, .stSelectbox, .stMultiSelect {
+                font-size: 16px !important;
             }
         </style>
     """, unsafe_allow_html=True)
@@ -99,7 +99,6 @@ def run_menu1():
     question_input = st.text_input("Enter a specific question number (e.g., Q58):")
     prompt_text = st.text_area("Or describe what you're looking for:")
 
-    # --- Trigger Search ---
     if st.button("Search"):
         st.markdown("🔄 *Processing your request...*")
         st.write("Selected Year(s):", year)
@@ -110,4 +109,5 @@ def run_menu1():
         st.write("Prompt:", prompt_text)
         st.success("✅ Query received. (Back-end connection coming soon)")
 
-    st.markdown('</div>', unsafe_allow_html=True)  # Close menu1-container
+    # --- Close layout div ---
+    st.markdown('</div>', unsafe_allow_html=True)
