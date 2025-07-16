@@ -1,10 +1,11 @@
+# main.py (at root level of your app)
+
 import streamlit as st
-from metadata_loader import load_required_metadata, validate_dataset
 
 # === Page Setup ===
 st.set_page_config(page_title="PSES Explorer", layout="wide")
 
-# === Custom CSS Styling ===
+# === Custom CSS for Layout ===
 st.markdown("""
     <style>
         .main-container {
@@ -38,22 +39,9 @@ st.markdown("""
             margin-bottom: 15px;
         }
     </style>
-
-    <script>
-        const streamlitEvents = window.parent || window;
-        document.addEventListener("DOMContentLoaded", () => {
-            const tiles = document.querySelectorAll(".menu-tile");
-            tiles.forEach(tile => {
-                tile.addEventListener("click", () => {
-                    const key = tile.getAttribute("data-menu");
-                    streamlitEvents.postMessage({ type: "streamlit:setComponentValue", value: key }, "*");
-                });
-            });
-        });
-    </script>
 """, unsafe_allow_html=True)
 
-# === Banner (Optional) ===
+# === Banner ===
 st.image("assets/ANC006-PSES_banner825x200_EN.png", use_column_width=True)
 
 # === Title and Subtitle ===
@@ -61,48 +49,31 @@ st.markdown("""
     <div style='text-align: center; margin-top: 20px;'>
         <h2>Welcome to the AI Explorer of the Public Service Employee Survey (PSES) results.</h2>
         <p style='font-size:18px; color:#555; max-width: 800px; margin: 0 auto;'>
-            This AI app provides survey results and analysis on the latest iterations of the survey 
-            (2019, 2020, 2022, 2024).
+            This AI app provides survey results and analysis on the latest iterations of the survey (2019, 2020, 2022, 2024).
         </p>
     </div>
 """, unsafe_allow_html=True)
 
 st.markdown("<div style='margin-top: 30px;'></div>", unsafe_allow_html=True)
 
-# === Menu Grid ===
-st.markdown("""
-    <div class="main-container">
-        <div class="menu-tile" data-menu="menu_1">
-            <div class="menu-icon">🔍</div>
-            Search by Question
-        </div>
-        <div class="menu-tile" data-menu="menu_2">
-            <div class="menu-icon">🧩</div>
-            Search by Theme
-        </div>
-        <div class="menu-tile" data-menu="menu_3">
-            <div class="menu-icon">📊</div>
-            Analyze Data
-        </div>
-        <div class="menu-tile" data-menu="menu_4">
-            <div class="menu-icon">📋</div>
-            View Questionnaire
-        </div>
-    </div>
-""", unsafe_allow_html=True)
+# === Menu Navigation ===
+menu_selection = st.selectbox("Select a menu option", [
+    "🔍 Search by Question",
+    "🧩 Search by Theme",
+    "📊 Analyze Data",
+    "📋 View Questionnaire"
+])
 
-# === Interactive Menu Logic ===
-selected = st.experimental_get_query_params().get("menu", [None])[0] or st.session_state.get("menu_selection")
-
-if selected == "menu_1":
+# === Route to Menu Logic ===
+if menu_selection == "🔍 Search by Question":
     from menu1_question.main import run_menu1
     run_menu1()
 
-elif selected == "menu_2":
-    st.info("🔧 Theme search under construction.")
+elif menu_selection == "🧩 Search by Theme":
+    st.info("🧩 Theme search under development.")
 
-elif selected == "menu_3":
-    st.info("📊 Analysis view coming soon.")
+elif menu_selection == "📊 Analyze Data":
+    st.info("📊 Analysis tools are in development.")
 
-elif selected == "menu_4":
-    st.info("📄 Questionnaire viewer will be available shortly.")
+elif menu_selection == "📋 View Questionnaire":
+    st.info("📋 Questionnaire viewer coming soon.")
