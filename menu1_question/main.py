@@ -2,9 +2,6 @@ import streamlit as st
 from urllib.parse import urlencode
 from PIL import Image
 
-# Set page config
-st.set_page_config(page_title="PSES Explorer", layout="wide")
-
 # === Get menu param from URL query param ===
 query_params = st.experimental_get_query_params()
 menu = query_params.get("menu", [None])[0]
