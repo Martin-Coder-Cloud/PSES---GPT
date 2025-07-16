@@ -34,12 +34,13 @@ st.markdown("""
             cursor: pointer;
             border: 2px solid transparent;
             transition: all 0.3s ease;
-            text-decoration: none;
+            text-decoration: none;  /* Prevent underline */
         }
         .tile:hover {
             background-color: #e0ecf8;
             border-color: #5b9bd5;
             transform: scale(1.05);
+            text-decoration: none;  /* Prevent underline on hover */
         }
         .icon {
             font-size: 48px;
@@ -55,20 +56,20 @@ if not menu:
 
     st.markdown(f"""
         <div class="tile-container">
-            <a href="?menu=1" class="tile">
-                <span class="icon">🔍</span>
+            <a href="?menu=1" class="tile" target="_self">
+                <span class="icon">🔎</span>
                 Search by Question
             </a>
-            <a href="?menu=2" class="tile">
+            <a href="?menu=2" class="tile" target="_self">
                 <span class="icon">🧩</span>
                 Search by Theme
             </a>
-            <a href="?menu=3" class="tile">
-                <span class="icon">📊</span>
+            <a href="?menu=3" class="tile" target="_self">
+                <span class="icon">📈</span>
                 Analyze Data
             </a>
-            <a href="?menu=4" class="tile">
-                <span class="icon">📋</span>
+            <a href="?menu=4" class="tile" target="_self">
+                <span class="icon">📄</span>
                 View Questionnaire
             </a>
         </div>
@@ -89,7 +90,8 @@ else:
     elif menu == "4":
         st.info("📋 View Questionnaire is under construction.")
 
-    # Back to Main Menu link
+    # Back to Main Menu
     st.markdown("---")
     if st.button("⬅️ Back to Main Menu"):
         st.experimental_set_query_params()
+        st.experimental_rerun()
