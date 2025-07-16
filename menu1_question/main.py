@@ -20,7 +20,7 @@ long_list_categories = {
 }
 
 def run_menu1():
-    # --- CSS Styling ---
+    # === CSS Styling ===
     st.markdown("""
         <style>
             .custom-header {
@@ -44,7 +44,7 @@ def run_menu1():
         </style>
     """, unsafe_allow_html=True)
 
-    # --- Centered Layout ---
+    # === Centered Layout ===
     left, center, right = st.columns([1, 3, 1])
     with center:
         # --- Header ---
@@ -67,44 +67,43 @@ def run_menu1():
             </div>
         """, unsafe_allow_html=True)
 
-        # === Question Number First ===
+        # === QUESTION INPUT ===
         st.markdown('<div class="field-label">Enter a specific question number (e.g., Q58):</div>', unsafe_allow_html=True)
-        question_input = st.text_input("")
+        question_input = st.text_input("", key="question_number")
 
-        # === Year Selection with Checkboxes ===
+        # === YEAR SELECTION ===
         st.markdown('<div class="field-label">Select survey year(s):</div>', unsafe_allow_html=True)
-
         all_years = [2024, 2022, 2020, 2019]
-        select_all = st.checkbox("Select all years", value=True)
+        select_all = st.checkbox("Select all years", value=True, key="select_all_years")
 
         selected_years = []
         for year in all_years:
-            checked = True if select_all else False
-            selected = st.checkbox(str(year), value=checked, key=f"year_{year}")
-            if selected:
+            is_checked = True if select_all else False
+            if st.checkbox(str(year), value=is_checked, key=f"year_{year}"):
                 selected_years.append(year)
 
-        # === Prompt Input ===
+        # === NATURAL LANGUAGE PROMPT ===
         st.markdown('<div class="field-label">Or describe what you’re looking for:</div>', unsafe_allow_html=True)
-        prompt_text = st.text_area("")
+        prompt_text = st.text_area("", key="search_prompt")
 
-        # === Demographic Category ===
+        # === DEMOGRAPHIC SELECTION ===
         st.markdown('<div class="field-label">Select a demographic category (optional):</div>', unsafe_allow_html=True)
         demo_categories = sorted(demo_df[DEMO_CAT_COL].dropna().unique().tolist())
-        demo_selection = st.selectbox("", ["All respondents"] + demo_categories)
+        demo_selection = st.selectbox("", ["All respondents"] + demo_categories, key="demo_main")
 
-        # === Sub-category Selection (if applicable) ===
+        # === SECONDARY FILTERS (optional) ===
         sub_selection = None
         if demo_selection in long_list_categories:
             sub_items = demo_df[demo_df[DEMO_CAT_COL] == demo_selection][LABEL_COL].dropna().unique().tolist()
+            widget_key = f"subselect_{demo_selection.replace(' ', '_')}"
             if len(sub_items) > 25:
                 st.markdown(f'<div class="field-label">Search or enter a {demo_selection} value:</div>', unsafe_allow_html=True)
-                sub_selection = st.text_input("")
+                sub_selection = st.text_input("", key=f"textinput_{widget_key}")
             else:
                 st.markdown(f'<div class="field-label">Select a {demo_selection} value:</div>', unsafe_allow_html=True)
-                sub_selection = st.selectbox("", sub_items)
+                sub_selection = st.selectbox("", sub_items, key=f"selectbox_{widget_key}")
 
-        # === Search Button ===
+        # === SUBMIT BUTTON ===
         if st.button("Search"):
             st.markdown("🔄 *Processing your request...*")
             st.write("Selected Question:", question_input)
