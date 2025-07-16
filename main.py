@@ -1,5 +1,3 @@
-# main.py
-
 import streamlit as st
 
 # Set up page
@@ -22,79 +20,48 @@ st.markdown("""
     </div>
 """, unsafe_allow_html=True)
 
-# Custom CSS for tile buttons
+# Custom tile button styling
 st.markdown("""
     <style>
-        .main-container {
-            display: flex;
-            justify-content: center;
-            gap: 30px;
-            margin-top: 40px;
-            flex-wrap: wrap;
-        }
-        .menu-tile {
-            background-color: #f1f3f6;
-            border-radius: 12px;
-            padding: 40px 20px;
-            width: 220px;
+        .menu-button {
             height: 220px;
-            text-align: center;
+            width: 100%;
             font-size: 20px;
             font-weight: 600;
-            color: #222;
-            cursor: pointer;
-            border: 2px solid transparent;
-            transition: all 0.3s ease;
+            border-radius: 12px;
+            border: 2px solid #ccc;
+            background-color: #f1f3f6;
+            transition: 0.3s;
         }
-        .menu-tile:hover {
+        .menu-button:hover {
             background-color: #e0ecf8;
             border-color: #5b9bd5;
-            transform: scale(1.05);
-        }
-        .menu-icon {
-            font-size: 48px;
-            margin-bottom: 15px;
+            transform: scale(1.02);
         }
     </style>
 """, unsafe_allow_html=True)
 
 # === Main Menu View ===
 if st.session_state.menu is None:
-    st.markdown("""
-        <div class="main-container">
-            <div class="menu-tile" onclick="selectMenu('menu_1')">
-                <div class="menu-icon">🔍</div>
-                Search by Question
-            </div>
-            <div class="menu-tile" onclick="selectMenu('menu_2')">
-                <div class="menu-icon">🧩</div>
-                Search by Theme
-            </div>
-            <div class="menu-tile" onclick="selectMenu('menu_3')">
-                <div class="menu-icon">📊</div>
-                Analyze Data
-            </div>
-            <div class="menu-tile" onclick="selectMenu('menu_4')">
-                <div class="menu-icon">📋</div>
-                View Questionnaire
-            </div>
-        </div>
-        <script>
-            function selectMenu(menuName) {
-                window.parent.postMessage({isStreamlitMessage: true, type: 'streamlit:setComponentValue', value: menuName}, '*');
-            }
-        </script>
-    """, unsafe_allow_html=True)
+    st.markdown("### Select a menu below:")
 
-    # Fallback buttons (invisible to users, necessary for routing)
-    if st.button("Go to Menu 1"):
-        st.session_state.menu = "menu_1"
-    if st.button("Go to Menu 2"):
-        st.session_state.menu = "menu_2"
-    if st.button("Go to Menu 3"):
-        st.session_state.menu = "menu_3"
-    if st.button("Go to Menu 4"):
-        st.session_state.menu = "menu_4"
+    col1, col2, col3, col4 = st.columns(4)
+
+    with col1:
+        if st.button("🔍\nSearch by Question", key="menu1", use_container_width=True):
+            st.session_state.menu = "menu_1"
+
+    with col2:
+        if st.button("🧩\nSearch by Theme", key="menu2", use_container_width=True):
+            st.session_state.menu = "menu_2"
+
+    with col3:
+        if st.button("📊\nAnalyze Data", key="menu3", use_container_width=True):
+            st.session_state.menu = "menu_3"
+
+    with col4:
+        if st.button("📋\nView Questionnaire", key="menu4", use_container_width=True):
+            st.session_state.menu = "menu_4"
 
 # === Menu Routing Logic ===
 else:
