@@ -78,10 +78,8 @@ def run_menu1():
         # === YEAR SELECTION ===
         st.markdown('<div class="field-label">Select survey year(s):</div>', unsafe_allow_html=True)
         select_all = st.checkbox("All years", value=True, key="select_all_years")
-
         all_years = [2024, 2022, 2020, 2019]
         selected_years = []
-
         year_checkbox_cols = st.columns(len(all_years))
         for idx, year in enumerate(all_years):
             with year_checkbox_cols[idx]:
@@ -94,18 +92,15 @@ def run_menu1():
         demo_categories = sorted(demo_df[DEMO_CAT_COL].dropna().unique().tolist())
         demo_selection = st.selectbox("", ["All respondents"] + demo_categories, key="demo_main")
 
-        # === SECONDARY FILTERS ===
         sub_selection = None
         if demo_selection in long_list_categories:
             sub_items = demo_df[demo_df[DEMO_CAT_COL] == demo_selection][LABEL_COL].dropna().unique().tolist()
             widget_key = f"subselect_{demo_selection.replace(' ', '_')}"
-
-            if len(sub_items) > 100:
-                st.markdown(f'<div class="field-label">Enter a {demo_selection} value:</div>', unsafe_allow_html=True)
-                sub_selection = st.text_input("", key=f"textinput_{widget_key}")
-                if sub_selection and sub_selection not in sub_items:
-                    st.warning(f"⚠️ '{sub_selection}' is not a valid {demo_selection}. Please select a recognized value.")
-                    sub_selection = None
+            if len(sub_items) > 50:
+                st.markdown(f'<div class="field-label">Select a {demo_selection} value:</div>', unsafe_allow_html=True)
+                sub_select = st.multiselect("", options=sub_items, max_selections=1, key=f"multiselect_{widget_key}")
+                if sub_select:
+                    sub_selection = sub_select[0]
             else:
                 st.markdown(f'<div class="field-label">Select a {demo_selection} value:</div>', unsafe_allow_html=True)
                 sub_selection = st.selectbox("", sub_items, key=f"selectbox_{widget_key}")
