@@ -5,8 +5,9 @@ import pandas as pd
 demo_df = pd.read_excel("metadata/Demographics.xlsx")
 demo_df.columns = [col.strip() for col in demo_df.columns]
 
-theme_df = pd.read_excel("metadata/Survey Questions.xlsx")
-theme_df.columns = [col.strip() for col in theme_df.columns]
+# === Load Survey Theme Metadata ===
+theme_df = pd.read_excel("metadata/Survey Themes.xlsx")
+theme_df.columns = [col.strip() for col in theme_df.columns]  # Keep original casing
 
 # === Constants ===
 DEMO_CAT_COL = "DEMCODE Category"
@@ -67,23 +68,22 @@ def run_menu2():
             </div>
         """, unsafe_allow_html=True)
 
-        # === Prompt (Chatbot style input) ===
+        # === Prompt (Chatbot-style input) ===
         st.markdown('<div class="field-label">Describe the theme or topic (optional):</div>', unsafe_allow_html=True)
         prompt_text = st.text_area("", key="theme_prompt")
 
         # === Theme Selection ===
-        main_themes = sorted(theme_df["IndicatorENG"].dropna().unique().tolist())
+        main_themes = sorted(theme_df["INDICATORENG"].dropna().unique().tolist())
         st.markdown('<div class="field-label">Or select a main survey theme:</div>', unsafe_allow_html=True)
         selected_main_theme = st.selectbox("", [""] + main_themes, key="main_theme")
 
         sub_theme = None
-        sub_required = False
         if selected_main_theme:
-            sub_options = sorted(theme_df[theme_df["IndicatorENG"] == selected_main_theme]["SUBINDICATORENG"].dropna().unique().tolist())
-            if sub_options:
-                sub_required = True
-                st.markdown('<div class="field-label">Select a sub-theme:</div>', unsafe_allow_html=True)
-                sub_theme = st.selectbox("", [""] + sub_options, key="sub_theme")
+            sub_options = sorted(
+                theme_df[theme_df["INDICATORENG"] == selected_main_theme]["SUBINDICATORENG"].dropna().unique().tolist()
+            )
+            st.markdown('<div class="field-label">Select a sub-theme:</div>', unsafe_allow_html=True)
+            sub_theme = st.selectbox("", [""] + sub_options, key="sub_theme")
 
         # === Year Selection ===
         st.markdown('<div class="field-label">Select survey year(s):</div>', unsafe_allow_html=True)
@@ -114,8 +114,6 @@ def run_menu2():
             if st.button("🔎 Search"):
                 if not prompt_text.strip() and (not selected_main_theme or not sub_theme):
                     st.warning("⚠️ Please either describe a theme or select both a main theme and sub-theme.")
-                elif sub_required and not sub_theme:
-                    st.warning("⚠️ Please select a sub-theme to proceed.")
                 else:
                     st.markdown("🔄 *Processing your request...*")
                     st.write("Prompt:", prompt_text if prompt_text else "[Not provided]")
