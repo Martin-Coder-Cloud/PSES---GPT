@@ -72,31 +72,25 @@ def main():
         </style>
     """, unsafe_allow_html=True)
 
-    # === Render Menu Buttons ===
-    st.markdown("""
-        <div class="menu-wrapper">
-            <form class="menu-form" action="" method="post">
-                <button name="menu_button" value="1" class="menu-tile" type="submit">
-                    <span>🔍</span>Search by Question
-                </button>
-            </form>
-            <form class="menu-form" action="" method="post">
-                <button name="menu_button" value="2" class="menu-tile" type="submit">
-                    <span>🧩</span>Search by Theme
-                </button>
-            </form>
-            <form class="menu-form" action="" method="post">
-                <button name="menu_button" value="3" class="menu-tile" type="submit">
-                    <span>📊</span>Analyze Data
-                </button>
-            </form>
-            <form class="menu-form" action="" method="post">
-                <button name="menu_button" value="4" class="menu-tile" type="submit">
-                    <span>📋</span>View Questionnaire
-                </button>
-            </form>
-        </div>
-    """, unsafe_allow_html=True)
+       # === Render Menu Buttons Using Streamlit Buttons ===
+    col1, col2, col3, col4 = st.columns(4)
+
+    with col1:
+        if st.button("🔍\nSearch by Question", use_container_width=True):
+            st.session_state.run_menu = "1"
+
+    with col2:
+        if st.button("🧩\nSearch by Theme", use_container_width=True):
+            st.session_state.run_menu = "2"
+
+    with col3:
+        if st.button("📊\nAnalyze Data", use_container_width=True):
+            st.session_state.run_menu = "3"
+
+    with col4:
+        if st.button("📋\nView Questionnaire", use_container_width=True):
+            st.session_state.run_menu = "4"
+
 
     # === Menu selection logic ===
     selected = st.session_state.get("menu_button", None)
