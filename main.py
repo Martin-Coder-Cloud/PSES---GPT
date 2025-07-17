@@ -103,11 +103,12 @@ if not menu:
 # === Menu Routing Logic ===
 else:
     if menu == "1":
-        import menu1_question.main as menu1
+        import menu1.main as menu1
         menu1.run_menu1()
 
     elif menu == "2":
-        st.info("🧩 Search by Theme is under construction.")
+    	from menu2.main import run_menu2
+        run_menu2()
 
     elif menu == "3":
         st.info("📊 Analyze Data is under construction.")
