@@ -20,11 +20,21 @@ def main():
         </style>
     """, unsafe_allow_html=True)
 
-    # === Always display banner ===
-    st.image("assets/ANC006-PSES_banner825x200_EN.png", use_column_width=True)
+    # === Always display banner (reduced size and centered) ===
+    st.image("assets/ANC006-PSES_banner825x200_EN.png", width=600)
 
     # === Show main menu only if no selection has been made ===
     if "run_menu" not in st.session_state:
+
+        # === Title & Subtitle ===
+        st.markdown("""
+            <h1 style='text-align: center; margin-top: 10px; font-size: 28px;'>
+                Welcome to the AI Explorer of the Public Service Employee Survey (PSES) results.
+            </h1>
+            <h3 style='text-align: center; font-weight: normal; margin-bottom: 25px; font-size: 20px;'>
+                This AI app provides Public Service-wide survey results and analysis on the latest iterations of the survey (2019, 2020, 2022, 2024).
+            </h3>
+        """, unsafe_allow_html=True)
 
         # === Button CSS (tile style with icon on top) ===
         st.markdown("""
