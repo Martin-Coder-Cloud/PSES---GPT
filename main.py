@@ -90,8 +90,6 @@ def main():
     with col4:
         if st.button("📋\nView Questionnaire", use_container_width=True):
             st.session_state.run_menu = "4"
-
-
     
         # === Route to selected menu based on run_menu ===
     if "run_menu" in st.session_state:
@@ -105,19 +103,6 @@ def main():
             st.info("📊 Analyze Data is under construction.")
         elif st.session_state.run_menu == "4":
             st.info("📋 View Questionnaire is under construction.")
-
-
-    # === Route to selected menu ===
-    if st.session_state.run_menu == "1":
-        from menu1.main import run_menu1
-        run_menu1()
-    elif st.session_state.run_menu == "2":
-        from menu2.main import run_menu2
-        run_menu2()
-    elif st.session_state.run_menu == "3":
-        st.info("📊 Analyze Data is under construction.")
-    elif st.session_state.run_menu == "4":
-        st.info("📋 View Questionnaire is under construction.")
-
+  
 if __name__ == "__main__":
     main()
