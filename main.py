@@ -107,7 +107,7 @@ else:
         menu1.run_menu1()
 
     elif menu == "2":
-    	from menu2.main import run_menu2
+        from menu2.main import run_menu2
         run_menu2()
 
     elif menu == "3":
