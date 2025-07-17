@@ -2,6 +2,13 @@ import streamlit as st
 
 st.set_page_config(layout="wide")
 
+# ✅ Add this new helper function
+def show_return_then_run(run_func):
+    if st.button("🔙 Return to Main Menu"):
+        st.session_state.run_menu = None
+        st.experimental_rerun()
+    run_func()
+
 def main():
     # === Remove top margin above banner ===
     st.markdown("""
@@ -101,14 +108,14 @@ def main():
     if "run_menu" in st.session_state:
         if st.session_state.run_menu == "1":
             from menu1.main import run_menu1
-            run_menu1()
+            show_return_then_run(run_menu1)
         elif st.session_state.run_menu == "2":
             from menu2.main import run_menu2
-            run_menu2()
+            show_return_then_run(run_menu2)
         elif st.session_state.run_menu == "3":
-            st.info("📊 Analyze Data is under construction.")
+            show_return_then_run(lambda: st.info("📊 Analyze Data is under construction."))
         elif st.session_state.run_menu == "4":
-            st.info("📋 View Questionnaire is under construction.")
+            show_return_then_run(lambda: st.info("📋 View Questionnaire is under construction."))
 
 if __name__ == "__main__":
     main()
