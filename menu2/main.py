@@ -5,6 +5,9 @@ import pandas as pd
 demo_df = pd.read_excel("metadata/Demographics.xlsx")
 demo_df.columns = [col.strip() for col in demo_df.columns]
 
+theme_df = pd.read_excel("metadata/Survey Questions.xlsx")
+theme_df.columns = [col.strip() for col in theme_df.columns]
+
 # === Constants ===
 DEMO_CAT_COL = "DEMCODE Category"
 LABEL_COL = "DESCRIP_E"
@@ -29,9 +32,9 @@ def run_menu2():
                 margin-bottom: 10px;
             }
             .custom-instruction {
-                font-size: 17px !important;
-                line-height: 1.5;
-                margin-bottom: 15px;
+                font-size: 16px !important;
+                line-height: 1.4;
+                margin-bottom: 10px;
                 color: #333;
             }
             .field-label {
@@ -58,16 +61,29 @@ def run_menu2():
         # === Instructions ===
         st.markdown("""
             <div class="custom-instruction">
-                Use this menu to explore survey results by thematic areas (e.g., harassment, leadership, equity).<br><br>
-                You must select a <b>theme</b> and at least one <b>survey year</b> to proceed. You may optionally add a demographic filter.<br><br>
-                In future versions, themes will be dynamically linked to grouped survey questions.
+                Use this menu to explore survey results by thematic areas (e.g., harassment, leadership, equity).<br>
+                You must either provide a keyword or select both a main theme and sub-theme.<br>
+                If your topic isn’t listed, you can describe it in the search box below.
             </div>
         """, unsafe_allow_html=True)
 
+        # === Prompt (Chatbot style input) ===
+        st.markdown('<div class="field-label">Describe the theme or topic (optional):</div>', unsafe_allow_html=True)
+        prompt_text = st.text_area("", key="theme_prompt")
+
         # === Theme Selection ===
-        st.markdown('<div class="field-label">Select a predefined survey theme:</div>', unsafe_allow_html=True)
-        themes = ["Select a theme", "Workplace Culture", "Discrimination", "Career Development", "Wellbeing"]
-        theme_selection = st.selectbox("", themes, key="theme_selector")
+        main_themes = sorted(theme_df["IndicatorENG"].dropna().unique().tolist())
+        st.markdown('<div class="field-label">Or select a main survey theme:</div>', unsafe_allow_html=True)
+        selected_main_theme = st.selectbox("", [""] + main_themes, key="main_theme")
+
+        sub_theme = None
+        sub_required = False
+        if selected_main_theme:
+            sub_options = sorted(theme_df[theme_df["IndicatorENG"] == selected_main_theme]["SUBINDICATORENG"].dropna().unique().tolist())
+            if sub_options:
+                sub_required = True
+                st.markdown('<div class="field-label">Select a sub-theme:</div>', unsafe_allow_html=True)
+                sub_theme = st.selectbox("", [""] + sub_options, key="sub_theme")
 
         # === Year Selection ===
         st.markdown('<div class="field-label">Select survey year(s):</div>', unsafe_allow_html=True)
@@ -75,8 +91,8 @@ def run_menu2():
         all_years = [2024, 2022, 2020, 2019]
         selected_years = []
         year_cols = st.columns(len(all_years))
-        for idx, year in enumerate(all_years):
-            with year_cols[idx]:
+        for i, year in enumerate(all_years):
+            with year_cols[i]:
                 is_checked = True if select_all else False
                 if st.checkbox(str(year), value=is_checked, key=f"year2_{year}"):
                     selected_years.append(year)
@@ -87,30 +103,27 @@ def run_menu2():
         demo_selection = st.selectbox("", ["All respondents"] + demo_categories, key="demo_theme_main")
 
         sub_selection = None
-        sub_required = False
         if demo_selection in long_list_categories:
             sub_items = demo_df[demo_df[DEMO_CAT_COL] == demo_selection][LABEL_COL].dropna().unique().tolist()
-            sub_required = True
-            st.markdown(f'<div class="field-label">Please select one option for {demo_selection}:</div>', unsafe_allow_html=True)
-            sub_selection = st.selectbox("", sub_items, key=f"sub_{demo_selection.replace(' ', '_')}")
+            st.markdown(f'<div class="field-label">Select a {demo_selection} value:</div>', unsafe_allow_html=True)
+            sub_selection = st.selectbox("", sub_items, key=f"selectbox_{demo_selection.replace(' ', '_')}")
 
-        # === Prompt ===
-        st.markdown('<div class="field-label">Or describe your theme or concern in your own words:</div>', unsafe_allow_html=True)
-        prompt_text = st.text_area("", key="theme_prompt")
-
-        # === Search Button ===
+        # === Submit Button ===
         with st.container():
             st.markdown('<div class="big-button">', unsafe_allow_html=True)
             if st.button("🔎 Search"):
-                if sub_required and not sub_selection:
-                    st.warning(f"⚠️ Please select a value for {demo_selection} before proceeding.")
+                if not prompt_text.strip() and (not selected_main_theme or not sub_theme):
+                    st.warning("⚠️ Please either describe a theme or select both a main theme and sub-theme.")
+                elif sub_required and not sub_theme:
+                    st.warning("⚠️ Please select a sub-theme to proceed.")
                 else:
                     st.markdown("🔄 *Processing your request...*")
-                    st.write("Selected Theme:", theme_selection)
+                    st.write("Prompt:", prompt_text if prompt_text else "[Not provided]")
+                    st.write("Main Theme:", selected_main_theme)
+                    st.write("Sub-Theme:", sub_theme)
                     st.write("Selected Year(s):", selected_years)
                     st.write("Demographic Category:", demo_selection)
                     if sub_selection:
                         st.write("Sub-category value:", sub_selection)
-                    st.write("Prompt:", prompt_text)
                     st.success("✅ Theme search submitted. (Back-end coming soon)")
             st.markdown('</div>', unsafe_allow_html=True)
