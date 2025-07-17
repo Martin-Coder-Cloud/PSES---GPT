@@ -1,25 +1,13 @@
 import streamlit as st
+from PIL import Image
 
 st.set_page_config(layout="wide")
 
 def main():
-    # === Display compact banner using st.image() and CSS ===
-    st.markdown("""
-        <style>
-            .banner-container img {
-                height: 60px !important;
-                width: 100% !important;
-                object-fit: cover;
-                display: block;
-                margin: 0 auto;
-            }
-        </style>
-        <div class="banner-container">
-    """, unsafe_allow_html=True)
-
-    st.image("assets/ANC006-PSES_banner825x200_EN.png", use_column_width=True)
-
-    st.markdown("</div>", unsafe_allow_html=True)
+    # === Load and resize banner image (enforced 48px height) ===
+    banner = Image.open("assets/ANC006-PSES_banner825x200_EN.png")
+    resized_banner = banner.resize((1200, 48))  # width, height in pixels
+    st.image(resized_banner)
 
     # === Title & Subtitle ===
     st.markdown("""
@@ -124,7 +112,7 @@ def main():
     if st.session_state.run_menu != selected:
         st.session_state.run_menu = selected
 
-    # === Load corresponding menu module ===
+    # === Route to selected menu ===
     if st.session_state.run_menu == "1":
         from menu1.main import run_menu1
         run_menu1()
