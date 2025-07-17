@@ -9,9 +9,9 @@ demo_df.columns = [col.strip() for col in demo_df.columns]
 question_df = pd.read_excel("metadata/Survey Questions.xlsx")
 question_df.columns = [col.strip().lower() for col in question_df.columns]
 question_df = question_df.rename(columns={"question": "code", "english": "text"})
-question_df["display"] = question_df["code"] + " – " + question_df["text"]
 question_df["qnum"] = question_df["code"].str.extract(r'Q?(\d+)').astype(int)
 question_df = question_df.sort_values("qnum")
+question_df["display"] = question_df["code"] + " – " + question_df["text"]
 
 # === Constants ===
 DEMO_CAT_COL = "DEMCODE Category"
@@ -66,20 +66,17 @@ def run_menu1():
         # === Instructions ===
         st.markdown("""
             <div class="custom-instruction">
-                Please note that only Public Service–wide results are available in this tool. Departmental data is not included.<br><br>
-                Use this menu to explore a specific survey question.<br>
+                Use this menu to explore results for a specific survey question.<br><br>
+                Please note there is no departmental data yet in this tool.<br><br>
                 You may either type the question number (e.g., <b>Q58</b>) manually or select it from the list below.<br>
-                If both are filled, the manual input takes precedence.<br><br>
-                <b>Survey questionnaire link:</b><br>
-                <a href="https://www.canada.ca/en/treasury-board-secretariat/services/innovation/public-service-employee-survey/2024-25/2024-25-public-service-employee-survey.html" target="_blank">
-                2024 Public Service Employee Survey Questionnaire</a>
+                If both are filled, the manual input takes precedence.
             </div>
         """, unsafe_allow_html=True)
 
         # === Question Selection ===
         st.markdown('<div class="field-label">Select a specific survey question (or enter one manually):</div>', unsafe_allow_html=True)
         question_options = question_df["display"].tolist()
-        selected_label = st.selectbox("Choose from the official list (filterable):", [""] + question_options, key="question_dropdown")
+        selected_label = st.selectbox("Choose from the official list (type Q# or keywords to filter):", [""] + question_options, key="question_dropdown")
         manual_input = st.text_input("Or manually enter a question number (e.g., Q58):", key="question_manual")
         question_input = manual_input.strip() if manual_input.strip() else None
         if not question_input and selected_label:
