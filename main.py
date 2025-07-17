@@ -3,8 +3,19 @@ import streamlit as st
 st.set_page_config(layout="wide")
 
 def main():
-    # === Banner ===
-    st.image("assets/ANC006-PSES_banner825x200_EN.png", use_column_width=True)
+    # === Banner (scaled down to half height) ===
+    st.markdown("""
+        <style>
+            .banner-img img {
+                height: 100px !important;
+                object-fit: cover;
+                width: 100%;
+            }
+        </style>
+        <div class="banner-img">
+            <img src="assets/ANC006-PSES_banner825x200_EN.png">
+        </div>
+    """, unsafe_allow_html=True)
 
     # === Title & Subtitle (centered) ===
     st.markdown("""
@@ -16,14 +27,14 @@ def main():
         </h3>
     """, unsafe_allow_html=True)
 
-    # === Instruction line (left-aligned, centered container) ===
+    # === Instruction (left-aligned in center block) ===
     st.markdown("""
         <div style="max-width: 950px; margin: auto; text-align: left; font-size: 16px; margin-bottom: 30px;">
             To start your analysis, please select one of the menu options below:
         </div>
     """, unsafe_allow_html=True)
 
-    # === Inject custom CSS for the menu buttons ===
+    # === Custom CSS for large square menu buttons ===
     st.markdown("""
         <style>
             .menu-wrapper {
@@ -31,26 +42,26 @@ def main():
                 justify-content: center;
                 gap: 40px;
                 flex-wrap: wrap;
-                margin-bottom: 50px;
+                margin-bottom: 60px;
             }
             .menu-tile {
-                width: 160px;
-                height: 160px;
+                width: 320px;
+                height: 320px;
                 background-color: #f8f9fa;
-                border: 2px solid #0d6efd;
-                border-radius: 16px;
+                border: 3px solid #0d6efd;
+                border-radius: 24px;
                 text-align: center;
-                font-size: 16px;
+                font-size: 22px;
                 font-weight: 600;
                 color: #0d6efd;
-                padding-top: 28px;
+                padding-top: 60px;
                 cursor: pointer;
                 transition: all 0.2s ease;
             }
             .menu-tile span {
                 display: block;
-                font-size: 42px;
-                margin-bottom: 10px;
+                font-size: 64px;
+                margin-bottom: 15px;
             }
             .menu-tile:hover {
                 background-color: #0d6efd;
@@ -63,7 +74,7 @@ def main():
         </style>
     """, unsafe_allow_html=True)
 
-    # === Render the menu tiles as buttons ===
+    # === Render menu buttons ===
     st.markdown("""
         <div class="menu-wrapper">
             <form class="menu-form" action="" method="post">
@@ -89,7 +100,7 @@ def main():
         </div>
     """, unsafe_allow_html=True)
 
-    # === Capture which menu was clicked ===
+    # === Handle menu selection ===
     selected = st.session_state.get("menu_button", None)
     if "menu_button" in st.session_state:
         selected = st.session_state.menu_button
@@ -98,13 +109,12 @@ def main():
     if selected is None:
         selected = st.experimental_get_query_params().get("menu", [None])[0]
 
-    # Use a workaround to capture form POST
     if st.experimental_get_query_params():
         params = st.experimental_get_query_params()
         if "menu_button" in params:
             selected = params["menu_button"][0]
 
-    # === Run the appropriate menu ===
+    # === Run selected menu module ===
     if st.session_state.get("run_menu") is None:
         st.session_state.run_menu = ""
 
