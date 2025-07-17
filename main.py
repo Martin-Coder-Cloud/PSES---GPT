@@ -4,15 +4,24 @@ st.set_page_config(layout="wide")
 
 def main():
     # === Compact Banner Styling ===
-    st.markdown("""
+     st.markdown("""
         <style>
-            .small-banner img {
-                height: 60px !important;
-                object-fit: cover;
+            .banner-wrapper {
+                margin: 0;
+                padding: 0;
+            }
+            .banner-wrapper img {
+                height: 48px !important;  /* ← FINAL height */
                 width: 100%;
+                object-fit: cover;
+                margin: 0;
+                padding: 0;
+                display: block;
             }
         </style>
-        <div class="small-banner">
+        <div class="banner-wrapper">
+            <img src="assets/ANC006-PSES_banner825x200_EN.png">
+        </div>
     """, unsafe_allow_html=True)
 
     st.image("assets/ANC006-PSES_banner825x200_EN.png", use_column_width=True)
