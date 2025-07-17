@@ -3,15 +3,15 @@ import streamlit as st
 st.set_page_config(layout="wide")
 
 def main():
-    # === Compact Banner Styling ===
-     st.markdown("""
+    # === Compact Banner at Top (48px height) ===
+    st.markdown("""
         <style>
             .banner-wrapper {
                 margin: 0;
                 padding: 0;
             }
             .banner-wrapper img {
-                height: 48px !important;  /* ← FINAL height */
+                height: 48px !important;
                 width: 100%;
                 object-fit: cover;
                 margin: 0;
@@ -24,27 +24,24 @@ def main():
         </div>
     """, unsafe_allow_html=True)
 
-    st.image("assets/ANC006-PSES_banner825x200_EN.png", use_column_width=True)
-    st.markdown("</div>", unsafe_allow_html=True)
-
-    # === Title & Subtitle (centered) ===
+    # === Title & Subtitle ===
     st.markdown("""
-        <h1 style='text-align: center; margin-top: 12px; font-size: 28px;'>
+        <h1 style='text-align: center; margin-top: 10px; font-size: 28px;'>
             Welcome to the AI Explorer of the Public Service Employee Survey (PSES) results.
         </h1>
-        <h3 style='text-align: center; font-weight: normal; margin-bottom: 30px; font-size: 20px;'>
+        <h3 style='text-align: center; font-weight: normal; margin-bottom: 25px; font-size: 20px;'>
             This AI app provides Public Service-wide survey results and analysis on the latest iterations of the survey (2019, 2020, 2022, 2024).
         </h3>
     """, unsafe_allow_html=True)
 
-    # === Instruction (left-aligned in center block) ===
+    # === Instruction (left-aligned in center container) ===
     st.markdown("""
         <div style="max-width: 950px; margin: auto; text-align: left; font-size: 16px; margin-bottom: 20px;">
             To start your analysis, please select one of the menu options below:
         </div>
     """, unsafe_allow_html=True)
 
-    # === Updated CSS for smaller buttons, bigger icons ===
+    # === Button CSS ===
     st.markdown("""
         <style>
             .menu-wrapper {
@@ -55,7 +52,7 @@ def main():
                 margin-bottom: 40px;
             }
             .menu-tile {
-                width: 240px; /* ⬅️ reduced by ~25% */
+                width: 240px;
                 height: 240px;
                 background-color: #f8f9fa;
                 border: 2px solid #0d6efd;
@@ -70,7 +67,7 @@ def main():
             }
             .menu-tile span {
                 display: block;
-                font-size: 60px; /* ⬅️ larger icon */
+                font-size: 60px;
                 margin-bottom: 10px;
             }
             .menu-tile:hover {
@@ -84,7 +81,7 @@ def main():
         </style>
     """, unsafe_allow_html=True)
 
-    # === Render the buttons ===
+    # === Render Menu Buttons ===
     st.markdown("""
         <div class="menu-wrapper">
             <form class="menu-form" action="" method="post">
@@ -110,7 +107,7 @@ def main():
         </div>
     """, unsafe_allow_html=True)
 
-    # === Menu selection handling ===
+    # === Handle Menu Selection ===
     selected = st.session_state.get("menu_button", None)
     if "menu_button" in st.session_state:
         selected = st.session_state.menu_button
@@ -124,7 +121,6 @@ def main():
         if "menu_button" in params:
             selected = params["menu_button"][0]
 
-    # === Load the selected menu ===
     if st.session_state.get("run_menu") is None:
         st.session_state.run_menu = ""
 
