@@ -88,9 +88,13 @@ def run_menu2():
         if demo_selection in long_list_categories:
             sub_items = demo_df[demo_df[DEMO_CAT_COL] == demo_selection][LABEL_COL].dropna().unique().tolist()
             widget_key = f"subselect2_{demo_selection.replace(' ', '_')}"
-            if len(sub_items) > 25:
-                st.markdown(f'<div class="field-label">Search or enter a {demo_selection} value:</div>', unsafe_allow_html=True)
+
+            if len(sub_items) > 100:
+                st.markdown(f'<div class="field-label">Enter a {demo_selection} value:</div>', unsafe_allow_html=True)
                 sub_selection = st.text_input("", key=f"textinput_{widget_key}")
+                if sub_selection and sub_selection not in sub_items:
+                    st.warning(f"⚠️ '{sub_selection}' is not a valid {demo_selection}. Please select a recognized value.")
+                    sub_selection = None
             else:
                 st.markdown(f'<div class="field-label">Select a {demo_selection} value:</div>', unsafe_allow_html=True)
                 sub_selection = st.selectbox("", sub_items, key=f"selectbox_{widget_key}")
