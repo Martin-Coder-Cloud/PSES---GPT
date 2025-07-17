@@ -92,25 +92,20 @@ def main():
             st.session_state.run_menu = "4"
 
 
-    # === Menu selection logic ===
-    selected = st.session_state.get("menu_button", None)
-    if "menu_button" in st.session_state:
-        selected = st.session_state.menu_button
-    if selected is None:
-        selected = st.experimental_get_query_params().get("menu_button", [None])[0]
-    if selected is None:
-        selected = st.experimental_get_query_params().get("menu", [None])[0]
+    
+        # === Route to selected menu based on run_menu ===
+    if "run_menu" in st.session_state:
+        if st.session_state.run_menu == "1":
+            from menu1.main import run_menu1
+            run_menu1()
+        elif st.session_state.run_menu == "2":
+            from menu2.main import run_menu2
+            run_menu2()
+        elif st.session_state.run_menu == "3":
+            st.info("📊 Analyze Data is under construction.")
+        elif st.session_state.run_menu == "4":
+            st.info("📋 View Questionnaire is under construction.")
 
-    if st.experimental_get_query_params():
-        params = st.experimental_get_query_params()
-        if "menu_button" in params:
-            selected = params["menu_button"][0]
-
-    if st.session_state.get("run_menu") is None:
-        st.session_state.run_menu = ""
-
-    if st.session_state.run_menu != selected:
-        st.session_state.run_menu = selected
 
     # === Route to selected menu ===
     if st.session_state.run_menu == "1":
