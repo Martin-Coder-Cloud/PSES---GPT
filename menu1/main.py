@@ -37,9 +37,9 @@ def run_menu1():
                 margin-bottom: 10px;
             }
             .custom-instruction {
-                font-size: 17px !important;
-                line-height: 1.5;
-                margin-bottom: 15px;
+                font-size: 16px !important;
+                line-height: 1.4;
+                margin-bottom: 10px;
                 color: #333;
             }
             .field-label {
@@ -63,24 +63,20 @@ def run_menu1():
         # === Header ===
         st.markdown('<div class="custom-header">🔍 Search by Question</div>', unsafe_allow_html=True)
 
-        # === Instructions ===
+        # === Instructions (compact) ===
         st.markdown("""
             <div class="custom-instruction">
-                Use this menu to explore results for a specific survey question.<br><br>
-                Please note there is no departmental data yet in this tool.<br><br>
-                You may either type the question number (e.g., <b>Q58</b>) manually or select it from the list below.<br>
-                If both are filled, the manual input takes precedence.
+                Use this menu to explore results for a specific survey question.<br>
+                Please note there is no departmental data yet in this tool.<br>
+                Select a question from the list below to begin.
             </div>
         """, unsafe_allow_html=True)
 
         # === Question Selection ===
-        st.markdown('<div class="field-label">Select a specific survey question (or enter one manually):</div>', unsafe_allow_html=True)
+        st.markdown('<div class="field-label">Select a survey question:</div>', unsafe_allow_html=True)
         question_options = question_df["display"].tolist()
-        selected_label = st.selectbox("Choose from the official list (type Q# or keywords to filter):", [""] + question_options, key="question_dropdown")
-        manual_input = st.text_input("Or manually enter a question number (e.g., Q58):", key="question_manual")
-        question_input = manual_input.strip() if manual_input.strip() else None
-        if not question_input and selected_label:
-            question_input = question_df[question_df["display"] == selected_label]["code"].values[0]
+        selected_label = st.selectbox("Choose from the official list (type Q# or keywords to filter):", question_options, key="question_dropdown")
+        question_input = question_df[question_df["display"] == selected_label]["code"].values[0]
 
         # === Year Selection ===
         st.markdown('<div class="field-label">Select survey year(s):</div>', unsafe_allow_html=True)
@@ -107,16 +103,12 @@ def run_menu1():
             st.markdown(f'<div class="field-label">Please select one option for {demo_selection}:</div>', unsafe_allow_html=True)
             sub_selection = st.selectbox("", sub_items, key=f"sub_{demo_selection.replace(' ', '_')}")
 
-        # === Natural Prompt ===
-        st.markdown('<div class="field-label">Or describe what you’re looking for:</div>', unsafe_allow_html=True)
-        prompt_text = st.text_area("", key="search_prompt")
-
         # === Search Button ===
         with st.container():
             st.markdown('<div class="big-button">', unsafe_allow_html=True)
             if st.button("🔎 Search"):
                 if not question_input:
-                    st.warning("⚠️ Please select a question from the list or enter one manually.")
+                    st.warning("⚠️ Please select a question from the list.")
                 elif sub_required and not sub_selection:
                     st.warning(f"⚠️ Please select a value for {demo_selection} before proceeding.")
                 else:
@@ -126,6 +118,5 @@ def run_menu1():
                     st.write("Demographic Category:", demo_selection)
                     if sub_selection:
                         st.write("Sub-category value:", sub_selection)
-                    st.write("Prompt:", prompt_text)
                     st.success("✅ Query received. (Back-end connection coming soon)")
             st.markdown('</div>', unsafe_allow_html=True)
