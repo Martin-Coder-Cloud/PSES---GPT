@@ -4,10 +4,12 @@ from PIL import Image
 st.set_page_config(layout="wide")
 
 def main():
-    # === Load and resize banner image (enforced 48px height) ===
+    # === Load and resize the banner image ===
     banner = Image.open("assets/ANC006-PSES_banner825x200_EN.png")
-    resized_banner = banner.resize((1200, 48))  # width, height in pixels
+    resized_banner = banner.resize((1200, 96))  # 96px height = ~double
+    st.markdown("<div style='margin: 0; padding: 0;'>", unsafe_allow_html=True)
     st.image(resized_banner)
+    st.markdown("</div>", unsafe_allow_html=True)
 
     # === Title & Subtitle ===
     st.markdown("""
