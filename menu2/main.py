@@ -84,17 +84,17 @@ def run_menu2():
         st.markdown('<div class="field-label">Or describe your theme using keywords:</div>', unsafe_allow_html=True)
         prompt_text = st.text_area("", key="theme_prompt")
 
-        # === Year Selection (default to all) ===
+        # === Year Selection (all shown, all selected by default) ===
         st.markdown('<div class="field-label">Select survey year(s):</div>', unsafe_allow_html=True)
-        all_years = [2024, 2022, 2020, 2019]
         select_all = st.checkbox("All years", value=True, key="select_all_years_2")
-        selected_years = all_years if select_all else []
-        if not select_all:
-            year_cols = st.columns(len(all_years))
-            for i, year in enumerate(all_years):
-                with year_cols[i]:
-                    if st.checkbox(str(year), value=False, key=f"year2_{year}"):
-                        selected_years.append(year)
+        all_years = [2024, 2022, 2020, 2019]
+        selected_years = []
+        year_cols = st.columns(len(all_years))
+        for idx, year in enumerate(all_years):
+            with year_cols[idx]:
+                is_checked = True if select_all else False
+                if st.checkbox(str(year), value=is_checked, key=f"year_{year}"):
+                    selected_years.append(year)
 
         # === Demographic Selection (default to All respondents) ===
         st.markdown('<div class="field-label">Select a demographic category (optional):</div>', unsafe_allow_html=True)
