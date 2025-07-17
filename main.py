@@ -1,15 +1,19 @@
 import streamlit as st
-from PIL import Image
 
 st.set_page_config(layout="wide")
 
 def main():
-    # === Load and resize the banner image ===
-    banner = Image.open("assets/ANC006-PSES_banner825x200_EN.png")
-    resized_banner = banner.resize((1200, 96))  # 96px height = ~double
-    st.markdown("<div style='margin: 0; padding: 0;'>", unsafe_allow_html=True)
-    st.image(resized_banner)
-    st.markdown("</div>", unsafe_allow_html=True)
+    # === Remove top margin above banner ===
+    st.markdown("""
+        <style>
+            .block-container {
+                padding-top: 0rem;
+            }
+        </style>
+    """, unsafe_allow_html=True)
+
+    # === Display banner (natural size) ===
+    st.image("assets/ANC006-PSES_banner825x200_EN.png", use_column_width=True)
 
     # === Title & Subtitle ===
     st.markdown("""
