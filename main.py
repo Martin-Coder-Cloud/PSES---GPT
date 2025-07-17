@@ -18,13 +18,16 @@ def main():
         </div>
     """, unsafe_allow_html=True)
 
-    # === Menu Options ===
+    # === Menu Selection (simulate "no selection" with session state) ===
+    if "menu_selected" not in st.session_state:
+        st.session_state.menu_selected = ""
+
     menu = option_menu(
         menu_title=None,
         options=["1", "2", "3", "4"],
         icons=["search", "puzzle", "bar-chart", "clipboard"],
         menu_icon="cast",
-        default_index=None,  # ✅ Do not auto-load Menu 1
+        default_index=0,  # required, workaround follows
         orientation="horizontal",
         styles={
             "container": {
@@ -46,7 +49,13 @@ def main():
         }
     )
 
-    # === Route Logic ===
+    # Only act if user selects (avoid auto-load on page open)
+    if st.session_state.menu_selected != menu:
+        st.session_state.menu_selected = menu
+    else:
+        menu = st.session_state.menu_selected
+
+    # === Routing Logic ===
     if menu == "1":
         from menu1.main import run_menu1
         run_menu1()
@@ -61,9 +70,5 @@ def main():
     elif menu == "4":
         st.info("📋 View Questionnaire is under construction.")
 
-    elif menu is None:
-        st.markdown("<br><br><i>Please select a menu option to begin.</i>", unsafe_allow_html=True)
-
 if __name__ == "__main__":
     main()
-
