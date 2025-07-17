@@ -3,26 +3,23 @@ import streamlit as st
 st.set_page_config(layout="wide")
 
 def main():
-    # === Compact Banner at Top (48px height) ===
+    # === Display compact banner using st.image() and CSS ===
     st.markdown("""
         <style>
-            .banner-wrapper {
-                margin: 0;
-                padding: 0;
-            }
-            .banner-wrapper img {
-                height: 48px !important;
-                width: 100%;
+            .banner-container img {
+                height: 60px !important;
+                width: 100% !important;
                 object-fit: cover;
-                margin: 0;
-                padding: 0;
                 display: block;
+                margin: 0 auto;
             }
         </style>
-        <div class="banner-wrapper">
-            <img src="assets/ANC006-PSES_banner825x200_EN.png">
-        </div>
+        <div class="banner-container">
     """, unsafe_allow_html=True)
+
+    st.image("assets/ANC006-PSES_banner825x200_EN.png", use_column_width=True)
+
+    st.markdown("</div>", unsafe_allow_html=True)
 
     # === Title & Subtitle ===
     st.markdown("""
@@ -34,7 +31,7 @@ def main():
         </h3>
     """, unsafe_allow_html=True)
 
-    # === Instruction (left-aligned in center container) ===
+    # === Instruction line ===
     st.markdown("""
         <div style="max-width: 950px; margin: auto; text-align: left; font-size: 16px; margin-bottom: 20px;">
             To start your analysis, please select one of the menu options below:
@@ -107,7 +104,7 @@ def main():
         </div>
     """, unsafe_allow_html=True)
 
-    # === Handle Menu Selection ===
+    # === Menu selection logic ===
     selected = st.session_state.get("menu_button", None)
     if "menu_button" in st.session_state:
         selected = st.session_state.menu_button
@@ -127,17 +124,15 @@ def main():
     if st.session_state.run_menu != selected:
         st.session_state.run_menu = selected
 
+    # === Load corresponding menu module ===
     if st.session_state.run_menu == "1":
         from menu1.main import run_menu1
         run_menu1()
-
     elif st.session_state.run_menu == "2":
         from menu2.main import run_menu2
         run_menu2()
-
     elif st.session_state.run_menu == "3":
         st.info("📊 Analyze Data is under construction.")
-
     elif st.session_state.run_menu == "4":
         st.info("📋 View Questionnaire is under construction.")
 
