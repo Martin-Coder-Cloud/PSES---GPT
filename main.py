@@ -11,7 +11,7 @@ def main():
     st.title("Welcome to the AI Explorer of the Public Service Employee Survey (PSES) results.")
     st.subheader("This AI app provides Public Service-wide survey results and analysis on the latest iterations of the survey (2019, 2020, 2022, 2024).")
 
-    # === Instruction (moved and styled) ===
+    # === Instruction (aligned left) ===
     st.markdown("""
         <div style="margin-left: 20%; margin-top: -10px; margin-bottom: 5px; font-size: 16px;">
             To start your analysis, please select one of the menu options below:
@@ -24,7 +24,7 @@ def main():
         options=["1", "2", "3", "4"],
         icons=["search", "puzzle", "bar-chart", "clipboard"],
         menu_icon="cast",
-        default_index=0,
+        default_index=None,  # ✅ Do not auto-load Menu 1
         orientation="horizontal",
         styles={
             "container": {
@@ -61,5 +61,9 @@ def main():
     elif menu == "4":
         st.info("📋 View Questionnaire is under construction.")
 
+    elif menu is None:
+        st.markdown("<br><br><i>Please select a menu option to begin.</i>", unsafe_allow_html=True)
+
 if __name__ == "__main__":
     main()
+
