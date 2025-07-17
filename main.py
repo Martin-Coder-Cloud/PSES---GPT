@@ -3,19 +3,21 @@ import streamlit as st
 st.set_page_config(layout="wide")
 
 def main():
-    # === Banner (scaled down to half height) ===
+    # === Banner (half-height using st.image + CSS override) ===
     st.markdown("""
         <style>
-            .banner-img img {
+            .small-banner img {
                 height: 100px !important;
                 object-fit: cover;
                 width: 100%;
             }
         </style>
-        <div class="banner-img">
-            <img src="assets/ANC006-PSES_banner825x200_EN.png">
-        </div>
+        <div class="small-banner">
     """, unsafe_allow_html=True)
+
+    st.image("assets/ANC006-PSES_banner825x200_EN.png", use_column_width=True)
+
+    st.markdown("</div>", unsafe_allow_html=True)
 
     # === Title & Subtitle (centered) ===
     st.markdown("""
@@ -27,14 +29,14 @@ def main():
         </h3>
     """, unsafe_allow_html=True)
 
-    # === Instruction (left-aligned in center block) ===
+    # === Instruction (left-aligned in centered container) ===
     st.markdown("""
         <div style="max-width: 950px; margin: auto; text-align: left; font-size: 16px; margin-bottom: 30px;">
             To start your analysis, please select one of the menu options below:
         </div>
     """, unsafe_allow_html=True)
 
-    # === Custom CSS for large square menu buttons ===
+    # === CSS for large square menu buttons (with smaller icons) ===
     st.markdown("""
         <style>
             .menu-wrapper {
@@ -60,7 +62,7 @@ def main():
             }
             .menu-tile span {
                 display: block;
-                font-size: 64px;
+                font-size: 52px;  /* ✅ smaller icon */
                 margin-bottom: 15px;
             }
             .menu-tile:hover {
@@ -74,7 +76,7 @@ def main():
         </style>
     """, unsafe_allow_html=True)
 
-    # === Render menu buttons ===
+    # === Render the menu buttons ===
     st.markdown("""
         <div class="menu-wrapper">
             <form class="menu-form" action="" method="post">
@@ -100,7 +102,7 @@ def main():
         </div>
     """, unsafe_allow_html=True)
 
-    # === Handle menu selection ===
+    # === Menu selection handling ===
     selected = st.session_state.get("menu_button", None)
     if "menu_button" in st.session_state:
         selected = st.session_state.menu_button
@@ -114,7 +116,7 @@ def main():
         if "menu_button" in params:
             selected = params["menu_button"][0]
 
-    # === Run selected menu module ===
+    # === Routing to the selected menu module ===
     if st.session_state.get("run_menu") is None:
         st.session_state.run_menu = ""
 
