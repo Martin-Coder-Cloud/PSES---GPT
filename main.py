@@ -11,36 +11,27 @@ def show_return_then_run(run_func):
         st.experimental_rerun()
 
 def main():
-   # === Fix banner layout: tight margin, centered image ===
+    # === Fix banner layout: tight margin, centered image ===
     st.markdown("""
-    <style>
-        .block-container {
-            padding-top: 0px !important;
-            margin-top: -30px !important;
-        }
-        .centered-banner {
-            display: flex;
-            justify-content: center;
-            align-items: center;
-            margin-bottom: 20px;
-        }
-    </style>
+        <style>
+            .block-container {
+                padding-top: 0px !important;
+                margin-top: -30px !important;
+            }
+            .centered-banner {
+                display: flex;
+                justify-content: center;
+                align-items: center;
+                margin-bottom: 20px;
+            }
+        </style>
     """, unsafe_allow_html=True)
 
-# === Render banner using Streamlit's image loader ===
+    # === Render banner using Streamlit's image loader (750px wide, centered)
     with st.container():
-    st.markdown('<div class="centered-banner">', unsafe_allow_html=True)
+        st.markdown('<div class="centered-banner">', unsafe_allow_html=True)
         st.image("assets/ANC006-PSES_banner825x200_EN.png", width=750)
-    st.markdown('</div>', unsafe_allow_html=True)
-
-# === Centered, non-stretched banner at 750px width ===
-    st.markdown("""
-    <div class="banner-container">
-        <img src="assets/ANC006-PSES_banner825x200_EN.png" width="750">
-    </div>
-    """, unsafe_allow_html=True)
-
-
+        st.markdown('</div>', unsafe_allow_html=True)
 
     # === Show main menu only if no selection has been made ===
     if "run_menu" not in st.session_state:
@@ -101,29 +92,25 @@ def main():
         # === Menu Buttons in Tile Layout ===
         st.markdown("""
             <div class="menu-wrapper">
-                <a href="#" onclick="window.location.reload();"
-                   class="menu-link" target="_self">
+                <a href="#" onclick="window.location.reload();" class="menu-link" target="_self">
                     <div onclick="window.parent.postMessage({type: 'streamlit:sendMessage', data: '1'}, '*')" class="menu-tile">
                         <div class="menu-icon">🔍</div>
                         Search by Question
                     </div>
                 </a>
-                <a href="#" onclick="window.location.reload();"
-                   class="menu-link" target="_self">
+                <a href="#" onclick="window.location.reload();" class="menu-link" target="_self">
                     <div onclick="window.parent.postMessage({type: 'streamlit:sendMessage', data: '2'}, '*')" class="menu-tile">
                         <div class="menu-icon">🧩</div>
                         Search by Theme
                     </div>
                 </a>
-                <a href="#" onclick="window.location.reload();"
-                   class="menu-link" target="_self">
+                <a href="#" onclick="window.location.reload();" class="menu-link" target="_self">
                     <div onclick="window.parent.postMessage({type: 'streamlit:sendMessage', data: '3'}, '*')" class="menu-tile">
                         <div class="menu-icon">📊</div>
                         Analyze Data
                     </div>
                 </a>
-                <a href="#" onclick="window.location.reload();"
-                   class="menu-link" target="_self">
+                <a href="#" onclick="window.location.reload();" class="menu-link" target="_self">
                     <div onclick="window.parent.postMessage({type: 'streamlit:sendMessage', data: '4'}, '*')" class="menu-tile">
                         <div class="menu-icon">📋</div>
                         View Questionnaire
