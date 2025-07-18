@@ -32,9 +32,9 @@ def main():
         </style>
     """, unsafe_allow_html=True)
 
-st.markdown("<div class='centered-image'>", unsafe_allow_html=True)
-st.image("PSES_Banner.png", width=960)
-st.markdown("</div>", unsafe_allow_html=True)
+    st.markdown("<div class='centered-image'>", unsafe_allow_html=True)
+    st.image("PSES_Banner.png", width=960)
+    st.markdown("</div>", unsafe_allow_html=True)
 
 
 
