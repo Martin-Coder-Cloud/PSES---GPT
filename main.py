@@ -11,25 +11,27 @@ def show_return_then_run(run_func):
         st.experimental_rerun()
 
 def main():
-    # === Fix banner layout: tight margin, centered image ===
+   # === Remove padding and ensure space above ===
     st.markdown("""
-        <style>
-            .block-container {
-                padding-top: 0px !important;
-                margin-top: 0px !important;
-            }
-        </style>
+       <style>
+        .block-container {
+            padding-top: 0px !important;
+            margin-top: 0px !important;
+        }
+        .center-inside {
+            display: flex;
+            justify-content: center;
+        }
+    </style>
     """, unsafe_allow_html=True)
 
-    # ✅ Banner perfectly centered using HTML flex inside center column
-    left, center, right = st.columns([1, 3, 1])
-    with center:
-        st.markdown(
-            "<div style='display:flex; justify-content:center; margin-top:10px; margin-bottom:20px;'>"
-            "<img src='assets/ANC006-PSES_banner825x200_EN.png' width='750'>"
-            "</div>",
-            unsafe_allow_html=True
-        )
+# ✅ Use Streamlit's image loader to avoid file resolution issues
+left, center, right = st.columns([1, 3, 1])
+with center:
+    st.markdown("<div class='center-inside'>", unsafe_allow_html=True)
+    st.image("assets/ANC006-PSES_banner825x200_EN.png", width=750)
+    st.markdown("</div>", unsafe_allow_html=True)
+
 
     # === Show main menu only if no selection has been made ===
     if "run_menu" not in st.session_state:
