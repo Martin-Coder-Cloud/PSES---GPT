@@ -28,11 +28,11 @@ def main():
     """, unsafe_allow_html=True)
 
 # === Centered, non-stretched banner at 750px width ===
-st.markdown("""
+    st.markdown("""
     <div class="banner-container">
         <img src="assets/ANC006-PSES_banner825x200_EN.png" width="750">
     </div>
-""", unsafe_allow_html=True)
+    """, unsafe_allow_html=True)
 
 
 
