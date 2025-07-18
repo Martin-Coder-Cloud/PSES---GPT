@@ -21,14 +21,14 @@ def main():
         </style>
     """, unsafe_allow_html=True)
 
+    # ✅ Centered banner
     st.markdown("""
         <div style='text-align: center; max-width: 1100px; margin: auto; margin-top: 30px; margin-bottom: 20px;'>
             <img src='https://github.com/Martin-Coder-Cloud/PSES---GPT/blob/06e8805a54c2c28ed7e1528676e2dc5f750cca62/PSES%20email%20banner.png?raw=true' width='960'>
         </div>
     """, unsafe_allow_html=True)
-   
 
- # === Show main menu only if no selection has been made ===
+    # === Show main menu only if no selection has been made ===
     if "run_menu" not in st.session_state:
 
         # ✅ Title + Subtitle centered and constrained
@@ -83,32 +83,35 @@ def main():
                 .menu-link {
                     text-decoration: none;
                 }
+                .menu-link:hover {
+                    text-decoration: none;
+                }
             </style>
         """, unsafe_allow_html=True)
 
         # === Menu Buttons in Tile Layout ===
         st.markdown("""
             <div class="menu-wrapper">
-                <a href="#" onclick="window.location.reload();" class="menu-link" target="_self">
-                    <div onclick="window.parent.postMessage({type: 'streamlit:sendMessage', data: '1'}, '*')" class="menu-tile">
+                <a class="menu-link" onclick="window.parent.postMessage({type: 'streamlit:sendMessage', data: '1'}, '*')" href="#">
+                    <div class="menu-tile">
                         <div class="menu-icon">🔍</div>
                         Search by Question
                     </div>
                 </a>
-                <a href="#" onclick="window.location.reload();" class="menu-link" target="_self">
-                    <div onclick="window.parent.postMessage({type: 'streamlit:sendMessage', data: '2'}, '*')" class="menu-tile">
+                <a class="menu-link" onclick="window.parent.postMessage({type: 'streamlit:sendMessage', data: '2'}, '*')" href="#">
+                    <div class="menu-tile">
                         <div class="menu-icon">🧩</div>
                         Search by Theme
                     </div>
                 </a>
-                <a href="#" onclick="window.location.reload();" class="menu-link" target="_self">
-                    <div onclick="window.parent.postMessage({type: 'streamlit:sendMessage', data: '3'}, '*')" class="menu-tile">
+                <a class="menu-link" onclick="window.parent.postMessage({type: 'streamlit:sendMessage', data: '3'}, '*')" href="#">
+                    <div class="menu-tile">
                         <div class="menu-icon">📊</div>
                         Analyze Data
                     </div>
                 </a>
-                <a href="#" onclick="window.location.reload();" class="menu-link" target="_self">
-                    <div onclick="window.parent.postMessage({type: 'streamlit:sendMessage', data: '4'}, '*')" class="menu-tile">
+                <a class="menu-link" onclick="window.parent.postMessage({type: 'streamlit:sendMessage', data: '4'}, '*')" href="#">
+                    <div class="menu-tile">
                         <div class="menu-icon">📋</div>
                         View Questionnaire
                     </div>
