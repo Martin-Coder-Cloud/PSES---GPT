@@ -31,7 +31,7 @@ def main():
     # === Show main menu only if no selection has been made ===
     if "run_menu" not in st.session_state:
 
-        # ✅ Title + Subtitle centered and constrained
+        # ✅ Title + Subtitle
         st.markdown("""
             <div style='text-align: center; max-width: 1100px; margin: auto;'>
                 <h1 style='margin-top: 10px; font-size: 26px;'>
@@ -43,106 +43,48 @@ def main():
             </div>
         """, unsafe_allow_html=True)
 
-        # === Button CSS ===
+        # ✅ Inject button tile styles
         st.markdown("""
             <style>
-                .menu-wrapper {
-                    display: flex;
-                    justify-content: center;
-                    gap: 30px;
-                    flex-wrap: wrap;
-                    margin-top: 20px;
-                    margin-bottom: 60px;
-                }
-                .menu-tile {
-                    width: 240px;
+                div.stButton > button {
                     height: 240px;
-                    background-color: #f8f9fa;
-                    border: 2px solid #0d6efd;
+                    width: 240px;
                     border-radius: 20px;
-                    text-align: center;
+                    border: 2px solid #0d6efd;
+                    background-color: #f8f9fa;
+                    color: #0d6efd;
                     font-size: 18px;
                     font-weight: 600;
-                    color: #0d6efd;
-                    display: flex;
-                    flex-direction: column;
-                    align-items: center;
-                    justify-content: center;
-                    transition: all 0.2s ease;
-                    cursor: pointer;
+                    transition: all 0.3s ease;
                 }
-                .menu-tile:hover {
+                div.stButton > button:hover {
                     background-color: #0d6efd;
                     color: white;
                     box-shadow: 0 4px 10px rgba(0,0,0,0.1);
                 }
-                .menu-icon {
-                    font-size: 60px;
-                    margin-bottom: 10px;
-                }
-                .menu-link {
-                    text-decoration: none;
-                }
-                .menu-link:hover {
-                    text-decoration: none;
-                }
             </style>
         """, unsafe_allow_html=True)
 
-        # === Menu Buttons in Tile Layout ===
-        st.markdown("""
-            <div class="menu-wrapper">
-                <a class="menu-link" onclick="window.parent.postMessage({type: 'streamlit:sendMessage', data: '1'}, '*')" href="#">
-                    <div class="menu-tile">
-                        <div class="menu-icon">🔍</div>
-                        Search by Question
-                    </div>
-                </a>
-                <a class="menu-link" onclick="window.parent.postMessage({type: 'streamlit:sendMessage', data: '2'}, '*')" href="#">
-                    <div class="menu-tile">
-                        <div class="menu-icon">🧩</div>
-                        Search by Theme
-                    </div>
-                </a>
-                <a class="menu-link" onclick="window.parent.postMessage({type: 'streamlit:sendMessage', data: '3'}, '*')" href="#">
-                    <div class="menu-tile">
-                        <div class="menu-icon">📊</div>
-                        Analyze Data
-                    </div>
-                </a>
-                <a class="menu-link" onclick="window.parent.postMessage({type: 'streamlit:sendMessage', data: '4'}, '*')" href="#">
-                    <div class="menu-tile">
-                        <div class="menu-icon">📋</div>
-                        View Questionnaire
-                    </div>
-                </a>
-            </div>
-        """, unsafe_allow_html=True)
+        # ✅ Render 4 button tiles in columns
+        col1, col2, col3, col4 = st.columns(4)
+        with col1:
+            if st.button("🔍\nSearch by Question"):
+                st.session_state.run_menu = "1"
+                st.experimental_rerun()
+        with col2:
+            if st.button("🧩\nSearch by Theme"):
+                st.session_state.run_menu = "2"
+                st.experimental_rerun()
+        with col3:
+            if st.button("📊\nAnalyze Data"):
+                st.session_state.run_menu = "3"
+                st.experimental_rerun()
+        with col4:
+            if st.button("📋\nView Questionnaire"):
+                st.session_state.run_menu = "4"
+                st.experimental_rerun()
 
-    # === JS routing fallback with session state update ===
-    js = """
-    <script>
-        const url = new URL(window.location.href);
-        window.addEventListener("message", (event) => {
-            if (["1", "2", "3", "4"].includes(event.data)) {
-                url.searchParams.set("menu", event.data);
-                window.location.href = url.toString();
-            }
-        });
-    </script>
-    """
-    st.markdown(js, unsafe_allow_html=True)
-
-
-    # === Routing based on selection ===
-    if "run_menu" in st.session_state:
-        selection = st.session_state.run_menu
-    else:
-        params = st.experimental_get_query_params()
-        selection = params.get("menu", [None])[0]
-        if selection:
-            st.session_state.run_menu = selection
-
+    # === Routing logic
     if "run_menu" in st.session_state:
         if st.session_state.run_menu == "1":
             from menu1.main import run_menu1
