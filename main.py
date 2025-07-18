@@ -27,11 +27,11 @@ def main():
         </style>
     """, unsafe_allow_html=True)
 
-    # === Render banner using Streamlit's image loader (750px wide, centered)
-    with st.container():
-        st.markdown('<div class="centered-banner">', unsafe_allow_html=True)
-        st.image("assets/ANC006-PSES_banner825x200_EN.png", width=750)
-        st.markdown('</div>', unsafe_allow_html=True)
+    # === Render banner using Streamlit's image loader (centered with columns)
+    left, center, right = st.columns([1, 3, 1])
+with center:
+    st.image("assets/ANC006-PSES_banner825x200_EN.png", width=750)
+
 
     # === Show main menu only if no selection has been made ===
     if "run_menu" not in st.session_state:
