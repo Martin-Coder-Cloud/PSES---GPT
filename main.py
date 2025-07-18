@@ -22,9 +22,11 @@ def main():
     """, unsafe_allow_html=True)
 
     # ✅ Center banner using st.image + layout with columns
-    left, center, right = st.columns([1, 6, 1])
-    with center:
-        st.image("assets/ANC006-PSES_banner825x200_EN.png", width=960)
+    st.markdown("""
+        <div style='text-align: center; max-width: 1100px; margin: auto; margin-top: 30px; margin-bottom: 20px;'>
+            <img src='/static/PSES_Banner_No-Text (2).png' width='960'>
+        </div>
+    """, unsafe_allow_html=True)
 
 
 
