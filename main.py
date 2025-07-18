@@ -119,30 +119,20 @@ def main():
             </div>
         """, unsafe_allow_html=True)
 
-        # === JS routing fallback ===
-        js = """
-        <script>
+    # === JS routing fallback with session state update ===
+    js = """
+    <script>
+        const url = new URL(window.location.href);
         window.addEventListener("message", (event) => {
-            if (event.data === "1") {
-                window.parent.postMessage({type: "streamlit:setComponentValue", value: 1}, "*");
-                window.location.href = window.location.href + "?menu=1";
-            }
-            if (event.data === "2") {
-                window.parent.postMessage({type: "streamlit:setComponentValue", value: 2}, "*");
-                window.location.href = window.location.href + "?menu=2";
-            }
-            if (event.data === "3") {
-                window.parent.postMessage({type: "streamlit:setComponentValue", value: 3}, "*");
-                window.location.href = window.location.href + "?menu=3";
-            }
-            if (event.data === "4") {
-                window.parent.postMessage({type: "streamlit:setComponentValue", value: 4}, "*");
-                window.location.href = window.location.href + "?menu=4";
+            if (["1", "2", "3", "4"].includes(event.data)) {
+                url.searchParams.set("menu", event.data);
+                window.location.href = url.toString();
             }
         });
-        </script>
-        """
-        st.markdown(js, unsafe_allow_html=True)
+    </script>
+    """
+    st.markdown(js, unsafe_allow_html=True)
+
 
     # === Routing based on selection ===
     if "run_menu" in st.session_state:
