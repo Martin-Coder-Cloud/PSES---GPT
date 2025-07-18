@@ -21,10 +21,12 @@ def main():
         </style>
     """, unsafe_allow_html=True)
 
-    # ✅ Centered banner with st.image inside centered block
-    st.markdown("<div style='text-align: center; max-width: 1100px; margin: auto; margin-top: 30px; margin-bottom: 20px;'>", unsafe_allow_html=True)
-    st.image("assets/ANC006-PSES_banner825x200_EN.png", width=960)
-    st.markdown("</div>", unsafe_allow_html=True)
+    # ✅ Centered banner using same technique as title & subtitle
+    st.markdown("""
+        <div style='text-align: center; max-width: 1100px; margin: auto; margin-top: 30px; margin-bottom: 20px;'>
+            <img src='assets/ANC006-PSES_banner825x200_EN.png' width='960'>
+        </div>
+    """, unsafe_allow_html=True)
 
 
     # === Show main menu only if no selection has been made ===
