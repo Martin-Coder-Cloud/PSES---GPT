@@ -16,15 +16,20 @@ def main():
         <style>
             .block-container {
                 padding-top: 0px !important;
-                margin-top: -30px !important;
+                margin-top: 0px !important;
             }
         </style>
     """, unsafe_allow_html=True)
 
-    # ✅ Banner centered using columns
+    # ✅ Banner perfectly centered using HTML flex inside center column
     left, center, right = st.columns([1, 3, 1])
     with center:
-        st.image("assets/ANC006-PSES_banner825x200_EN.png", width=750)
+        st.markdown(
+            "<div style='display:flex; justify-content:center; margin-top:10px; margin-bottom:20px;'>"
+            "<img src='assets/ANC006-PSES_banner825x200_EN.png' width='750'>"
+            "</div>",
+            unsafe_allow_html=True
+        )
 
     # === Show main menu only if no selection has been made ===
     if "run_menu" not in st.session_state:
