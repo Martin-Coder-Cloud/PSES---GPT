@@ -18,20 +18,13 @@ def main():
                 padding-top: 0px !important;
                 margin-top: -30px !important;
             }
-            .centered-banner {
-                display: flex;
-                justify-content: center;
-                align-items: center;
-                margin-bottom: 20px;
-            }
         </style>
     """, unsafe_allow_html=True)
 
-    # === Render banner using Streamlit's image loader (centered with columns)
+    # ✅ Banner centered using columns
     left, center, right = st.columns([1, 3, 1])
-with center:
-    st.image("assets/ANC006-PSES_banner825x200_EN.png", width=750)
-
+    with center:
+        st.image("assets/ANC006-PSES_banner825x200_EN.png", width=750)
 
     # === Show main menu only if no selection has been made ===
     if "run_menu" not in st.session_state:
