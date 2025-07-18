@@ -22,11 +22,10 @@ def main():
     """, unsafe_allow_html=True)
 
     # ✅ Center banner using st.image + layout with columns
-    st.markdown("""
-        <div style='text-align: center; max-width: 1100px; margin: auto; margin-top: 30px; margin-bottom: 20px;'>
-            <img src='/static/PSES_Banner.png' width='960'>
-        </div>
-    """, unsafe_allow_html=True)
+    # ✅ Reliable banner centering for Streamlit Cloud
+    st.markdown("<div style='text-align: center;'>", unsafe_allow_html=True)
+    st.image("PSES_Banner.png", width=960)
+    st.markdown("</div>", unsafe_allow_html=True)
 
 
 
