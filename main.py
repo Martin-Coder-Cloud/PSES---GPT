@@ -11,17 +11,20 @@ def show_return_then_run(run_func):
         st.experimental_rerun()
 
 def main():
-    # === Remove top margin above banner ===
+    # === Remove top margin above banner and tighten spacing ===
     st.markdown("""
-        <style>
-            .block-container {
-                padding-top: 0rem;
-            }
-        </style>
+    <style>
+        .block-container {
+            padding-top: 0px !important;
+            margin-top: -10px !important;
+        }
+    </style>
     """, unsafe_allow_html=True)
 
-    # === Always display banner (reduced size and centered) ===
-    st.image("assets/ANC006-PSES_banner825x200_EN.png", width=600)
+# === Always display banner (750px wide, centered, proper ratio) ===
+with st.container():
+    st.image("assets/ANC006-PSES_banner825x200_EN.png", width=750)
+
 
     # === Show main menu only if no selection has been made ===
     if "run_menu" not in st.session_state:
