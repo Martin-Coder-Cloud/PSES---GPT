@@ -11,7 +11,7 @@ def show_return_then_run(run_func):
         st.experimental_rerun()
 
 def main():
-    # === Global layout & padding fix ===
+    # === Layout reset ===
     st.markdown("""
         <style>
             .block-container {
@@ -21,24 +21,21 @@ def main():
         </style>
     """, unsafe_allow_html=True)
 
-    # ✅ Banner: center-aligned using st.image() and flex container
-    st.markdown(
-        "<div style='display: flex; justify-content: center; margin-top: 30px; margin-bottom: 20px;'>",
-        unsafe_allow_html=True
-    )
-    st.image("assets/ANC006-PSES_banner825x200_EN.png", width=750)
-    st.markdown("</div>", unsafe_allow_html=True)
+    # ✅ Centered banner using st.columns() with wide middle column
+    left, center, right = st.columns([1, 5, 1])
+    with center:
+        st.image("assets/ANC006-PSES_banner825x200_EN.png", width=960)
 
     # === Show main menu only if no selection has been made ===
     if "run_menu" not in st.session_state:
 
-        # ✅ Title and Subtitle: centered block, no column constraint
+        # ✅ Title + Subtitle centered and constrained
         st.markdown("""
-            <div style='text-align: center; max-width: 1000px; margin: auto;'>
-                <h1 style='margin-top: 10px; font-size: 28px;'>
+            <div style='text-align: center; max-width: 1100px; margin: auto;'>
+                <h1 style='margin-top: 10px; font-size: 26px;'>
                     Welcome to the AI Explorer of the Public Service Employee Survey (PSES) results.
                 </h1>
-                <h3 style='font-weight: normal; margin-bottom: 25px; font-size: 20px;'>
+                <h3 style='font-weight: normal; margin-bottom: 25px; font-size: 18px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;'>
                     This AI app provides Public Service-wide survey results and analysis on the latest iterations of the survey (2019, 2020, 2022, 2024).
                 </h3>
             </div>
@@ -117,7 +114,7 @@ def main():
             </div>
         """, unsafe_allow_html=True)
 
-        # === JavaScript fallback for menu routing ===
+        # === JS routing fallback ===
         js = """
         <script>
         window.addEventListener("message", (event) => {
