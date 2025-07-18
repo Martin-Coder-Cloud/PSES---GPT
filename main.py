@@ -30,7 +30,7 @@ def main():
 # === Render banner using Streamlit's image loader ===
     with st.container():
     st.markdown('<div class="centered-banner">', unsafe_allow_html=True)
-    st.image("assets/ANC006-PSES_banner825x200_EN.png", width=750)
+        st.image("assets/ANC006-PSES_banner825x200_EN.png", width=750)
     st.markdown('</div>', unsafe_allow_html=True)
 
 # === Centered, non-stretched banner at 750px width ===
