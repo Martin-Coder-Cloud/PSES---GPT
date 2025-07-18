@@ -11,42 +11,38 @@ def show_return_then_run(run_func):
         st.experimental_rerun()
 
 def main():
-    # === Layout and spacing fixes ===
+    # === Global layout & padding fix ===
     st.markdown("""
         <style>
             .block-container {
                 padding-top: 0px !important;
                 margin-top: 0px !important;
             }
-            .center-inside {
-                text-align: center;
-                margin-top: 30px;
-                margin-bottom: 20px;
-            }
         </style>
     """, unsafe_allow_html=True)
 
-    # === Banner (centered, lowered) ===
-    left, center, right = st.columns([1, 4, 1])
-    with center:
-        st.markdown("<div class='center-inside'>", unsafe_allow_html=True)
-        st.image("assets/ANC006-PSES_banner825x200_EN.png", width=750)
-        st.markdown("</div>", unsafe_allow_html=True)
+    # ✅ Banner: center-aligned using st.image() and flex container
+    st.markdown(
+        "<div style='display: flex; justify-content: center; margin-top: 30px; margin-bottom: 20px;'>",
+        unsafe_allow_html=True
+    )
+    st.image("assets/ANC006-PSES_banner825x200_EN.png", width=750)
+    st.markdown("</div>", unsafe_allow_html=True)
 
     # === Show main menu only if no selection has been made ===
     if "run_menu" not in st.session_state:
 
-        # === Title & Subtitle (wider column) ===
-        left2, center2, right2 = st.columns([1, 4, 1])
-        with center2:
-            st.markdown("""
-                <h1 style='text-align: center; margin-top: 10px; font-size: 28px;'>
+        # ✅ Title and Subtitle: centered block, no column constraint
+        st.markdown("""
+            <div style='text-align: center; max-width: 1000px; margin: auto;'>
+                <h1 style='margin-top: 10px; font-size: 28px;'>
                     Welcome to the AI Explorer of the Public Service Employee Survey (PSES) results.
                 </h1>
-                <h3 style='text-align: center; font-weight: normal; margin-bottom: 25px; font-size: 20px; max-width: 1000px;'>
+                <h3 style='font-weight: normal; margin-bottom: 25px; font-size: 20px;'>
                     This AI app provides Public Service-wide survey results and analysis on the latest iterations of the survey (2019, 2020, 2022, 2024).
                 </h3>
-            """, unsafe_allow_html=True)
+            </div>
+        """, unsafe_allow_html=True)
 
         # === Button CSS ===
         st.markdown("""
