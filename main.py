@@ -21,22 +21,14 @@ def main():
         </style>
     """, unsafe_allow_html=True)
 
-   # ✅ True full-page centering for banner with st.image
+   # ✅ Final fix: True center alignment that matches tile layout
     st.markdown("""
-        <style>
-            .centered-image img {
-                display: block;
-                margin-left: auto;
-                margin-right: auto;
-            }
-        </style>
+        <div style='text-align: center; max-width: 1100px; margin: auto; margin-top: 30px; margin-bottom: 20px;'>
     """, unsafe_allow_html=True)
 
-    st.markdown("<div class='centered-image'>", unsafe_allow_html=True)
     st.image("PSES_Banner.png", width=960)
+
     st.markdown("</div>", unsafe_allow_html=True)
-
-
 
 
     # === Show main menu only if no selection has been made ===
