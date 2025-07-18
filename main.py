@@ -24,7 +24,10 @@ def main():
     # ✅ Centered banner using st.columns() with wide middle column
     left, center, right = st.columns([1, 5, 1])
     with center:
+        st.markdown("<div style='text-align: center;'>", unsafe_allow_html=True)
         st.image("assets/ANC006-PSES_banner825x200_EN.png", width=960)
+        st.markdown("</div>", unsafe_allow_html=True)
+
 
     # === Show main menu only if no selection has been made ===
     if "run_menu" not in st.session_state:
