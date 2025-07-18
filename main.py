@@ -21,13 +21,12 @@ def main():
         </style>
     """, unsafe_allow_html=True)
 
-    # ✅ Centered banner using st.columns() with wide middle column
-    left, center, right = st.columns([1, 5, 1])
-    with center:
-        st.markdown("<div style='text-align: center;'>", unsafe_allow_html=True)
-        st.image("assets/ANC006-PSES_banner825x200_EN.png", width=960)
-        st.markdown("</div>", unsafe_allow_html=True)
-
+    # ✅ Perfectly centered banner using full-width HTML block
+    st.markdown("""
+        <div style='display: flex; justify-content: center; margin-top: 30px; margin-bottom: 20px;'>
+            <img src='assets/ANC006-PSES_banner825x200_EN.png' width='960'>
+        </div>
+    """, unsafe_allow_html=True)
 
     # === Show main menu only if no selection has been made ===
     if "run_menu" not in st.session_state:
