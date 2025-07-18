@@ -11,14 +11,14 @@ def show_return_then_run(run_func):
         st.experimental_rerun()
 
 def main():
-    # === Remove top margin and center banner ===
+   # === Fix banner layout: tight margin, centered image ===
     st.markdown("""
     <style>
         .block-container {
-            padding-top: 0 !important;
+            padding-top: 0px !important;
             margin-top: -30px !important;
         }
-        .banner-container {
+        .centered-banner {
             display: flex;
             justify-content: center;
             align-items: center;
@@ -26,6 +26,12 @@ def main():
         }
     </style>
     """, unsafe_allow_html=True)
+
+# === Render banner using Streamlit's image loader ===
+    with st.container():
+    st.markdown('<div class="centered-banner">', unsafe_allow_html=True)
+    st.image("assets/ANC006-PSES_banner825x200_EN.png", width=750)
+    st.markdown('</div>', unsafe_allow_html=True)
 
 # === Centered, non-stretched banner at 750px width ===
     st.markdown("""
