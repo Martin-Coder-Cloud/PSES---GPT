@@ -11,42 +11,44 @@ def show_return_then_run(run_func):
         st.experimental_rerun()
 
 def main():
-   # === Remove padding and ensure space above ===
+    # === Layout and spacing fixes ===
     st.markdown("""
-       <style>
-        .block-container {
-            padding-top: 0px !important;
-            margin-top: 0px !important;
-        }
-        .center-inside {
-            display: flex;
-            justify-content: center;
-        }
-    </style>
+        <style>
+            .block-container {
+                padding-top: 0px !important;
+                margin-top: 0px !important;
+            }
+            .center-inside {
+                text-align: center;
+                margin-top: 30px;
+                margin-bottom: 20px;
+            }
+        </style>
     """, unsafe_allow_html=True)
 
-# ✅ Use Streamlit's image loader to avoid file resolution issues
-left, center, right = st.columns([1, 3, 1])
-with center:
-    st.markdown("<div class='center-inside'>", unsafe_allow_html=True)
-    st.image("assets/ANC006-PSES_banner825x200_EN.png", width=750)
-    st.markdown("</div>", unsafe_allow_html=True)
-
+    # === Banner (centered, lowered) ===
+    left, center, right = st.columns([1, 4, 1])
+    with center:
+        st.markdown("<div class='center-inside'>", unsafe_allow_html=True)
+        st.image("assets/ANC006-PSES_banner825x200_EN.png", width=750)
+        st.markdown("</div>", unsafe_allow_html=True)
 
     # === Show main menu only if no selection has been made ===
     if "run_menu" not in st.session_state:
 
-        # === Title & Subtitle ===
-        st.markdown("""
-            <h1 style='text-align: center; margin-top: 10px; font-size: 28px;'>
-                Welcome to the AI Explorer of the Public Service Employee Survey (PSES) results.
-            </h1>
-            <h3 style='text-align: center; font-weight: normal; margin-bottom: 25px; font-size: 20px;'>
-                This AI app provides Public Service-wide survey results and analysis on the latest iterations of the survey (2019, 2020, 2022, 2024).
-            </h3>
-        """, unsafe_allow_html=True)
+        # === Title & Subtitle (wider column) ===
+        left2, center2, right2 = st.columns([1, 4, 1])
+        with center2:
+            st.markdown("""
+                <h1 style='text-align: center; margin-top: 10px; font-size: 28px;'>
+                    Welcome to the AI Explorer of the Public Service Employee Survey (PSES) results.
+                </h1>
+                <h3 style='text-align: center; font-weight: normal; margin-bottom: 25px; font-size: 20px; max-width: 1000px;'>
+                    This AI app provides Public Service-wide survey results and analysis on the latest iterations of the survey (2019, 2020, 2022, 2024).
+                </h3>
+            """, unsafe_allow_html=True)
 
-        # === Button CSS (tile style with icon on top) ===
+        # === Button CSS ===
         st.markdown("""
             <style>
                 .menu-wrapper {
@@ -119,7 +121,7 @@ with center:
             </div>
         """, unsafe_allow_html=True)
 
-        # === Capture tile clicks using JavaScript message (fallback) ===
+        # === JavaScript fallback for menu routing ===
         js = """
         <script>
         window.addEventListener("message", (event) => {
