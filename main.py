@@ -21,12 +21,21 @@ def main():
         </style>
     """, unsafe_allow_html=True)
 
-    # ✅ Center banner using st.image + layout with columns
-    # ✅ Reliable banner centering for Streamlit Cloud
-    # ✅ Banner centered using columns (works with Streamlit Cloud)
-    left, center, right = st.columns([1, 5, 1])
-    with center:
-        st.image("PSES_Banner.png", width=960)
+   # ✅ True full-page centering for banner with st.image
+    st.markdown("""
+        <style>
+            .centered-image img {
+                display: block;
+                margin-left: auto;
+                margin-right: auto;
+            }
+        </style>
+    """, unsafe_allow_html=True)
+
+st.markdown("<div class='centered-image'>", unsafe_allow_html=True)
+st.image("PSES_Banner.png", width=960)
+st.markdown("</div>", unsafe_allow_html=True)
+
 
 
 
