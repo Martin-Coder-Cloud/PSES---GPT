@@ -21,17 +21,14 @@ def main():
         </style>
     """, unsafe_allow_html=True)
 
-   # ✅ Final fix: True center alignment that matches tile layout
     st.markdown("""
         <div style='text-align: center; max-width: 1100px; margin: auto; margin-top: 30px; margin-bottom: 20px;'>
+            <img src='https://github.com/Martin-Coder-Cloud/PSES---GPT/blob/06e8805a54c2c28ed7e1528676e2dc5f750cca62/PSES%20email%20banner.png?raw=true' width='960'>
+        </div>
     """, unsafe_allow_html=True)
+   
 
-    st.image("PSES_Banner.png", width=960)
-
-    st.markdown("</div>", unsafe_allow_html=True)
-
-
-    # === Show main menu only if no selection has been made ===
+ # === Show main menu only if no selection has been made ===
     if "run_menu" not in st.session_state:
 
         # ✅ Title + Subtitle centered and constrained
