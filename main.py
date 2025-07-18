@@ -2,7 +2,7 @@ import streamlit as st
 
 st.set_page_config(layout="wide")
 
-# ✅ Helper function: show menu and return button below
+# ✅ Helper: show menu and return button
 def show_return_then_run(run_func):
     run_func()
     st.markdown("---")
@@ -11,7 +11,7 @@ def show_return_then_run(run_func):
         st.experimental_rerun()
 
 def main():
-    # === Layout reset ===
+    # === Layout padding reset
     st.markdown("""
         <style>
             .block-container {
@@ -21,14 +21,14 @@ def main():
         </style>
     """, unsafe_allow_html=True)
 
-    # ✅ Centered banner
+    # ✅ Centered banner from GitHub
     st.markdown("""
         <div style='text-align: center; max-width: 1100px; margin: auto; margin-top: 30px; margin-bottom: 20px;'>
             <img src='https://github.com/Martin-Coder-Cloud/PSES---GPT/blob/06e8805a54c2c28ed7e1528676e2dc5f750cca62/PSES%20email%20banner.png?raw=true' width='960'>
         </div>
     """, unsafe_allow_html=True)
 
-    # === Show main menu only if no selection has been made ===
+    # === Show menu if not yet selected
     if "run_menu" not in st.session_state:
 
         # ✅ Title + Subtitle
@@ -43,48 +43,89 @@ def main():
             </div>
         """, unsafe_allow_html=True)
 
-        # ✅ Inject button tile styles
+        # ✅ Style for menu tiles
         st.markdown("""
             <style>
-                div.stButton > button {
-                    height: 240px;
+                .menu-wrapper {
+                    display: flex;
+                    justify-content: center;
+                    gap: 30px;
+                    flex-wrap: wrap;
+                    margin-top: 20px;
+                    margin-bottom: 60px;
+                }
+                .menu-tile {
                     width: 240px;
-                    border-radius: 20px;
-                    border: 2px solid #0d6efd;
+                    height: 240px;
                     background-color: #f8f9fa;
-                    color: #0d6efd;
+                    border: 2px solid #0d6efd;
+                    border-radius: 20px;
+                    text-align: center;
                     font-size: 18px;
                     font-weight: 600;
-                    transition: all 0.3s ease;
+                    color: #0d6efd;
+                    display: flex;
+                    flex-direction: column;
+                    align-items: center;
+                    justify-content: center;
+                    transition: all 0.2s ease;
+                    cursor: pointer;
                 }
-                div.stButton > button:hover {
+                .menu-tile:hover {
                     background-color: #0d6efd;
                     color: white;
                     box-shadow: 0 4px 10px rgba(0,0,0,0.1);
                 }
+                .menu-icon {
+                    font-size: 60px;
+                    margin-bottom: 10px;
+                }
+                .menu-link {
+                    text-decoration: none;
+                }
             </style>
         """, unsafe_allow_html=True)
 
-        # ✅ Render 4 button tiles in columns
-        col1, col2, col3, col4 = st.columns(4)
-        with col1:
-            if st.button("🔍\nSearch by Question"):
-                st.session_state.run_menu = "1"
-                st.experimental_rerun()
-        with col2:
-            if st.button("🧩\nSearch by Theme"):
-                st.session_state.run_menu = "2"
-                st.experimental_rerun()
-        with col3:
-            if st.button("📊\nAnalyze Data"):
-                st.session_state.run_menu = "3"
-                st.experimental_rerun()
-        with col4:
-            if st.button("📋\nView Questionnaire"):
-                st.session_state.run_menu = "4"
-                st.experimental_rerun()
+        # ✅ Render menu buttons as styled tiles
+        st.markdown("""
+            <div class="menu-wrapper">
+                <a class="menu-link" href="?menu=1">
+                    <div class="menu-tile">
+                        <div class="menu-icon">🔍</div>
+                        Search by Question
+                    </div>
+                </a>
+                <a class="menu-link" href="?menu=2">
+                    <div class="menu-tile">
+                        <div class="menu-icon">🧩</div>
+                        Search by Theme
+                    </div>
+                </a>
+                <a class="menu-link" href="?menu=3">
+                    <div class="menu-tile">
+                        <div class="menu-icon">📊</div>
+                        Analyze Data
+                    </div>
+                </a>
+                <a class="menu-link" href="?menu=4">
+                    <div class="menu-tile">
+                        <div class="menu-icon">📋</div>
+                        View Questionnaire
+                    </div>
+                </a>
+            </div>
+        """, unsafe_allow_html=True)
 
-    # === Routing logic
+    # ✅ Read menu selection from URL
+    if "run_menu" in st.session_state:
+        selection = st.session_state.run_menu
+    else:
+        params = st.experimental_get_query_params()
+        selection = params.get("menu", [None])[0]
+        if selection:
+            st.session_state.run_menu = selection
+
+    # ✅ Run menu page
     if "run_menu" in st.session_state:
         if st.session_state.run_menu == "1":
             from menu1.main import run_menu1
