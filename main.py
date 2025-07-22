@@ -12,28 +12,41 @@ def show_return_then_run(run_func):
         st.experimental_rerun()
 
 def main():
-    # ✅ Set full-height background with white text and button styling
+    # === Layout + background image with white text
     st.markdown(
         """
         <style>
         .block-container {
-            padding-top: 4rem !important;
-            padding-left: 3rem !important;
-            margin: 0 !important;
+            padding-top: 80px !important;
+            padding-left: 60px !important;
             background-image: url('https://github.com/Martin-Coder-Cloud/PSES---GPT/blob/main/assets/Teams%20Background%20Tablet_EN.png?raw=true');
             background-size: cover;
-            background-repeat: no-repeat;
             background-position: center;
+            background-repeat: no-repeat;
             min-height: 100vh;
             color: white !important;
         }
         h1, h3, p, a {
             color: white !important;
         }
+        .main-title {
+            font-size: 32px;
+            font-weight: 700;
+            margin-bottom: 10px;
+            max-width: 800px;
+            line-height: 1.3;
+        }
+        .subtitle {
+            font-size: 20px;
+            font-weight: 400;
+            margin-bottom: 35px;
+            max-width: 850px;
+            word-wrap: break-word;
+        }
         .menu-option {
             font-size: 20px;
             font-weight: bold;
-            margin: 12px 0;
+            margin: 14px 0;
             padding: 12px 22px;
             background-color: rgba(255,255,255,0.08);
             border-radius: 12px;
@@ -49,7 +62,7 @@ def main():
         unsafe_allow_html=True
     )
 
-    # ✅ Routing logic (handles query params)
+    # === Handle menu selection from query
     if "run_menu" in st.session_state:
         selection = st.session_state.run_menu
     else:
@@ -58,7 +71,7 @@ def main():
         if selection:
             st.session_state.run_menu = selection
 
-    # ✅ If a menu is selected, run that sub-app
+    # === Load menu page if selected
     if "run_menu" in st.session_state:
         if st.session_state.run_menu == "1":
             from menu1.main import run_menu1
@@ -72,12 +85,10 @@ def main():
             show_return_then_run(lambda: st.info("📋 View Questionnaire is under construction."))
         return
 
-    # ✅ Left-aligned main menu content
-    st.markdown("### Welcome to the AI Explorer of the Public Service Employee Survey (PSES)")
-    st.markdown("#### This AI app provides Public Service-wide survey results and analysis from 2019, 2020, 2022, and 2024.")
-    st.markdown("")
+    # === Render title, subtitle and menu buttons
+    st.markdown("<div class='main-title'>Welcome to the AI Explorer of the Public Service Employee Survey (PSES)</div>", unsafe_allow_html=True)
+    st.markdown("<div class='subtitle'>This AI app provides Public Service-wide survey results and analysis from 2019, 2020, 2022, and 2024.</div>", unsafe_allow_html=True)
 
-    # ✅ Vertical styled menu links
     for label, icon, menu_id in [
         ("Search by Question", "🔍", "1"),
         ("Search by Theme", "🧩", "2"),
