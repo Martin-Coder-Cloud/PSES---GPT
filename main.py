@@ -12,24 +12,45 @@ def show_return_then_run(run_func):
         st.experimental_rerun()
 
 def main():
-    # === Layout padding reset
+    # === Background image and layout reset
     st.markdown("""
         <style>
             .block-container {
                 padding-top: 0px !important;
                 margin-top: 0px !important;
             }
+            body {
+                background-image: url('https://github.com/Martin-Coder-Cloud/PSES---GPT/blob/main/assets/Teams%20Background%20Tablet_EN.png?raw=true');
+                background-size: cover;
+                background-position: center;
+                background-attachment: fixed;
+            }
+            .main-content {
+                color: white;
+                text-align: left;
+                margin-left: 60px;
+                max-width: 600px;
+                padding-top: 30px;
+            }
+            .menu-option {
+                font-size: 20px;
+                margin: 15px 0;
+                display: flex;
+                align-items: center;
+                gap: 10px;
+            }
+            .menu-option a {
+                color: white;
+                text-decoration: none;
+                font-weight: bold;
+            }
+            .menu-option a:hover {
+                text-decoration: underline;
+            }
         </style>
     """, unsafe_allow_html=True)
 
-    # ✅ Centered banner from GitHub
-    st.markdown("""
-        <div style='text-align: center; max-width: 1100px; margin: auto; margin-top: 30px; margin-bottom: 20px;'>
-            <img src='https://github.com/Martin-Coder-Cloud/PSES---GPT/blob/06e8805a54c2c28ed7e1528676e2dc5f750cca62/PSES%20email%20banner.png?raw=true' width='960'>
-        </div>
-    """, unsafe_allow_html=True)
-
-    # ✅ Read menu selection from URL
+    # ✅ Check if a menu has been selected
     if "run_menu" in st.session_state:
         selection = st.session_state.run_menu
     else:
@@ -38,7 +59,7 @@ def main():
         if selection:
             st.session_state.run_menu = selection
 
-    # ✅ Run menu page only (prevents main page showing below)
+    # ✅ Run selected menu page
     if "run_menu" in st.session_state:
         if st.session_state.run_menu == "1":
             from menu1.main import run_menu1
@@ -50,93 +71,18 @@ def main():
             show_return_then_run(lambda: st.info("📊 Analyze Data is under construction."))
         elif st.session_state.run_menu == "4":
             show_return_then_run(lambda: st.info("📋 View Questionnaire is under construction."))
-        return  # ✅ Do not render main menu
+        return  # ✅ Prevent rendering main menu underneath
 
-    # === Show menu if not yet selected
+    # ✅ Main Menu Front Page (ONLY this section is affected)
     st.markdown("""
-        <div style='text-align: center; max-width: 1100px; margin: auto;'>
-            <h1 style='margin-top: 10px; font-size: 26px;'>
-                Welcome to the AI Explorer of the Public Service Employee Survey (PSES) results.
-            </h1>
-            <h3 style='font-weight: normal; margin-bottom: 25px; font-size: 18px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;'>
-                This AI app provides Public Service-wide survey results and analysis on the latest iterations of the survey (2019, 2020, 2022, 2024).
-            </h3>
-        </div>
-    """, unsafe_allow_html=True)
+        <div class='main-content'>
+            <h1>Welcome to the AI Explorer of the Public Service Employee Survey (PSES)</h1>
+            <h3>This AI app provides Public Service-wide survey results and analysis from 2019, 2020, 2022, and 2024.</h3>
 
-    # ✅ Style for menu tiles
-    st.markdown("""
-        <style>
-            .menu-wrapper {
-                display: flex;
-                justify-content: center;
-                gap: 30px;
-                flex-wrap: wrap;
-                margin-top: 20px;
-                margin-bottom: 60px;
-            }
-            .menu-tile {
-                width: 240px;
-                height: 240px;
-                background-color: #f8f9fa;
-                border: 2px solid #0d6efd;
-                border-radius: 20px;
-                text-align: center;
-                font-size: 18px;
-                font-weight: 600;
-                color: #0d6efd;
-                display: flex;
-                flex-direction: column;
-                align-items: center;
-                justify-content: center;
-                transition: all 0.2s ease;
-                cursor: pointer;
-            }
-            .menu-tile:hover {
-                background-color: #0d6efd;
-                color: white;
-                box-shadow: 0 4px 10px rgba(0,0,0,0.1);
-            }
-            .menu-icon {
-                font-size: 60px;
-                margin-bottom: 10px;
-            }
-            .menu-link {
-                text-decoration: none !important;
-            }
-            .menu-link:hover {
-                text-decoration: none !important;
-            }
-        </style>
-    """, unsafe_allow_html=True)
-
-    # ✅ Render menu buttons as styled tiles
-    st.markdown("""
-        <div class="menu-wrapper">
-            <a class="menu-link" href="?menu=1">
-                <div class="menu-tile">
-                    <div class="menu-icon">🔍</div>
-                    Search by Question
-                </div>
-            </a>
-            <a class="menu-link" href="?menu=2">
-                <div class="menu-tile">
-                    <div class="menu-icon">🧩</div>
-                    Search by Theme
-                </div>
-            </a>
-            <a class="menu-link" href="?menu=3">
-                <div class="menu-tile">
-                    <div class="menu-icon">📊</div>
-                    Analyze Data
-                </div>
-            </a>
-            <a class="menu-link" href="?menu=4">
-                <div class="menu-tile">
-                    <div class="menu-icon">📋</div>
-                    View Questionnaire
-                </div>
-            </a>
+            <div class='menu-option'>🔍 <a href="?menu=1">Search by Question</a></div>
+            <div class='menu-option'>🧩 <a href="?menu=2">Search by Theme</a></div>
+            <div class='menu-option'>📊 <a href="?menu=3">Analyze Data</a></div>
+            <div class='menu-option'>📋 <a href="?menu=4">View Questionnaire</a></div>
         </div>
     """, unsafe_allow_html=True)
 
