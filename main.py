@@ -8,50 +8,32 @@ def show_return_then_run(run_func):
     st.markdown("---")
     if st.button("🔙 Return to Main Menu"):
         st.session_state.run_menu = None
-        st.experimental_set_query_params()  # ✅ Clear URL param
+        st.experimental_set_query_params()
         st.experimental_rerun()
 
 def main():
-    # === Layout and background reset ===
-    st.markdown("""
+    # === Background image and white text styling
+    st.markdown(
+        """
         <style>
             .block-container {
-                padding-top: 0px !important;
-                margin-top: 0px !important;
-            }
-            body {
+                padding-top: 0rem;
+                margin-top: 0rem;
                 background-image: url('https://github.com/Martin-Coder-Cloud/PSES---GPT/blob/main/assets/Teams%20Background%20Tablet_EN.png?raw=true');
                 background-size: cover;
+                background-repeat: no-repeat;
                 background-position: center;
-                background-attachment: fixed;
-            }
-            .main-content {
                 color: white;
-                text-align: left;
-                margin-left: 60px;
-                max-width: 600px;
-                padding-top: 30px;
-                font-family: "Segoe UI", sans-serif;
             }
-            .menu-option {
-                font-size: 20px;
-                margin: 15px 0;
-                display: flex;
-                align-items: center;
-                gap: 10px;
-            }
-            .menu-option a {
-                color: white;
-                text-decoration: none;
-                font-weight: bold;
-            }
-            .menu-option a:hover {
-                text-decoration: underline;
+            h1, h3, a {
+                color: white !important;
             }
         </style>
-    """, unsafe_allow_html=True)
+        """,
+        unsafe_allow_html=True
+    )
 
-    # ✅ Read selection from URL
+    # === Routing logic from URL
     if "run_menu" in st.session_state:
         selection = st.session_state.run_menu
     else:
@@ -60,7 +42,7 @@ def main():
         if selection:
             st.session_state.run_menu = selection
 
-    # ✅ Render selected menu page
+    # === Launch corresponding menu page
     if "run_menu" in st.session_state:
         if st.session_state.run_menu == "1":
             from menu1.main import run_menu1
@@ -72,20 +54,18 @@ def main():
             show_return_then_run(lambda: st.info("📊 Analyze Data is under construction."))
         elif st.session_state.run_menu == "4":
             show_return_then_run(lambda: st.info("📋 View Questionnaire is under construction."))
-        return  # ✅ Prevent showing main menu content below
+        return
 
-    # ✅ Main menu content with white text over background
-    st.markdown("""
-        <div class='main-content'>
-            <h1>Welcome to the AI Explorer of the Public Service Employee Survey (PSES)</h1>
-            <h3>This AI app provides Public Service-wide survey results and analysis from 2019, 2020, 2022, and 2024.</h3>
+    # === Main menu content
+    st.markdown("### Welcome to the AI Explorer of the Public Service Employee Survey (PSES)")
+    st.markdown("This AI app provides Public Service-wide survey results and analysis from 2019, 2020, 2022, and 2024.")
+    st.markdown("")
 
-            <div class='menu-option'>🔍 <a href="?menu=1">Search by Question</a></div>
-            <div class='menu-option'>🧩 <a href="?menu=2">Search by Theme</a></div>
-            <div class='menu-option'>📊 <a href="?menu=3">Analyze Data</a></div>
-            <div class='menu-option'>📋 <a href="?menu=4">View Questionnaire</a></div>
-        </div>
-    """, unsafe_allow_html=True)
+    st.markdown("### Menu")
+    st.markdown("🔍 [Search by Question](?menu=1)")
+    st.markdown("🧩 [Search by Theme](?menu=2)")
+    st.markdown("📊 [Analyze Data](?menu=3)")
+    st.markdown("📋 [View Questionnaire](?menu=4)")
 
 if __name__ == "__main__":
     main()
