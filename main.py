@@ -12,12 +12,12 @@ def show_return_then_run(run_func):
         st.experimental_rerun()
 
 def main():
-    # ✅ Set full-height background and white text
+    # ✅ Set full-height background with white text and button styling
     st.markdown(
         """
         <style>
         .block-container {
-            padding-top: 2rem !important;
+            padding-top: 4rem !important;
             padding-left: 3rem !important;
             margin: 0 !important;
             background-image: url('https://github.com/Martin-Coder-Cloud/PSES---GPT/blob/main/assets/Teams%20Background%20Tablet_EN.png?raw=true');
@@ -33,23 +33,23 @@ def main():
         .menu-option {
             font-size: 20px;
             font-weight: bold;
-            margin: 15px 0;
-            padding: 10px 20px;
-            background-color: rgba(0,0,0,0.3);
-            border-radius: 10px;
+            margin: 12px 0;
+            padding: 12px 22px;
+            background-color: rgba(255,255,255,0.08);
+            border-radius: 12px;
             display: inline-block;
             text-decoration: none !important;
             transition: background 0.3s;
         }
         .menu-option:hover {
-            background-color: rgba(255,255,255,0.2);
+            background-color: rgba(255,255,255,0.25);
         }
         </style>
         """,
         unsafe_allow_html=True
     )
 
-    # ✅ Routing logic
+    # ✅ Routing logic (handles query params)
     if "run_menu" in st.session_state:
         selection = st.session_state.run_menu
     else:
@@ -58,7 +58,7 @@ def main():
         if selection:
             st.session_state.run_menu = selection
 
-    # ✅ Launch menu page
+    # ✅ If a menu is selected, run that sub-app
     if "run_menu" in st.session_state:
         if st.session_state.run_menu == "1":
             from menu1.main import run_menu1
@@ -72,17 +72,12 @@ def main():
             show_return_then_run(lambda: st.info("📋 View Questionnaire is under construction."))
         return
 
-    # ✅ Main content (left-aligned with padding)
-    st.markdown("## Welcome to the AI Explorer of the Public Service Employee Survey (PSES)")
-    st.markdown("This AI app provides Public Service-wide survey results and analysis from 2019, 2020, 2022, and 2024.")
+    # ✅ Left-aligned main menu content
+    st.markdown("### Welcome to the AI Explorer of the Public Service Employee Survey (PSES)")
+    st.markdown("#### This AI app provides Public Service-wide survey results and analysis from 2019, 2020, 2022, and 2024.")
+    st.markdown("")
 
-    st.markdown("---")
-    st.markdown("[🔍 Search by Question](?menu=1)", unsafe_allow_html=True)
-    st.markdown("[🧩 Search by Theme](?menu=2)", unsafe_allow_html=True)
-    st.markdown("[📊 Analyze Data](?menu=3)", unsafe_allow_html=True)
-    st.markdown("[📋 View Questionnaire](?menu=4)", unsafe_allow_html=True)
-
-    # Wrap with styled divs
+    # ✅ Vertical styled menu links
     for label, icon, menu_id in [
         ("Search by Question", "🔍", "1"),
         ("Search by Theme", "🧩", "2"),
