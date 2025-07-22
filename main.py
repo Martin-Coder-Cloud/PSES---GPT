@@ -12,7 +12,7 @@ def show_return_then_run(run_func):
         st.experimental_rerun()
 
 def main():
-    # === Background image and layout reset
+    # === Layout and background reset ===
     st.markdown("""
         <style>
             .block-container {
@@ -31,6 +31,7 @@ def main():
                 margin-left: 60px;
                 max-width: 600px;
                 padding-top: 30px;
+                font-family: "Segoe UI", sans-serif;
             }
             .menu-option {
                 font-size: 20px;
@@ -50,7 +51,7 @@ def main():
         </style>
     """, unsafe_allow_html=True)
 
-    # ✅ Check if a menu has been selected
+    # ✅ Read selection from URL
     if "run_menu" in st.session_state:
         selection = st.session_state.run_menu
     else:
@@ -59,7 +60,7 @@ def main():
         if selection:
             st.session_state.run_menu = selection
 
-    # ✅ Run selected menu page
+    # ✅ Render selected menu page
     if "run_menu" in st.session_state:
         if st.session_state.run_menu == "1":
             from menu1.main import run_menu1
@@ -71,9 +72,9 @@ def main():
             show_return_then_run(lambda: st.info("📊 Analyze Data is under construction."))
         elif st.session_state.run_menu == "4":
             show_return_then_run(lambda: st.info("📋 View Questionnaire is under construction."))
-        return  # ✅ Prevent rendering main menu underneath
+        return  # ✅ Prevent showing main menu content below
 
-    # ✅ Main Menu Front Page (ONLY this section is affected)
+    # ✅ Main menu content with white text over background
     st.markdown("""
         <div class='main-content'>
             <h1>Welcome to the AI Explorer of the Public Service Employee Survey (PSES)</h1>
