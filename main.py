@@ -12,7 +12,7 @@ def show_return_then_run(run_func):
         st.experimental_rerun()
 
 def main():
-    # === Layout + background image with white text
+    # === Layout + background image with left-aligned text block
     st.markdown(
         """
         <style>
@@ -29,25 +29,29 @@ def main():
         h1, h3, p, a {
             color: white !important;
         }
+        .left-column {
+            max-width: 680px;
+            margin-left: 60px;
+            padding-right: 30px;
+        }
         .main-title {
             font-size: 32px;
             font-weight: 700;
             margin-bottom: 10px;
-            max-width: 800px;
             line-height: 1.3;
+            word-wrap: break-word;
         }
         .subtitle {
             font-size: 20px;
             font-weight: 400;
             margin-bottom: 35px;
-            max-width: 850px;
             word-wrap: break-word;
         }
         .menu-option {
             font-size: 20px;
             font-weight: bold;
-            margin: 14px 0;
-            padding: 12px 22px;
+            margin: 16px 0;
+            padding: 14px 24px;
             background-color: rgba(255,255,255,0.08);
             border-radius: 12px;
             display: inline-block;
@@ -85,7 +89,8 @@ def main():
             show_return_then_run(lambda: st.info("📋 View Questionnaire is under construction."))
         return
 
-    # === Render title, subtitle and menu buttons
+    # === Left-aligned text block
+    st.markdown("<div class='left-column'>", unsafe_allow_html=True)
     st.markdown("<div class='main-title'>Welcome to the AI Explorer of the Public Service Employee Survey (PSES)</div>", unsafe_allow_html=True)
     st.markdown("<div class='subtitle'>This AI app provides Public Service-wide survey results and analysis from 2019, 2020, 2022, and 2024.</div>", unsafe_allow_html=True)
 
@@ -99,6 +104,7 @@ def main():
             f"<a class='menu-option' href='?menu={menu_id}'>{icon} {label}</a>",
             unsafe_allow_html=True
         )
+    st.markdown("</div>", unsafe_allow_html=True)  # Close left-column div
 
 if __name__ == "__main__":
     main()
