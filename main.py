@@ -2,7 +2,6 @@ import streamlit as st
 
 st.set_page_config(layout="wide")
 
-# ✅ Helper: show menu and return button
 def show_return_then_run(run_func):
     run_func()
     st.markdown("---")
@@ -12,7 +11,6 @@ def show_return_then_run(run_func):
         st.experimental_rerun()
 
 def main():
-    # ✅ Routing logic
     if "run_menu" not in st.session_state:
         st.session_state.run_menu = None
 
@@ -31,7 +29,6 @@ def main():
         show_return_then_run(lambda: st.info("📋 View Questionnaire is under construction."))
         return
 
-    # ✅ Styling
     st.markdown("""
         <style>
             .block-container {
@@ -67,15 +64,14 @@ def main():
                 color: white;
             }
 
-            /* Button styling override */
             div.stButton > button {
                 background-color: transparent !important;
                 color: white !important;
                 border: 2px solid rgba(255, 255, 255, 0.3) !important;
-                font-size: 18px !important;
+                font-size: 24px !important;
                 font-weight: 600 !important;
-                padding: 12px 24px !important;
-                width: 320px !important;
+                padding: 18px 28px !important;
+                width: 340px !important;
                 border-radius: 12px !important;
                 transition: 0.3s ease-in-out;
                 text-align: left !important;
@@ -88,18 +84,16 @@ def main():
             .menu-grid {
                 display: flex;
                 flex-direction: column;
-                gap: 16px;
+                gap: 20px;
             }
         </style>
     """, unsafe_allow_html=True)
 
-    # ✅ Landing page content
     st.markdown("<div class='main-section'>", unsafe_allow_html=True)
     st.markdown("<div class='main-title'>Welcome to the AI Explorer of the Public Service Employee Survey (PSES)</div>", unsafe_allow_html=True)
     st.markdown("<div class='subtitle'>This AI app provides Public Service-wide survey results and analysis</div>", unsafe_allow_html=True)
     st.markdown("<div class='survey-years'>(2019, 2020, 2022, and 2024)</div>", unsafe_allow_html=True)
 
-    # ✅ Menu buttons
     st.markdown("<div class='menu-grid'>", unsafe_allow_html=True)
 
     if st.button("🔍 Search by Question", key="menu1_button"):
