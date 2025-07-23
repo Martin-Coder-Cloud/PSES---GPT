@@ -21,7 +21,7 @@ def main():
                 padding-bottom: 100px !important;
                 background-image: url('https://github.com/Martin-Coder-Cloud/PSES---GPT/blob/main/assets/Teams%20Background%20Tablet_EN.png?raw=true');
                 background-repeat: no-repeat;
-                background-size: contain;
+                background-size: cover;
                 background-position: center top;
                 background-attachment: scroll;
                 color: white;
