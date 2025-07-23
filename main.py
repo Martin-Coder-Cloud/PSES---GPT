@@ -12,7 +12,7 @@ def show_return_then_run(run_func):
         st.experimental_rerun()
 
 def main():
-    # ✅ Background and style setup
+    # ✅ Fullscreen background and visual layout
     st.markdown("""
         <style>
             .block-container {
@@ -20,43 +20,43 @@ def main():
                 padding-left: 0px !important;
                 background-image: url('https://github.com/Martin-Coder-Cloud/PSES---GPT/blob/main/assets/Teams%20Background%20Tablet_EN.png?raw=true');
                 background-size: cover;
-                background-position: top left;
+                background-position: center;
                 background-repeat: no-repeat;
                 background-attachment: fixed;
                 min-height: 100vh;
-                overflow-x: hidden;
-                color: white !important;
+                color: white;
             }
-            .left-column {
+            .main-section {
+                margin-left: 120px;
                 max-width: 700px;
-                margin-left: 120px; /* ✅ pushed more toward center */
-            }
-            h1, h3, p, a {
-                color: white !important;
             }
             .main-title {
-                font-size: 36px;
-                font-weight: 700;
-                margin-bottom: 20px;
-                line-height: 1.3;
-                word-wrap: break-word;
+                font-size: 38px;
+                font-weight: bold;
+                margin-bottom: 18px;
+                color: white;
             }
             .subtitle {
                 font-size: 22px;
-                font-weight: 400;
-                margin-bottom: 45px;
-                word-wrap: break-word;
+                margin-bottom: 0px;
+                color: white;
+            }
+            .survey-years {
+                font-size: 20px;
+                margin-bottom: 40px;
+                color: white;
             }
             .menu-option {
                 font-size: 20px;
                 font-weight: 600;
-                margin: 14px 0;
+                margin: 16px 0;
                 padding: 16px 28px;
                 background-color: rgba(255,255,255,0.12);
                 border-radius: 12px;
                 display: inline-block;
                 text-decoration: none;
                 transition: background 0.3s;
+                color: white !important;
             }
             .menu-option:hover {
                 background-color: rgba(255,255,255,0.25);
@@ -64,7 +64,7 @@ def main():
         </style>
     """, unsafe_allow_html=True)
 
-    # ✅ Menu routing
+    # ✅ Handle routing logic
     if "run_menu" in st.session_state:
         selection = st.session_state.run_menu
     else:
@@ -73,7 +73,6 @@ def main():
         if selection:
             st.session_state.run_menu = selection
 
-    # ✅ Run selected menu
     if "run_menu" in st.session_state:
         if st.session_state.run_menu == "1":
             from menu1.main import run_menu1
@@ -87,10 +86,11 @@ def main():
             show_return_then_run(lambda: st.info("📋 View Questionnaire is under construction."))
         return
 
-    # ✅ Render title, subtitle, and vertical menu
-    st.markdown("<div class='left-column'>", unsafe_allow_html=True)
+    # ✅ Main content section: title, subtitle, menu
+    st.markdown("<div class='main-section'>", unsafe_allow_html=True)
     st.markdown("<div class='main-title'>Welcome to the AI Explorer of the Public Service Employee Survey (PSES)</div>", unsafe_allow_html=True)
-    st.markdown("<div class='subtitle'>This AI app provides Public Service-wide survey results and analysis (2019, 2020, 2022, and 2024).</div>", unsafe_allow_html=True)
+    st.markdown("<div class='subtitle'>This AI app provides Public Service-wide survey results and analysis</div>", unsafe_allow_html=True)
+    st.markdown("<div class='survey-years'>(2019, 2020, 2022, and 2024)</div>", unsafe_allow_html=True)
 
     for label, icon, menu_id in [
         ("Search by Question", "🔍", "1"),
