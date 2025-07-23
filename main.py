@@ -18,7 +18,7 @@ def main():
             .block-container {
                 padding-top: 100px !important;
                 padding-left: 300px !important;
-                padding-bottom: 50px !important;
+                padding-bottom: 500px !important;
                 background-image: url('https://github.com/Martin-Coder-Cloud/PSES---GPT/blob/main/assets/Teams%20Background%20Tablet_EN.png?raw=true');
                 background-repeat: no-repeat;
                 background-size: cover;
