@@ -24,7 +24,7 @@ def main():
                 background-size: contain;
                 background-position: center top;
                 background-attachment: scroll;
-                min-height: 120vh;  /* ✅ Increased to ensure full logo shows */
+                min-height: auto;  /* ✅ Increased to ensure full logo shows */
                 color: white;
             }
             .main-section {
