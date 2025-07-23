@@ -18,6 +18,7 @@ def main():
             .block-container {
                 padding-top: 100px !important;
                 padding-left: 0px !important;
+                padding-buttom: 100px !important;
                 background-image: url('https://github.com/Martin-Coder-Cloud/PSES---GPT/blob/main/assets/Teams%20Background%20Tablet_EN.png?raw=true');
                 background-size: cover;
                 background-position: center top;
@@ -27,7 +28,7 @@ def main():
                 color: white;
             }
             .main-section {
-                margin-left: 200px;  /* Shift content to center-left */
+                padding-left: 200px;  /* Shift content to center-left */
                 max-width: 700px;
             }
             .main-title {
