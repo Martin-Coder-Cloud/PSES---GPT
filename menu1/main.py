@@ -37,7 +37,6 @@ def run_menu1():
             }
             .menu-banner {
                 width: 100%;
-                max-width: 1000px;
                 height: auto;
                 display: block;
                 margin: 0 auto 20px auto;
