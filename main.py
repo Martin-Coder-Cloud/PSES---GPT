@@ -16,9 +16,9 @@ def main():
     st.markdown("""
         <style>
             .block-container {
-                padding-top: 300px !important;
+                padding-top: 100px !important;
                 padding-left: 300px !important;
-                padding-bottom: 300px !important;
+                padding-bottom: 100px !important;
                 background-image: url('https://github.com/Martin-Coder-Cloud/PSES---GPT/blob/main/assets/Teams%20Background%20Tablet_EN.png?raw=true');
                 background-repeat: no-repeat;
                 background-size: contain;
