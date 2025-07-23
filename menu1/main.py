@@ -37,8 +37,12 @@ def run_menu1():
             }
             .menu-banner {
                 width: 100%;
+                max-width: 1000px;
                 height: auto;
-                margin-bottom: 20px;
+                display: block;
+                margin: 0 auto 20px auto;
+            }
+
             }
             .custom-header {
                 font-size: 30px !important;
