@@ -15,6 +15,11 @@ def main():
     # ✅ Fullscreen background and layout
     st.markdown("""
         <style>
+            html, body {
+                height: 100%;
+                margin: 0;
+                padding: 0;
+            }
             .block-container {
                 padding-top: 100px !important;
                 padding-left: 0px !important;
