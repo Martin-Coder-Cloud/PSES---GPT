@@ -52,25 +52,23 @@ def main():
                 flex-direction: column;
                 gap: 16px;
             }
-            /* New: style Streamlit buttons like menu-button links */
-            button[kind="primary"] {
-                display: flex !important;
-                align-items: center !important;
-                justify-content: flex-start !important;
-                gap: 14px !important;
-                width: 320px !important;
-                padding: 16px 24px !important;
-                font-size: 20px !important;
-                font-weight: 600 !important;
+            .menu-button {
+                display: flex;
+                align-items: center;
+                justify-content: flex-start;
+                gap: 14px;
+                width: 320px;
+                padding: 16px 24px;
+                font-size: 20px;
+                font-weight: 600;
                 color: white !important;
-                background-color: rgba(255,255,255,0.12) !important;
-                border-radius: 12px !important;
+                background-color: rgba(255,255,255,0.12);
+                border-radius: 12px;
                 text-decoration: none !important;
-                transition: background 0.3s ease !important;
-                border: none !important;
+                transition: background 0.3s ease;
             }
-            button[kind="primary"]:hover {
-                background-color: rgba(255,255,255,0.25) !important;
+            .menu-button:hover {
+                background-color: rgba(255,255,255,0.25);
             }
         </style>
     """, unsafe_allow_html=True)
@@ -103,25 +101,15 @@ def main():
     st.markdown("<div class='subtitle'>This AI app provides Public Service-wide survey results and analysis</div>", unsafe_allow_html=True)
     st.markdown("<div class='survey-years'>(2019, 2020, 2022, and 2024)</div>", unsafe_allow_html=True)
 
-    # ✅ Render styled button-style menu using Streamlit buttons
-    st.markdown("<div class='menu-grid'>", unsafe_allow_html=True)
-
-    if st.button("🔍 Search by Question", key="menu1_button"):
-        st.session_state.run_menu = "1"
-        st.experimental_rerun()
-
-    if st.button("🧩 Search by Theme", key="menu2_button"):
-        st.session_state.run_menu = "2"
-        st.experimental_rerun()
-
-    if st.button("📊 Analyze Data", key="menu3_button"):
-        st.session_state.run_menu = "3"
-        st.experimental_rerun()
-
-    if st.button("📋 View Questionnaire", key="menu4_button"):
-        st.session_state.run_menu = "4"
-        st.experimental_rerun()
-
+    # ✅ FIXED: Use absolute hrefs to prevent new tab behavior
+    st.markdown("""
+        <div class="menu-grid">
+            <a class="menu-button" href="/?menu=1">🔍 Search by Question</a>
+            <a class="menu-button" href="/?menu=2">🧩 Search by Theme</a>
+            <a class="menu-button" href="/?menu=3">📊 Analyze Data</a>
+            <a class="menu-button" href="/?menu=4">📋 View Questionnaire</a>
+        </div>
+    """, unsafe_allow_html=True)
     st.markdown("</div>", unsafe_allow_html=True)
 
 if __name__ == "__main__":
