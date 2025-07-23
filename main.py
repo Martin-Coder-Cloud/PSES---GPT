@@ -101,15 +101,25 @@ def main():
     st.markdown("<div class='subtitle'>This AI app provides Public Service-wide survey results and analysis</div>", unsafe_allow_html=True)
     st.markdown("<div class='survey-years'>(2019, 2020, 2022, and 2024)</div>", unsafe_allow_html=True)
 
-    # ✅ Render clickable button-style menu items
-    st.markdown("""
-        <div class="menu-grid">
-            <a class="menu-button" href="?menu=1">🔍 Search by Question</a>
-            <a class="menu-button" href="?menu=2">🧩 Search by Theme</a>
-            <a class="menu-button" href="?menu=3">📊 Analyze Data</a>
-            <a class="menu-button" href="?menu=4">📋 View Questionnaire</a>
-        </div>
-    """, unsafe_allow_html=True)
+    # ✅ Render clickable button-style menu items (replacing href with session state logic)
+    st.markdown("<div class='menu-grid'>", unsafe_allow_html=True)
+
+    if st.button("🔍 Search by Question", key="menu1_button"):
+        st.session_state.run_menu = "1"
+        st.experimental_rerun()
+
+    if st.button("🧩 Search by Theme", key="menu2_button"):
+        st.session_state.run_menu = "2"
+        st.experimental_rerun()
+
+    if st.button("📊 Analyze Data", key="menu3_button"):
+        st.session_state.run_menu = "3"
+        st.experimental_rerun()
+
+    if st.button("📋 View Questionnaire", key="menu4_button"):
+        st.session_state.run_menu = "4"
+        st.experimental_rerun()
+
     st.markdown("</div>", unsafe_allow_html=True)
 
 if __name__ == "__main__":
