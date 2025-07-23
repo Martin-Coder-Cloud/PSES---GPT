@@ -47,19 +47,27 @@ def main():
                 margin-bottom: 40px;
                 color: white;
             }
-            .menu-option {
+            .menu-grid {
+                display: flex;
+                flex-direction: column;
+                gap: 16px;
+            }
+            .menu-button {
+                display: flex;
+                align-items: center;
+                justify-content: flex-start;
+                gap: 14px;
+                width: 320px;
+                padding: 16px 24px;
                 font-size: 20px;
                 font-weight: 600;
-                margin: 16px 0;
-                padding: 16px 28px;
+                color: white !important;
                 background-color: rgba(255,255,255,0.12);
                 border-radius: 12px;
-                display: inline-block;
-                text-decoration: none;
-                transition: background 0.3s;
-                color: white !important;
+                text-decoration: none !important;
+                transition: background 0.3s ease;
             }
-            .menu-option:hover {
+            .menu-button:hover {
                 background-color: rgba(255,255,255,0.25);
             }
         </style>
@@ -87,22 +95,21 @@ def main():
             show_return_then_run(lambda: st.info("📋 View Questionnaire is under construction."))
         return
 
-    # ✅ Render landing content
+    # ✅ Render landing content and menu
     st.markdown("<div class='main-section'>", unsafe_allow_html=True)
     st.markdown("<div class='main-title'>Welcome to the AI Explorer of the Public Service Employee Survey (PSES)</div>", unsafe_allow_html=True)
     st.markdown("<div class='subtitle'>This AI app provides Public Service-wide survey results and analysis</div>", unsafe_allow_html=True)
     st.markdown("<div class='survey-years'>(2019, 2020, 2022, and 2024)</div>", unsafe_allow_html=True)
 
-    for label, icon, menu_id in [
-        ("Search by Question", "🔍", "1"),
-        ("Search by Theme", "🧩", "2"),
-        ("Analyze Data", "📊", "3"),
-        ("View Questionnaire", "📋", "4"),
-    ]:
-        st.markdown(
-            f"<a class='menu-option' href='?menu={menu_id}'>{icon} {label}</a>",
-            unsafe_allow_html=True
-        )
+    # ✅ Render clickable button-style menu items
+    st.markdown("""
+        <div class="menu-grid">
+            <a class="menu-button" href="?menu=1">🔍 Search by Question</a>
+            <a class="menu-button" href="?menu=2">🧩 Search by Theme</a>
+            <a class="menu-button" href="?menu=3">📊 Analyze Data</a>
+            <a class="menu-button" href="?menu=4">📋 View Questionnaire</a>
+        </div>
+    """, unsafe_allow_html=True)
     st.markdown("</div>", unsafe_allow_html=True)
 
 if __name__ == "__main__":
