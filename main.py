@@ -70,13 +70,16 @@ def main():
                 border: 2px solid rgba(255, 255, 255, 0.3) !important;
                 font-size: 24px !important;
                 font-weight: 600 !important;
-                padding: 18px 28px !important;
-                width: 360px !important;
-                min-height: 60px !important;
+                padding: 28px 36px !important;
+                width: 420px !important;
+                min-height: 90px !important;
                 line-height: 1.2 !important;
                 border-radius: 12px !important;
                 transition: 0.3s ease-in-out;
                 text-align: left !important;
+                overflow: visible !important;
+                height: auto !important;
+                display: block !important;
             }
             div.stButton > button:hover {
                 border-color: white !important;
