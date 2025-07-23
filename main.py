@@ -12,7 +12,7 @@ def show_return_then_run(run_func):
         st.experimental_rerun()
 
 def main():
-    # ✅ Fullscreen background and visual layout
+    # ✅ Fullscreen background and layout
     st.markdown("""
         <style>
             .block-container {
@@ -20,24 +20,25 @@ def main():
                 padding-left: 0px !important;
                 background-image: url('https://github.com/Martin-Coder-Cloud/PSES---GPT/blob/main/assets/Teams%20Background%20Tablet_EN.png?raw=true');
                 background-size: cover;
-                background-position: center;
+                background-position: center top;
                 background-repeat: no-repeat;
                 background-attachment: fixed;
                 min-height: 100vh;
                 color: white;
             }
             .main-section {
-                margin-left: 120px;
+                margin-left: 200px;  /* Shift content to center-left */
                 max-width: 700px;
             }
             .main-title {
-                font-size: 38px;
+                font-size: 42px;
                 font-weight: bold;
-                margin-bottom: 18px;
+                margin-bottom: 20px;
                 color: white;
+                line-height: 1.2;
             }
             .subtitle {
-                font-size: 22px;
+                font-size: 24px;
                 margin-bottom: 0px;
                 color: white;
             }
@@ -64,7 +65,7 @@ def main():
         </style>
     """, unsafe_allow_html=True)
 
-    # ✅ Handle routing logic
+    # ✅ Menu routing logic
     if "run_menu" in st.session_state:
         selection = st.session_state.run_menu
     else:
@@ -86,7 +87,7 @@ def main():
             show_return_then_run(lambda: st.info("📋 View Questionnaire is under construction."))
         return
 
-    # ✅ Main content section: title, subtitle, menu
+    # ✅ Render landing content
     st.markdown("<div class='main-section'>", unsafe_allow_html=True)
     st.markdown("<div class='main-title'>Welcome to the AI Explorer of the Public Service Employee Survey (PSES)</div>", unsafe_allow_html=True)
     st.markdown("<div class='subtitle'>This AI app provides Public Service-wide survey results and analysis</div>", unsafe_allow_html=True)
