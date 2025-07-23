@@ -68,7 +68,7 @@ def main():
                 background-color: transparent !important;
                 color: white !important;
                 border: 2px solid rgba(255, 255, 255, 0.3) !important;
-                font-size: 24px !important;
+                font-size: 32px !important;
                 font-weight: 600 !important;
                 padding: 28px 36px !important;
                 width: 420px !important;
