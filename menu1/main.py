@@ -1,33 +1,25 @@
-import streamlit as st
-import pandas as pd
-
-# === Load Metadata ===
-demo_df = pd.read_excel("metadata/Demographics.xlsx")
-demo_df.columns = [col.strip() for col in demo_df.columns]
-
-# === Load Survey Questions Metadata ===
-question_df = pd.read_excel("metadata/Survey Questions.xlsx")
-question_df.columns = [col.strip().lower() for col in question_df.columns]
-question_df = question_df.rename(columns={"question": "code", "english": "text"})
-question_df["qnum"] = question_df["code"].str.extract(r'Q?(\d+)').astype(int)
-question_df = question_df.sort_values("qnum")
-question_df["display"] = question_df["code"] + " – " + question_df["text"]
-
-# === Constants ===
-DEMO_CAT_COL = "DEMCODE Category"
-LABEL_COL = "DESCRIP_E"
-
-long_list_categories = {
-    "2SLGBTQIA+ sub group",
-    "Ethnic origins",
-    "Occ. Group and Level",
-    "Occupational group",
-    "Person with a disability sub group",
-    "Racial sub group",
-    "Work Community"
-}
-
 def run_menu1():
+    # === Reset background to white and insert banner ===
+    st.markdown("""
+        <style>
+            body {
+                background-image: none !important;
+                background-color: white !important;
+            }
+            .menu-banner {
+                width: 100%;
+                height: auto;
+                margin-bottom: 20px;
+            }
+        </style>
+    """, unsafe_allow_html=True)
+
+    # Banner image
+    st.markdown(
+        "<img class='menu-banner' src='https://raw.githubusercontent.com/Martin-Coder-Cloud/PSES---GPT/refs/heads/main/PSES_Banner.png'>",
+        unsafe_allow_html=True
+    )
+
     # === Styling ===
     st.markdown("""
         <style>
