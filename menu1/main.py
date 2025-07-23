@@ -64,7 +64,7 @@ def run_menu1():
                 margin-top: 20px;
             }
         </style>
-        <img class='menu-banner' src='https://raw.githubusercontent.com/Martin-Coder-Cloud/PSES---GPT/refs/heads/main/PSES_Banner.png'>
+        <img class='menu-banner' src='https://raw.githubusercontent.com/Martin-Coder-Cloud/PSES---GPT/refs/heads/main/PSES%20email%20banner.png'>
     """, unsafe_allow_html=True)
 
     # === Layout ===
