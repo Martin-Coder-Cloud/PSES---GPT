@@ -8,11 +8,10 @@ def show_return_then_run(run_func):
     st.markdown("---")
     if st.button("🔙 Return to Main Menu"):
         st.session_state.run_menu = None
-        st.experimental_set_query_params()
         st.experimental_rerun()
 
 def main():
-    # ✅ Fullscreen background and layout
+    # ✅ Apply visual and background styling
     st.markdown("""
         <style>
             .block-container {
@@ -66,6 +65,7 @@ def main():
                 border-radius: 12px;
                 text-decoration: none !important;
                 transition: background 0.3s ease;
+                cursor: pointer;
             }
             .menu-button:hover {
                 background-color: rgba(255,255,255,0.25);
@@ -74,42 +74,49 @@ def main():
     """, unsafe_allow_html=True)
 
     # ✅ Menu routing logic
-    if "run_menu" in st.session_state:
-        selection = st.session_state.run_menu
-    else:
-        params = st.experimental_get_query_params()
-        selection = params.get("menu", [None])[0]
-        if selection:
-            st.session_state.run_menu = selection
+    if "run_menu" not in st.session_state:
+        st.session_state.run_menu = None
 
-    if "run_menu" in st.session_state:
-        if st.session_state.run_menu == "1":
-            from menu1.main import run_menu1
-            show_return_then_run(run_menu1)
-        elif st.session_state.run_menu == "2":
-            from menu2.main import run_menu2
-            show_return_then_run(run_menu2)
-        elif st.session_state.run_menu == "3":
-            show_return_then_run(lambda: st.info("📊 Analyze Data is under construction."))
-        elif st.session_state.run_menu == "4":
-            show_return_then_run(lambda: st.info("📋 View Questionnaire is under construction."))
+    if st.session_state.run_menu == "1":
+        from menu1.main import run_menu1
+        show_return_then_run(run_menu1)
+        return
+    elif st.session_state.run_menu == "2":
+        from menu2.main import run_menu2
+        show_return_then_run(run_menu2)
+        return
+    elif st.session_state.run_menu == "3":
+        show_return_then_run(lambda: st.info("📊 Analyze Data is under construction."))
+        return
+    elif st.session_state.run_menu == "4":
+        show_return_then_run(lambda: st.info("📋 View Questionnaire is under construction."))
         return
 
-    # ✅ Render landing content and menu
+    # ✅ Render home page layout
     st.markdown("<div class='main-section'>", unsafe_allow_html=True)
     st.markdown("<div class='main-title'>Welcome to the AI Explorer of the Public Service Employee Survey (PSES)</div>", unsafe_allow_html=True)
     st.markdown("<div class='subtitle'>This AI app provides Public Service-wide survey results and analysis</div>", unsafe_allow_html=True)
     st.markdown("<div class='survey-years'>(2019, 2020, 2022, and 2024)</div>", unsafe_allow_html=True)
 
-    # ✅ FIXED: Use absolute hrefs to prevent new tab behavior
-    st.markdown("""
-        <div class="menu-grid">
-            <a class="menu-button" href="/?menu=1">🔍 Search by Question</a>
-            <a class="menu-button" href="/?menu=2">🧩 Search by Theme</a>
-            <a class="menu-button" href="/?menu=3">📊 Analyze Data</a>
-            <a class="menu-button" href="/?menu=4">📋 View Questionnaire</a>
-        </div>
-    """, unsafe_allow_html=True)
+    # ✅ Render styled visual menu using Streamlit buttons (same look, native logic)
+    st.markdown("<div class='menu-grid'>", unsafe_allow_html=True)
+
+    if st.button("🔍 Search by Question", key="menu1_button"):
+        st.session_state.run_menu = "1"
+        st.experimental_rerun()
+
+    if st.button("🧩 Search by Theme", key="menu2_button"):
+        st.session_state.run_menu = "2"
+        st.experimental_rerun()
+
+    if st.button("📊 Analyze Data", key="menu3_button"):
+        st.session_state.run_menu = "3"
+        st.experimental_rerun()
+
+    if st.button("📋 View Questionnaire", key="menu4_button"):
+        st.session_state.run_menu = "4"
+        st.experimental_rerun()
+
     st.markdown("</div>", unsafe_allow_html=True)
 
 if __name__ == "__main__":
