@@ -8,10 +8,11 @@ def show_return_then_run(run_func):
     st.markdown("---")
     if st.button("🔙 Return to Main Menu"):
         st.session_state.run_menu = None
+        st.experimental_set_query_params()
         st.experimental_rerun()
 
 def main():
-    # === Visual Styling ===
+    # === Styling ===
     st.markdown("""
         <style>
             .block-container {
@@ -73,10 +74,18 @@ def main():
         </style>
     """, unsafe_allow_html=True)
 
-    # === Routing Logic ===
+    # === Routing logic
     if "run_menu" not in st.session_state:
         st.session_state.run_menu = None
 
+    # Read query parameter from the URL
+    params = st.experimental_get_query_params()
+    menu_selection = params.get("menu", [None])[0]
+
+    if menu_selection and menu_selection in {"1", "2", "3", "4"}:
+        st.session_state.run_menu = menu_selection
+
+    # === Show the correct menu page
     if st.session_state.run_menu == "1":
         from menu1.main import run_menu1
         show_return_then_run(run_menu1)
@@ -92,44 +101,21 @@ def main():
         show_return_then_run(lambda: st.info("📋 View Questionnaire is under construction."))
         return
 
-    # === Home Page Content ===
+    # === Main page content
     st.markdown("<div class='main-section'>", unsafe_allow_html=True)
     st.markdown("<div class='main-title'>Welcome to the AI Explorer of the Public Service Employee Survey (PSES)</div>", unsafe_allow_html=True)
     st.markdown("<div class='subtitle'>This AI app provides Public Service-wide survey results and analysis</div>", unsafe_allow_html=True)
     st.markdown("<div class='survey-years'>(2019, 2020, 2022, and 2024)</div>", unsafe_allow_html=True)
 
-    # === Menu Buttons (visual) + JS triggers hidden buttons
+    # === Menu buttons (HTML-style) with JavaScript click handlers
     st.markdown("""
         <div class="menu-grid">
-            <a class="menu-button" onclick="document.getElementById('menu1_btn').click()">🔍 Search by Question</a>
-            <a class="menu-button" onclick="document.getElementById('menu2_btn').click()">🧩 Search by Theme</a>
-            <a class="menu-button" onclick="document.getElementById('menu3_btn').click()">📊 Analyze Data</a>
-            <a class="menu-button" onclick="document.getElementById('menu4_btn').click()">📋 View Questionnaire</a>
+            <a class="menu-button" onclick="window.location.search='?menu=1'">🔍 Search by Question</a>
+            <a class="menu-button" onclick="window.location.search='?menu=2'">🧩 Search by Theme</a>
+            <a class="menu-button" onclick="window.location.search='?menu=3'">📊 Analyze Data</a>
+            <a class="menu-button" onclick="window.location.search='?menu=4'">📋 View Questionnaire</a>
         </div>
-        <script>
-            const root = window.parent.document;
-        </script>
     """, unsafe_allow_html=True)
-
-    # === Hidden Buttons That JS Will Trigger ===
-    col1 = st.columns(1)[0]
-    with col1:
-        if st.button("hidden", key="menu1_btn"):
-            st.session_state.run_menu = "1"
-            st.experimental_rerun()
-
-        if st.button("hidden", key="menu2_btn"):
-            st.session_state.run_menu = "2"
-            st.experimental_rerun()
-
-        if st.button("hidden", key="menu3_btn"):
-            st.session_state.run_menu = "3"
-            st.experimental_rerun()
-
-        if st.button("hidden", key="menu4_btn"):
-            st.session_state.run_menu = "4"
-            st.experimental_rerun()
-
     st.markdown("</div>", unsafe_allow_html=True)
 
 if __name__ == "__main__":
