@@ -52,23 +52,25 @@ def main():
                 flex-direction: column;
                 gap: 16px;
             }
-            .menu-button {
-                display: flex;
-                align-items: center;
-                justify-content: flex-start;
-                gap: 14px;
-                width: 320px;
-                padding: 16px 24px;
-                font-size: 20px;
-                font-weight: 600;
+            /* New: style Streamlit buttons like menu-button links */
+            button[kind="primary"] {
+                display: flex !important;
+                align-items: center !important;
+                justify-content: flex-start !important;
+                gap: 14px !important;
+                width: 320px !important;
+                padding: 16px 24px !important;
+                font-size: 20px !important;
+                font-weight: 600 !important;
                 color: white !important;
-                background-color: rgba(255,255,255,0.12);
-                border-radius: 12px;
+                background-color: rgba(255,255,255,0.12) !important;
+                border-radius: 12px !important;
                 text-decoration: none !important;
-                transition: background 0.3s ease;
+                transition: background 0.3s ease !important;
+                border: none !important;
             }
-            .menu-button:hover {
-                background-color: rgba(255,255,255,0.25);
+            button[kind="primary"]:hover {
+                background-color: rgba(255,255,255,0.25) !important;
             }
         </style>
     """, unsafe_allow_html=True)
@@ -101,7 +103,7 @@ def main():
     st.markdown("<div class='subtitle'>This AI app provides Public Service-wide survey results and analysis</div>", unsafe_allow_html=True)
     st.markdown("<div class='survey-years'>(2019, 2020, 2022, and 2024)</div>", unsafe_allow_html=True)
 
-    # ✅ Render clickable button-style menu items (replacing href with session state logic)
+    # ✅ Render styled button-style menu using Streamlit buttons
     st.markdown("<div class='menu-grid'>", unsafe_allow_html=True)
 
     if st.button("🔍 Search by Question", key="menu1_button"):
