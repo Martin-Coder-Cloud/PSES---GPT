@@ -2,7 +2,7 @@ import streamlit as st
 
 st.set_page_config(layout="wide")
 
-# ✅ Helper: show menu and return button
+# === Return-to-menu helper ===
 def show_return_then_run(run_func):
     run_func()
     st.markdown("---")
@@ -11,7 +11,7 @@ def show_return_then_run(run_func):
         st.experimental_rerun()
 
 def main():
-    # ✅ Apply visual and background styling
+    # === Visual Styling ===
     st.markdown("""
         <style>
             .block-container {
@@ -73,7 +73,7 @@ def main():
         </style>
     """, unsafe_allow_html=True)
 
-    # ✅ Menu routing logic
+    # === Routing Logic ===
     if "run_menu" not in st.session_state:
         st.session_state.run_menu = None
 
@@ -92,30 +92,43 @@ def main():
         show_return_then_run(lambda: st.info("📋 View Questionnaire is under construction."))
         return
 
-    # ✅ Render home page layout
+    # === Home Page Content ===
     st.markdown("<div class='main-section'>", unsafe_allow_html=True)
     st.markdown("<div class='main-title'>Welcome to the AI Explorer of the Public Service Employee Survey (PSES)</div>", unsafe_allow_html=True)
     st.markdown("<div class='subtitle'>This AI app provides Public Service-wide survey results and analysis</div>", unsafe_allow_html=True)
     st.markdown("<div class='survey-years'>(2019, 2020, 2022, and 2024)</div>", unsafe_allow_html=True)
 
-    # ✅ Render styled visual menu using Streamlit buttons (same look, native logic)
-    st.markdown("<div class='menu-grid'>", unsafe_allow_html=True)
+    # === Menu Buttons (visual) + JS triggers hidden buttons
+    st.markdown("""
+        <div class="menu-grid">
+            <a class="menu-button" onclick="document.getElementById('menu1_btn').click()">🔍 Search by Question</a>
+            <a class="menu-button" onclick="document.getElementById('menu2_btn').click()">🧩 Search by Theme</a>
+            <a class="menu-button" onclick="document.getElementById('menu3_btn').click()">📊 Analyze Data</a>
+            <a class="menu-button" onclick="document.getElementById('menu4_btn').click()">📋 View Questionnaire</a>
+        </div>
+        <script>
+            const root = window.parent.document;
+        </script>
+    """, unsafe_allow_html=True)
 
-    if st.button("🔍 Search by Question", key="menu1_button"):
-        st.session_state.run_menu = "1"
-        st.experimental_rerun()
+    # === Hidden Buttons That JS Will Trigger ===
+    col1 = st.columns(1)[0]
+    with col1:
+        if st.button("hidden", key="menu1_btn"):
+            st.session_state.run_menu = "1"
+            st.experimental_rerun()
 
-    if st.button("🧩 Search by Theme", key="menu2_button"):
-        st.session_state.run_menu = "2"
-        st.experimental_rerun()
+        if st.button("hidden", key="menu2_btn"):
+            st.session_state.run_menu = "2"
+            st.experimental_rerun()
 
-    if st.button("📊 Analyze Data", key="menu3_button"):
-        st.session_state.run_menu = "3"
-        st.experimental_rerun()
+        if st.button("hidden", key="menu3_btn"):
+            st.session_state.run_menu = "3"
+            st.experimental_rerun()
 
-    if st.button("📋 View Questionnaire", key="menu4_button"):
-        st.session_state.run_menu = "4"
-        st.experimental_rerun()
+        if st.button("hidden", key="menu4_btn"):
+            st.session_state.run_menu = "4"
+            st.experimental_rerun()
 
     st.markdown("</div>", unsafe_allow_html=True)
 
