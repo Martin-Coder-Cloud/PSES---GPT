@@ -18,13 +18,13 @@ def main():
             .block-container {
                 padding-top: 100px !important;
                 padding-left: 300px !important;
-                padding-buttom: 300px !important;
+                padding-bottom: 300px !important;
                 background-image: url('https://github.com/Martin-Coder-Cloud/PSES---GPT/blob/main/assets/Teams%20Background%20Tablet_EN.png?raw=true');
-                background-size: cover;
-                background-position: center top;
                 background-repeat: no-repeat;
-                background-attachment: fixed;
-                min-height: 100vh;
+                background-size: contain;
+                background-position: center top;
+                background-attachment: scroll;
+                min-height: 120vh;  /* ✅ Increased to ensure full logo shows */
                 color: white;
             }
             .main-section {
