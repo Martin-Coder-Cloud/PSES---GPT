@@ -28,7 +28,7 @@ long_list_categories = {
 }
 
 def run_menu1():
-    # === Reset background to white and insert banner image ===
+    # === Reset background and styling ===
     st.markdown("""
         <style>
             body {
@@ -41,8 +41,6 @@ def run_menu1():
                 height: auto;
                 display: block;
                 margin: 0 auto 20px auto;
-            }
-
             }
             .custom-header {
                 font-size: 30px !important;
@@ -68,12 +66,17 @@ def run_menu1():
                 margin-top: 20px;
             }
         </style>
-        <img class='menu-banner' src='https://raw.githubusercontent.com/Martin-Coder-Cloud/PSES---GPT/refs/heads/main/PSES%20email%20banner.png'>
     """, unsafe_allow_html=True)
 
     # === Layout ===
     left, center, right = st.columns([1, 3, 1])
     with center:
+        # === Banner now inside the center column ===
+        st.markdown(
+            "<img class='menu-banner' src='https://raw.githubusercontent.com/Martin-Coder-Cloud/PSES---GPT/refs/heads/main/PSES%20email%20banner.png'>",
+            unsafe_allow_html=True
+        )
+
         # === Header ===
         st.markdown('<div class="custom-header">🔍 Search by Question</div>', unsafe_allow_html=True)
 
