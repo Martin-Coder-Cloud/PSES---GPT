@@ -83,7 +83,6 @@ def run_menu1():
         st.markdown("""
             <div class="custom-instruction">
                 Use this menu to explore results for a specific survey question.<br>
-                <br>
                 Select a question from the list below to begin or enter a keyword to search a question.
             </div>
         """, unsafe_allow_html=True)
