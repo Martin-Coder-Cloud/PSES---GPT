@@ -68,10 +68,12 @@ def main():
                 background-color: transparent !important;
                 color: white !important;
                 border: 2px solid rgba(255, 255, 255, 0.3) !important;
-                font-size: 40px !important;
+                font-size: 24px !important;
                 font-weight: 600 !important;
-                padding: 18px 30px !important;
-                width: 340px !important;
+                padding: 18px 28px !important;
+                width: 360px !important;
+                min-height: 60px !important;
+                line-height: 1.2 !important;
                 border-radius: 12px !important;
                 transition: 0.3s ease-in-out;
                 text-align: left !important;
