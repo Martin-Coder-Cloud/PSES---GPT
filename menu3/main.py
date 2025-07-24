@@ -75,7 +75,7 @@ def run_menu3():
         # === Header ===
         st.markdown('<div class="custom-header">📊 Analyze Data</div>', unsafe_allow_html=True)
 
-        # === Instructions ===
+        # === Instructions (HTML now rendered properly) ===
         st.markdown("""
             <div class="custom-instruction">
                 This section provides a narrative summary based on trend and comparative analysis of survey results.
