@@ -27,8 +27,10 @@ def main():
         show_return_then_run(run_menu3)
         return
     elif st.session_state.run_menu == "4":
-        show_return_then_run(lambda: st.info("📋 View Questionnaire is under construction."))
+        from menu4.main import run_menu4
+        show_return_then_run(run_menu4)
         return
+
 
     st.markdown("""
         <style>
