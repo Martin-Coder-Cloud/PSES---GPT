@@ -42,7 +42,7 @@ def run_menu1():
                 width: 100%;
                 height: auto;
                 display: block;
-                margin-top: 5px;
+                margin-top: 0px;
                 margin-bottom: 20px;
             }
             .custom-header {
