@@ -1,138 +1,123 @@
 import streamlit as st
-import pandas as pd
 
-# === Load Metadata ===
-demo_df = pd.read_excel("metadata/Demographics.xlsx")
-demo_df.columns = [col.strip() for col in demo_df.columns]
+st.set_page_config(layout="wide")
 
-# === Load Survey Questions Metadata ===
-question_df = pd.read_excel("metadata/Survey Questions.xlsx")
-question_df.columns = [col.strip().lower() for col in question_df.columns]
-question_df = question_df.rename(columns={"question": "code", "english": "text"})
-question_df["qnum"] = question_df["code"].str.extract(r'Q?(\d+)').astype(int)
-question_df = question_df.sort_values("qnum")
-question_df["display"] = question_df["code"] + " – " + question_df["text"]
+def show_return_then_run(run_func):
+    run_func()
+    st.markdown("---")
+    if st.button("🔙 Return to Main Menu"):
+        st.session_state.run_menu = None
+        st.experimental_set_query_params()
+        st.experimental_rerun()
 
-# === Constants ===
-DEMO_CAT_COL = "DEMCODE Category"
-LABEL_COL = "DESCRIP_E"
+def main():
+    if "run_menu" not in st.session_state:
+        st.session_state.run_menu = None
 
-long_list_categories = {
-    "2SLGBTQIA+ sub group",
-    "Ethnic origins",
-    "Occ. Group and Level",
-    "Occupational group",
-    "Person with a disability sub group",
-    "Racial sub group",
-    "Work Community"
-}
+    if st.session_state.run_menu == "1":
+        from menu1.main import run_menu1
+        show_return_then_run(run_menu1)
+        return
+    elif st.session_state.run_menu == "2":
+        from menu2.main import run_menu2
+        show_return_then_run(run_menu2)
+        return
+    elif st.session_state.run_menu == "3":
+        show_return_then_run(lambda: st.info("📊 Analyze Data is under construction."))
+        return
+    elif st.session_state.run_menu == "4":
+        show_return_then_run(lambda: st.info("📋 View Questionnaire is under construction."))
+        return
 
-def run_menu1():
-    # === Reset background and styling ===
     st.markdown("""
         <style>
-            body {
-                background-image: none !important;
-                background-color: white !important;
+            .block-container {
+                padding-top: 100px !important;
+                padding-left: 300px !important;
+                padding-bottom: 300px !important;
+                background-image: url('https://github.com/Martin-Coder-Cloud/PSES---GPT/blob/main/assets/Teams%20Background%20Tablet_EN.png?raw=true');
+                background-repeat: no-repeat;
+                background-size: cover;
+                background-position: center top;
+                background-attachment: scroll;
+                color: white;
             }
-            .menu-banner {
-                width: 100%;
-                height: auto;
-                display: block;
-                margin-top: 0px;
+            .main-section {
+                margin-left: 200px;
+                max-width: 700px;
+            }
+            .main-title {
+                font-size: 42px;
+                font-weight: bold;
                 margin-bottom: 20px;
+                color: white;
+                line-height: 1.2;
             }
-            .custom-header {
-                font-size: 30px !important;
-                font-weight: 700;
-                margin-bottom: 10px;
+            .subtitle {
+                font-size: 24px;
+                margin-bottom: 0px;
+                color: white;
             }
-            .custom-instruction {
-                font-size: 16px !important;
-                line-height: 1.4;
-                margin-bottom: 10px;
-                color: #333;
+            .survey-years {
+                font-size: 20px;
+                margin-bottom: 40px;
+                color: white;
             }
-            .field-label {
-                font-size: 18px !important;
+
+            div.stButton > button {
+                background-color: transparent !important;
+                color: white !important;
+                border: 2px solid rgba(255, 255, 255, 0.3) !important;
+                font-size: 32px !important;
                 font-weight: 600 !important;
-                margin-top: 12px !important;
-                margin-bottom: 2px !important;
-                color: #222 !important;
+                padding: 28px 36px !important;
+                width: 420px !important;
+                min-height: 90px !important;
+                line-height: 1.2 !important;
+                border-radius: 12px !important;
+                transition: 0.3s ease-in-out;
+                text-align: left !important;
+                overflow: visible !important;
+                height: auto !important;
+                display: block !important;
             }
-            .big-button button {
-                font-size: 18px !important;
-                padding: 0.75em 2em !important;
-                margin-top: 20px;
+            div.stButton > button:hover {
+                border-color: white !important;
+                background-color: rgba(255, 255, 255, 0.1) !important;
+            }
+
+            .menu-grid {
+                display: flex;
+                flex-direction: column;
+                gap: 20px;
             }
         </style>
     """, unsafe_allow_html=True)
 
-    # === Layout ===
-    left, center, right = st.columns([1, 3, 1])
-    with center:
-        # === Banner now inside the center column ===
-        st.markdown(
-            "<img class='menu-banner' src='https://raw.githubusercontent.com/Martin-Coder-Cloud/PSES---GPT/refs/heads/main/PSES%20email%20banner.png'>",
-            unsafe_allow_html=True
-        )
+    st.markdown("<div class='main-section'>", unsafe_allow_html=True)
+    st.markdown("<div class='main-title'>Welcome to the AI Explorer of the Public Service Employee Survey (PSES)</div>", unsafe_allow_html=True)
+    st.markdown("<div class='subtitle'>This AI app provides Public Service-wide survey results and analysis</div>", unsafe_allow_html=True)
+    st.markdown("<div class='survey-years'>(2019, 2020, 2022, and 2024)</div>", unsafe_allow_html=True)
 
-        # === Header ===
-        st.markdown('<div class="custom-header">🔍 Search by Question</div>', unsafe_allow_html=True)
+    st.markdown("<div class='menu-grid'>", unsafe_allow_html=True)
 
-        # === Instructions (compact) ===
-        st.markdown("""
-            <div class="custom-instruction">
-                Use this menu to explore results for a specific survey question.<br>
-                Select a question from the list below to begin or enter a keyword to search a question.
-            </div>
-        """, unsafe_allow_html=True)
+    if st.button("🔍 Search by Question", key="menu1_button"):
+        st.session_state.run_menu = "1"
+        st.experimental_rerun()
 
-        # === Question Selection ===
-        st.markdown('<div class="field-label">Select a survey question:</div>', unsafe_allow_html=True)
-        question_options = question_df["display"].tolist()
-        selected_label = st.selectbox("Choose from the official list (type Q# or keywords to filter):", question_options, key="question_dropdown")
-        question_input = question_df[question_df["display"] == selected_label]["code"].values[0]
+    if st.button("🧩 Search by Theme", key="menu2_button"):
+        st.session_state.run_menu = "2"
+        st.experimental_rerun()
 
-        # === Year Selection ===
-        st.markdown('<div class="field-label">Select survey year(s):</div>', unsafe_allow_html=True)
-        select_all = st.checkbox("All years", value=True, key="select_all_years")
-        all_years = [2024, 2022, 2020, 2019]
-        selected_years = []
-        year_cols = st.columns(len(all_years))
-        for idx, year in enumerate(all_years):
-            with year_cols[idx]:
-                is_checked = True if select_all else False
-                if st.checkbox(str(year), value=is_checked, key=f"year_{year}"):
-                    selected_years.append(year)
+    if st.button("📊 Analyze Data", key="menu3_button"):
+        st.session_state.run_menu = "3"
+        st.experimental_rerun()
 
-        # === Demographics ===
-        st.markdown('<div class="field-label">Select a demographic category (optional):</div>', unsafe_allow_html=True)
-        demo_categories = sorted(demo_df[DEMO_CAT_COL].dropna().unique().tolist())
-        demo_selection = st.selectbox("", ["All respondents"] + demo_categories, key="demo_main")
+    if st.button("📋 View Questionnaire", key="menu4_button"):
+        st.session_state.run_menu = "4"
+        st.experimental_rerun()
 
-        sub_selection = None
-        sub_required = False
-        if demo_selection in long_list_categories:
-            sub_items = demo_df[demo_df[DEMO_CAT_COL] == demo_selection][LABEL_COL].dropna().unique().tolist()
-            sub_required = True
-            st.markdown(f'<div class="field-label">Please select one option for {demo_selection}:</div>', unsafe_allow_html=True)
-            sub_selection = st.selectbox("", sub_items, key=f"sub_{demo_selection.replace(' ', '_')}")
+    st.markdown("</div>", unsafe_allow_html=True)
 
-        # === Search Button ===
-        with st.container():
-            st.markdown('<div class="big-button">', unsafe_allow_html=True)
-            if st.button("🔎 Search"):
-                if not question_input:
-                    st.warning("⚠️ Please select a question from the list.")
-                elif sub_required and not sub_selection:
-                    st.warning(f"⚠️ Please select a value for {demo_selection} before proceeding.")
-                else:
-                    st.markdown("🔄 *Processing your request...*")
-                    st.write("Selected Question:", question_input)
-                    st.write("Selected Year(s):", selected_years)
-                    st.write("Demographic Category:", demo_selection)
-                    if sub_selection:
-                        st.write("Sub-category value:", sub_selection)
-                    st.success("✅ Query received. (Back-end connection coming soon)")
-            st.markdown('</div>', unsafe_allow_html=True)
+if __name__ == "__main__":
+    main()
