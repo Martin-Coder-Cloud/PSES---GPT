@@ -35,11 +35,15 @@ def run_menu1():
                 background-image: none !important;
                 background-color: white !important;
             }
+            .block-container {
+                padding-top: 1rem !important;
+            }
             .menu-banner {
                 width: 100%;
                 height: auto;
                 display: block;
-                margin: 0 auto 20px auto;
+                margin-top: 0px;
+                margin-bottom: 20px;
             }
             .custom-header {
                 font-size: 30px !important;
