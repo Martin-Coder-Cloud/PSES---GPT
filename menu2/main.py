@@ -26,6 +26,20 @@ def run_menu2():
     # === Styling ===
     st.markdown("""
         <style>
+            body {
+                background-image: none !important;
+                background-color: white !important;
+            }
+            .block-container {
+                padding-top: 1rem !important;
+            }
+            .menu-banner {
+                width: 100%;
+                height: auto;
+                display: block;
+                margin-top: 0px;
+                margin-bottom: 20px;
+            }
             .custom-header {
                 font-size: 30px !important;
                 font-weight: 700;
@@ -55,6 +69,12 @@ def run_menu2():
     # === Layout ===
     left, center, right = st.columns([1, 3, 1])
     with center:
+        # === Banner Image ===
+        st.markdown(
+            "<img class='menu-banner' src='https://raw.githubusercontent.com/Martin-Coder-Cloud/PSES---GPT/refs/heads/main/PSES%20email%20banner.png'>",
+            unsafe_allow_html=True
+        )
+
         # === Header ===
         st.markdown('<div class="custom-header">🧩 Search by Theme</div>', unsafe_allow_html=True)
 
@@ -84,7 +104,7 @@ def run_menu2():
         st.markdown('<div class="field-label">Or describe your theme using keywords:</div>', unsafe_allow_html=True)
         prompt_text = st.text_area("", key="theme_prompt")
 
-        # === Year Selection (all shown, all selected by default) ===
+        # === Year Selection ===
         st.markdown('<div class="field-label">Select survey year(s):</div>', unsafe_allow_html=True)
         select_all = st.checkbox("All years", value=True, key="select_all_years_2")
         all_years = [2024, 2022, 2020, 2019]
@@ -96,7 +116,7 @@ def run_menu2():
                 if st.checkbox(str(year), value=is_checked, key=f"year_{year}"):
                     selected_years.append(year)
 
-        # === Demographic Selection (default to All respondents) ===
+        # === Demographic Selection ===
         st.markdown('<div class="field-label">Select a demographic category (optional):</div>', unsafe_allow_html=True)
         demo_categories = sorted(demo_df[DEMO_CAT_COL].dropna().unique().tolist())
         demo_selection = st.selectbox("", ["All respondents"] + demo_categories, key="demo_theme_main")
