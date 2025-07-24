@@ -26,7 +26,7 @@ def run_menu4():
             .custom-instruction {
                 font-size: 16px !important;
                 line-height: 1.6;
-                margin-bottom: 20px;
+                margin-bottom: 16px;
                 color: #333;
             }
             .field-label {
@@ -51,22 +51,11 @@ def run_menu4():
         # === Header ===
         st.markdown('<div class="custom-header">📋 View Questionnaire</div>', unsafe_allow_html=True)
 
-        # === Instructions ===
+        # === Instructions (rendered properly) ===
         st.markdown(
-            """
-            <div class="custom-instruction">
-                You can search the 2024 PSES questionnaire by entering keywords in the text box below.<br><br>
-
-                Or, you can browse the full questionnaire by section directly on the official site:<br>
-                <a href="https://www.canada.ca/en/treasury-board-secretariat/services/innovation/public-service-employee-survey/2024-25/2024-25-public-service-employee-survey.html" target="_blank">
-                🌐 View the 2024-25 PSES Questionnaire online</a>.<br><br>
-
-                A downloadable PDF version is available here:<br>
-                <a href="https://github.com/Martin-Coder-Cloud/PSES---GPT/raw/main/2024%20PSES%20Questionnaire_English.pdf" target="_blank">📄 Download 2024 Questionnaire (English)</a><br><br>
-
-                📄 French version coming soon.
-            </div>
-            """,
+            '<div class="custom-instruction">'
+            'You can search the 2024 PSES questionnaire by entering keywords in the text box below.'
+            '</div>',
             unsafe_allow_html=True
         )
 
@@ -79,3 +68,17 @@ def run_menu4():
                 st.warning("⚠️ Please enter a keyword to search.")
             else:
                 st.markdown("🔄 *Searching questionnaire (functionality coming soon)...*")
+
+        # === Follow-up instruction and links ===
+        st.markdown(
+            '<div class="custom-instruction">'
+            'Or, you can browse the full questionnaire by section directly on the official site:<br>'
+            '<a href="https://www.canada.ca/en/treasury-board-secretariat/services/innovation/public-service-employee-survey/2024-25/2024-25-public-service-employee-survey.html" target="_blank">'
+            '🌐 View the 2024-25 PSES Questionnaire online</a><br><br>'
+            'A downloadable PDF version is available here:<br>'
+            '<a href="https://github.com/Martin-Coder-Cloud/PSES---GPT/raw/main/2024%20PSES%20Questionnaire_English.pdf" target="_blank">'
+            '📄 Download 2024 Questionnaire (English)</a><br><br>'
+            '📄 French version coming soon.'
+            '</div>',
+            unsafe_allow_html=True
+        )
