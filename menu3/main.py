@@ -75,20 +75,19 @@ def run_menu3():
         # === Header ===
         st.markdown('<div class="custom-header">📊 Analyze Data</div>', unsafe_allow_html=True)
 
-        # === Instructions (HTML now rendered properly) ===
-        st.markdown("""
-            <div class="custom-instruction">
-                This section provides a narrative summary based on trend and comparative analysis of survey results.
-                It focuses exclusively on the percentage of positive responses (combined “Strongly agree” and “Agree”)
-                for all opinion-based questions.<br><br>
-
-                Please describe your area of interest in the text box below. For example:<br>
-                <em>“Career development and recognition for employees with disabilities between 2020 and 2024.”</em><br><br>
-
-                Optionally, you may specify one or more survey years, as well as a demographic category 
-                to focus your comparative analysis.
-            </div>
-        """, unsafe_allow_html=True)
+        # === Instructional Text (HTML rendered cleanly) ===
+        st.markdown(
+            '<div class="custom-instruction">'
+            'This section provides a narrative summary based on trend and comparative analysis of survey results. '
+            'It focuses exclusively on the percentage of positive responses (combined “Strongly agree” and “Agree”) '
+            'for all opinion-based questions.<br><br>'
+            'Please describe your area of interest in the text box below. For example:<br>'
+            '<em>“Career development and recognition for employees with disabilities between 2020 and 2024.”</em><br><br>'
+            'Optionally, you may specify one or more survey years, as well as a demographic category '
+            'to focus your comparative analysis.'
+            '</div>',
+            unsafe_allow_html=True
+        )
 
         # === Prompt Text Box ===
         st.markdown('<div class="field-label">Describe your area of interest:</div>', unsafe_allow_html=True)
