@@ -23,7 +23,8 @@ def main():
         show_return_then_run(run_menu2)
         return
     elif st.session_state.run_menu == "3":
-        show_return_then_run(lambda: st.info("📊 Analyze Data is under construction."))
+        from menu3.main import run_menu3
+        show_return_then_run(run_menu3)
         return
     elif st.session_state.run_menu == "4":
         show_return_then_run(lambda: st.info("📋 View Questionnaire is under construction."))
