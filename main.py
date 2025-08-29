@@ -98,7 +98,7 @@ def main():
     """, unsafe_allow_html=True)
 
     st.markdown("<div class='main-section'>", unsafe_allow_html=True)
-    st.markdown("<div class='main-title'>Welcome to the AI Explorer of the Public Service Employee Survey (PSES)</div>", unsafe_allow_html=True)
+    st.markdown("<div class='main-title'>Welcome to the AI-powered Explorer of the Public Service Employee Survey (PSES)</div>", unsafe_allow_html=True)
     st.markdown("<div class='subtitle'>This AI app provides Public Service-wide survey results and analysis</div>", unsafe_allow_html=True)
     st.markdown("<div class='survey-years'>(2019, 2020, 2022, and 2024)</div>", unsafe_allow_html=True)
 
@@ -124,3 +124,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
