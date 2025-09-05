@@ -1,10 +1,7 @@
-# Menu1/main.py — PSES AI Explorer (Menu 1: Search by Question)
-# Strict filtering on (QUESTION, SURVEYR, DEMCODE).
-# DEMCODE handling:
-#   - All respondents  -> blank ("")
-#   - Category+Subgroup chosen -> single DEMCODE
-#   - Category chosen, no Subgroup -> all DEMCODEs for that category
-# Output: parameters summary -> title -> formatted table -> Positive-only narrative -> Excel download.
+# menu1/main.py — PSES AI Explorer (Menu 1: Search by Question) — RAW + METADATA-FIRST
+# • No normalization of the results dataset.
+# • Always resolve QUESTION and DEMCODE(s) from metadata first.
+# • DEMCODE(s) sent to the loader are 4-digit codes from Demographics.xlsx (blank only for "All respondents").
 
 import io
 from datetime import datetime
@@ -12,12 +9,10 @@ from datetime import datetime
 import pandas as pd
 import streamlit as st
 
-# Loader: reads Drive .csv.gz in chunks and (optionally) filters
-from utils.data_loader import load_results2024_filtered
-
+from utils.data_loader import load_results2024_filtered  # RAW loader (no normalization)
 
 # ─────────────────────────────
-# Metadata loaders (cached)
+# Cached metadata
 # ─────────────────────────────
 @st.cache_data(show_spinner=False)
 def load_demographics_metadata() -> pd.DataFrame:
@@ -32,82 +27,96 @@ def load_questions_metadata() -> pd.DataFrame:
     # Expect "question" (code) and "english" (text)
     if "question" in qdf.columns and "english" in qdf.columns:
         qdf = qdf.rename(columns={"question": "code", "english": "text"})
-    # Build display label
-    qdf["qnum"] = qdf["code"].astype(str).str.extract(r'Q?(\d+)', expand=False)
+    qdf["code"] = qdf["code"].astype(str).str.strip().str.upper()
+    qdf["qnum"] = qdf["code"].str.extract(r'Q?(\d+)', expand=False)
     with pd.option_context("mode.chained_assignment", None):
         qdf["qnum"] = pd.to_numeric(qdf["qnum"], errors="coerce")
     qdf = qdf.sort_values(["qnum", "code"], na_position="last")
-    qdf["display"] = qdf["code"].astype(str) + " – " + qdf["text"].astype(str)
+    qdf["display"] = qdf["code"] + " – " + qdf["text"].astype(str)
     return qdf[["code", "text", "display"]]
 
 @st.cache_data(show_spinner=False)
 def load_scales_metadata() -> pd.DataFrame:
     sdf = pd.read_excel("metadata/Survey Scales.xlsx")
-    # FIX: remove typo "for c in c in ..." and use a safe vectorized form
     sdf.columns = sdf.columns.str.strip().str.lower()
     return sdf
 
+# ─────────────────────────────
+# Helpers (metadata-first)
+# ─────────────────────────────
+def _find_demcode_col(demo_df: pd.DataFrame) -> str | None:
+    for c in ["DEMCODE", "DemCode", "CODE", "Code", "CODE_E", "Demographic code"]:
+        if c in demo_df.columns:
+            return c
+    return None
 
-# ─────────────────────────────
-# Helpers
-# ─────────────────────────────
-def resolve_demographic_codes(demo_df: pd.DataFrame, category_label: str | None, subgroup_label: str | None):
+def _four_digit(s: str) -> str:
+    # Keep digits only and left-pad to 4 (metadata is authoritative; this just standardizes)
+    s = "".join(ch for ch in str(s) if ch.isdigit())
+    return s.zfill(4) if s else ""
+
+def resolve_demographic_codes_from_metadata(
+    demo_df: pd.DataFrame,
+    category_label: str | None,
+    subgroup_label: str | None
+):
     """
     Returns:
-      demcodes: list[str|None]   (None means overall -> blank in query)
-      disp_map: dict[key,label]  (for display mapping; includes None -> "All respondents")
-      category_in_play: bool     (True if a category, not overall)
+      demcodes: list[str|None]   -> 4-digit codes from metadata (or [None] for All respondents)
+      disp_map: dict[key,label]  -> {code: human label}, includes {None: "All respondents"}
+      category_in_play: bool
     """
     DEMO_CAT_COL = "DEMCODE Category"
     LABEL_COL = "DESCRIP_E"
+    code_col = _find_demcode_col(demo_df)
 
-    # Try to locate the column that holds the DEMCODE values in metadata
-    code_col = None
-    for c in ["DEMCODE", "DemCode", "CODE", "Code", "CODE_E", "Demographic code"]:
-        if c in demo_df.columns:
-            code_col = c
-            break
-
-    # All respondents => blank (represented here as None; handled later)
+    # All respondents => blank DEMCODE
     if not category_label or category_label == "All respondents":
         return [None], {None: "All respondents"}, False
 
-    # Filter rows for the chosen category
+    # Subset metadata to chosen category
     df_cat = demo_df[demo_df[DEMO_CAT_COL] == category_label] if DEMO_CAT_COL in demo_df.columns else demo_df.copy()
     if df_cat.empty:
+        # Fall back to overall if category not found
         return [None], {None: "All respondents"}, False
 
-    # If a specific subgroup is selected, return that single code
+    # If a specific subgroup is selected, resolve its code from metadata
     if subgroup_label:
         if code_col and LABEL_COL in df_cat.columns:
             row = df_cat[df_cat[LABEL_COL] == subgroup_label]
             if not row.empty:
-                code = str(row.iloc[0][code_col])
-                return [code], {code: subgroup_label}, True
-        # Fallback: use subgroup label as identifier if no code_col found
+                raw_code = str(row.iloc[0][code_col])
+                code4 = _four_digit(raw_code)
+                # Only accept 4-digit; if it ends empty, we still return original (just in case)
+                code_final = code4 if code4 else raw_code
+                return [code_final], {code_final: subgroup_label}, True
+        # Fallback: if code column is not present, use label as the identifier (not ideal)
         return [subgroup_label], {subgroup_label: subgroup_label}, True
 
-    # No subgroup selected -> return ALL codes for the category
+    # No subgroup selected -> include all 4-digit codes defined for the category
     if code_col and LABEL_COL in df_cat.columns:
-        codes = df_cat[code_col].astype(str).tolist()
-        labels = df_cat[LABEL_COL].astype(str).tolist()
-        # keep non-blank codes
-        keep = [(c, l) for c, l in zip(codes, labels) if str(c).strip() != ""]
-        codes = [c for c, _ in keep]
-        disp_map = {c: l for c, l in keep}
-        return codes, disp_map, True
+        pairs = []
+        for _, r in df_cat.iterrows():
+            raw_code = str(r[code_col])
+            label = str(r[LABEL_COL])
+            code4 = _four_digit(raw_code)
+            if code4:  # must be 4-digit to pass
+                pairs.append((code4, label))
+        if pairs:
+            demcodes = [c for c, _ in pairs]
+            disp_map = {c: l for c, l in pairs}
+            return demcodes, disp_map, True
 
-    # Fallback: no explicit code column -> use labels
+    # Fallback when code column missing: use labels (last resort)
     if LABEL_COL in df_cat.columns:
         labels = df_cat[LABEL_COL].astype(str).tolist()
-        disp_map = {l: l for l in labels}
-        return labels, disp_map, True
+        return labels, {l: l for l in labels}, True
 
-    # If we get here, we couldn't resolve; treat as overall
+    # If nothing resolvable, treat as overall
     return [None], {None: "All respondents"}, False
 
-
 def get_scale_labels(scales_df: pd.DataFrame, question_code: str):
+    """Return [(raw_col, display_label)] for answer1..answer7 using scales metadata."""
     sdf = scales_df.copy()
     candidates = pd.DataFrame()
     for key in ["code", "question"]:
@@ -128,147 +137,107 @@ def get_scale_labels(scales_df: pd.DataFrame, question_code: str):
         labels.append((col, lbl))
     return labels
 
-
-def normalize_results_columns(df: pd.DataFrame) -> pd.DataFrame:
-    """
-    Normalize to canonical names used in this app:
-      question_code, year, group_value, answer1..answer7, positive_pct, neutral_pct, negative_pct, n
-    Supports raw PSES names (SURVEYR/DEMCODE/QUESTION/POSITIVE/NEUTRAL/NEGATIVE/ANSCOUNT).
-    """
-    out = df.copy()
-    rename_map = {}
-    if "SURVEYR" in out.columns and "year" not in out.columns: rename_map["SURVEYR"] = "year"
-    if "QUESTION" in out.columns and "question_code" not in out.columns: rename_map["QUESTION"] = "question_code"
-    if "DEMCODE" in out.columns and "group_value" not in out.columns: rename_map["DEMCODE"] = "group_value"
-    if "POSITIVE" in out.columns and "positive_pct" not in out.columns: rename_map["POSITIVE"] = "positive_pct"
-    if "NEUTRAL"  in out.columns and "neutral_pct"  not in out.columns: rename_map["NEUTRAL"]  = "neutral_pct"
-    if "NEGATIVE" in out.columns and "negative_pct" not in out.columns: rename_map["NEGATIVE"] = "negative_pct"
-    if "ANSCOUNT" in out.columns and "n"           not in out.columns: rename_map["ANSCOUNT"] = "n"
-    for i in range(1, 8):
-        up = f"ANSWER{i}"; lo = f"answer{i}"
-        if up in out.columns and lo not in out.columns: rename_map[up] = lo
-    if rename_map:
-        out = out.rename(columns=rename_map)
-
-    # Ensure presence of core columns
-    for col in ["year", "question_code", "group_value", "positive_pct", "neutral_pct", "negative_pct", "n"]:
-        if col not in out.columns:
-            out[col] = pd.NA
-
-    # Normalize types/values
-    out["year"] = pd.to_numeric(out["year"], errors="coerce").astype("Int64")
-    out["question_code"] = out["question_code"].astype(str).str.strip().str.upper()
-    if "group_value" in out.columns:
-        gv = out["group_value"]
-        out["group_value"] = gv.astype(str).where(~gv.isna(), "").str.strip()
-        out.loc[out["group_value"].str.lower().isin(["nan", "none", "null"]), "group_value"] = ""
-
-    return out
-
-
-def drop_na_999(df: pd.DataFrame) -> pd.DataFrame:
-    cols_check = [f"answer{i}" for i in range(1, 8)]
-    cols_check += ["positive_pct", "neutral_pct", "negative_pct", "n"]
-    present = [c for c in cols_check if c in df.columns]
+def exclude_999_raw(df: pd.DataFrame) -> pd.DataFrame:
+    cols = [f"answer{i}" for i in range(1, 8)] + ["POSITIVE", "NEUTRAL", "NEGATIVE", "ANSCOUNT"]
+    present = [c for c in cols if c in df.columns]
     if not present:
         return df
-    mask_keep = pd.Series(True, index=df.index)
+    out = df.copy()
+    keep = pd.Series(True, index=out.index)
     for c in present:
-        vals = pd.to_numeric(df[c], errors="coerce")
-        mask_keep &= (vals != 999)
-    return df.loc[mask_keep].copy()
+        vals = pd.to_numeric(out[c], errors="coerce")
+        keep &= (vals != 999)
+    return out.loc[keep].copy()
 
+def format_display_table_raw(df: pd.DataFrame, category_in_play: bool, dem_disp_map: dict, scale_pairs) -> pd.DataFrame:
+    if df.empty:
+        return df.copy()
 
-def format_table_for_display(df_slice: pd.DataFrame, scale_pairs, category_in_play: bool, dem_disp_map: dict) -> pd.DataFrame:
-    if df_slice.empty:
-        return df_slice.copy()
-    out = df_slice.copy()
-
-    out["YearNum"] = pd.to_numeric(out["year"], errors="coerce").astype("Int64")
-    out["Year"] = out["YearNum"].astype(str)
+    out = df.copy()
+    out["__YearNum__"] = pd.to_numeric(out["SURVEYR"], errors="coerce").astype("Int64")
+    out["Year"] = out["SURVEYR"].astype(str)
 
     if category_in_play:
-        def lbl(code):
-            if code is None or str(code).strip() == "":
+        def to_label(code):
+            code = "" if code is None else str(code)
+            if code.strip() == "":
                 return "All respondents"
             return dem_disp_map.get(code, dem_disp_map.get(str(code), str(code)))
-        out["Demographic"] = out["group_value"].apply(lbl)
+        out["Demographic"] = out["DEMCODE"].apply(to_label)
 
-    dist_cols = [k for k, _ in scale_pairs if k in out.columns]
+    dist_cols = [f"answer{i}" for i in range(1, 8) if f"answer{i}" in out.columns]
     rename_map = {k: v for k, v in scale_pairs if k in out.columns}
 
-    keep_cols = ["YearNum", "Year"] + (["Demographic"] if category_in_play else []) \
-                + dist_cols + ["positive_pct", "neutral_pct", "negative_pct", "n"]
-    out = out[keep_cols].copy()
-    out = out.rename(columns=rename_map)
-    out = out.rename(columns={"positive_pct": "Positive", "neutral_pct": "Neutral", "negative_pct": "Negative", "n": "n"})
+    keep_cols = ["__YearNum__", "Year"] + (["Demographic"] if category_in_play else []) \
+                + dist_cols + ["POSITIVE", "NEUTRAL", "NEGATIVE", "ANSCOUNT"]
+    keep_cols = [c for c in keep_cols if c in out.columns]
+    out = out[keep_cols].rename(columns=rename_map).copy()
 
-    sort_cols = ["YearNum"] + (["Demographic"] if category_in_play else [])
+    sort_cols = ["__YearNum__"] + (["Demographic"] if category_in_play else [])
     sort_asc = [False] + ([True] if category_in_play else [])
     out = out.sort_values(sort_cols, ascending=sort_asc, kind="mergesort").reset_index(drop=True)
-    out = out.drop(columns=["YearNum"])
+    out = out.drop(columns=["__YearNum__"])
 
     for c in out.columns:
         if c not in ("Year", "Demographic"):
             out[c] = pd.to_numeric(out[c], errors="coerce")
-    pct_like = [c for c in out.columns if c not in ("Year", "Demographic", "n")]
-    out[pct_like] = out[pct_like].round(1)
-    if "n" in out.columns:
-        out["n"] = out["n"].astype("Int64")
+    pct_like = [c for c in out.columns if c not in ("Year", "Demographic", "ANSCOUNT")]
+    if pct_like:
+        out[pct_like] = out[pct_like].round(1)
+    if "ANSCOUNT" in out.columns:
+        out["ANSCOUNT"] = pd.to_numeric(out["ANSCOUNT"], errors="coerce").astype("Int64")
 
     return out
 
-
-def build_positive_only_narrative(df_disp: pd.DataFrame, category_in_play: bool) -> str:
-    if df_disp.empty or "Positive" not in df_disp.columns:
+def narrative_positive_only_raw(df_disp: pd.DataFrame, category_in_play: bool) -> str:
+    pos_col = "POSITIVE" if "POSITIVE" in df_disp.columns else ("Positive" if "Positive" in df_disp.columns else None)
+    if df_disp.empty or pos_col is None:
         return "No results available to summarize."
+
     t = df_disp.copy()
     t["_Y"] = pd.to_numeric(t["Year"], errors="coerce")
+    if t["_Y"].isna().all():
+        return "No results available to summarize."
     latest = int(t["_Y"].max())
     latest_rows = t[t["_Y"] == latest]
-    lines = []
 
+    lines = []
     if category_in_play and "Demographic" in t.columns:
-        groups = latest_rows.dropna(subset=["Positive"]).sort_values("Positive", ascending=False)
+        groups = latest_rows.dropna(subset=[pos_col]).sort_values(pos_col, ascending=False)
         if len(groups) >= 2:
             top = groups.iloc[0]; bot = groups.iloc[-1]
             lines.append(
-                f"In {latest}, {top['Demographic']} is highest on Positive ({top['Positive']:.1f}%), "
-                f"while {bot['Demographic']} is lowest ({bot['Positive']:.1f}%)."
+                f"In {latest}, {top['Demographic']} is highest on Positive ({float(top[pos_col]):.1f}%), "
+                f"while {bot['Demographic']} is lowest ({float(bot[pos_col]):.1f}%)."
             )
         elif len(groups) == 1:
             g = groups.iloc[0]
-            lines.append(f"In {latest}, {g['Demographic']} has Positive at {g['Positive']:.1f}%.")
+            lines.append(f"In {latest}, {g['Demographic']} has Positive at {float(g[pos_col]):.1f}%.")
 
-    def prev_year(subdf: pd.DataFrame):
-        ys = sorted(pd.to_numeric(subdf["Year"], errors="coerce").dropna().unique().tolist())
-        return int(ys[-2]) if len(ys) >= 2 else None
-
-    if category_in_play and "Demographic" in t.columns:
-        top3 = latest_rows.sort_values("Positive", ascending=False).head(3)["Demographic"].tolist()
-        for g in top3:
-            s = t[t["Demographic"] == g]
-            prev = prev_year(s)
-            if prev is not None:
-                lp = s[s["Year"] == str(latest)]["Positive"].dropna()
-                pp = s[s["Year"] == str(prev)]["Positive"].dropna()
-                if not lp.empty and not pp.empty:
-                    delta = lp.iloc[0] - pp.iloc[0]
-                    lines.append(f"{g}: {latest} {lp.iloc[0]:.1f}% ({delta:+.1f} pts vs {prev}).")
-    else:
-        prev = prev_year(t)
+        ys = sorted(pd.to_numeric(t["Year"], errors="coerce").dropna().unique().tolist())
+        prev = int(ys[-2]) if len(ys) >= 2 else None
         if prev is not None:
-            lp = latest_rows["Positive"].dropna()
-            pp = t[t["Year"] == str(prev)]["Positive"].dropna()
+            for gname in latest_rows.sort_values(pos_col, ascending=False).head(3)["Demographic"]:
+                s = t[t["Demographic"] == gname]
+                lp = s[s["Year"] == str(latest)][pos_col].dropna()
+                pp = s[s["Year"] == str(prev)][pos_col].dropna()
+                if not lp.empty and not pp.empty:
+                    delta = float(lp.iloc[0]) - float(pp.iloc[0])
+                    lines.append(f"{gname}: {latest} {float(lp.iloc[0]):.1f}% ({delta:+.1f} pts vs {prev}).")
+    else:
+        ys = sorted(pd.to_numeric(t["Year"], errors="coerce").dropna().unique().tolist())
+        prev = int(ys[-2]) if len(ys) >= 2 else None
+        if prev is not None:
+            lp = latest_rows[pos_col].dropna()
+            pp = t[t["Year"] == str(prev)][pos_col].dropna()
             if not lp.empty and not pp.empty:
-                delta = lp.iloc[0] - pp.iloc[0]
-                lines.append(f"Overall: {latest} {lp.iloc[0]:.1f}% ({delta:+.1f} pts vs {prev}).")
+                delta = float(lp.iloc[0]) - float(pp.iloc[0])
+                lines.append(f"Overall: {latest} {float(lp.iloc[0]):.1f}% ({delta:+.1f} pts vs {prev}).")
 
     return " ".join(lines) if lines else "No notable changes to report based on Positive."
 
-
 # ─────────────────────────────
-# UI (kept close to your current look)
+# UI
 # ─────────────────────────────
 def run_menu1():
     st.markdown("""
@@ -301,19 +270,14 @@ def run_menu1():
             </div>
         """, unsafe_allow_html=True)
 
-        # Question
+        # Question (from metadata)
         st.markdown('<div class="field-label">Select a survey question:</div>', unsafe_allow_html=True)
         question_options = qdf["display"].tolist()
-        selected_label = st.selectbox(
-            "Question",
-            question_options,
-            key="question_dropdown",
-            label_visibility="collapsed"
-        )
+        selected_label = st.selectbox("Question", question_options, key="question_dropdown", label_visibility="collapsed")
         question_code = qdf.loc[qdf["display"] == selected_label, "code"].values[0]
         question_text = qdf.loc[qdf["display"] == selected_label, "text"].values[0]
 
-        # Years (fixed set you’re using right now)
+        # Years
         st.markdown('<div class="field-label">Select survey year(s):</div>', unsafe_allow_html=True)
         all_years = [2024, 2022, 2020, 2019]
         select_all = st.checkbox("All years", value=True, key="select_all_years")
@@ -329,61 +293,47 @@ def run_menu1():
             st.warning("⚠️ Please select at least one year.")
             return
 
-        # Demographic Category + Subgroup
+        # Demographic category/subgroup (resolve codes from metadata)
         DEMO_CAT_COL = "DEMCODE Category"
         LABEL_COL = "DESCRIP_E"
-
         st.markdown('<div class="field-label">Select a demographic category (or All respondents):</div>', unsafe_allow_html=True)
         demo_categories = ["All respondents"] + sorted(demo_df[DEMO_CAT_COL].dropna().astype(str).unique().tolist())
-        demo_selection = st.selectbox(
-            "Demographic category",
-            demo_categories,
-            key="demo_main",
-            label_visibility="collapsed"
-        )
+        demo_selection = st.selectbox("Demographic category", demo_categories, key="demo_main", label_visibility="collapsed")
 
         sub_selection = None
         if demo_selection != "All respondents":
             st.markdown(f'<div class="field-label">Subgroup ({demo_selection}) (optional):</div>', unsafe_allow_html=True)
             sub_items = demo_df.loc[demo_df[DEMO_CAT_COL] == demo_selection, LABEL_COL].dropna().astype(str).unique().tolist()
             sub_items = sorted(sub_items)
-            sub_selection = st.selectbox(
-                "(leave blank to include all subgroups in this category)",
-                [""] + sub_items,
-                key=f"sub_{demo_selection.replace(' ', '_')}",
-                label_visibility="collapsed"
-            )
+            sub_selection = st.selectbox("(leave blank to include all subgroups in this category)", [""] + sub_items, key=f"sub_{demo_selection.replace(' ', '_')}", label_visibility="collapsed")
             if sub_selection == "":
                 sub_selection = None
 
-        # Search
+        # Resolve DEMCODE(s) from metadata (4-digit) and show parameters BEFORE query
+        demcodes, disp_map, category_in_play = resolve_demographic_codes_from_metadata(demo_df, demo_selection, sub_selection)
+        dem_display = ["(blank)"] if demcodes == [None] else [str(c) for c in demcodes]
+
+        params_df = pd.DataFrame({
+            "Parameter": ["QUESTION (from metadata)", "SURVEYR (years)", "DEMCODE(s) (from metadata)"],
+            "Value": [question_code, ", ".join(map(str, selected_years)), ", ".join(dem_display)]
+        })
+        st.markdown("##### Parameters that will be passed to the database")
+        st.dataframe(params_df, use_container_width=True, hide_index=True)
+
+        # Run query (RAW, no normalization)
         with st.container():
             st.markdown('<div class="big-button">', unsafe_allow_html=True)
-            if st.button("🔎 Search"):
-                # 1) Resolve DEMCODE(s) from metadata
-                demcodes, disp_map, category_in_play = resolve_demographic_codes(demo_df, demo_selection, sub_selection)
-
-                # Prepare DEMCODEs text for parameter summary
-                dem_display = ["(blank)"] if demcodes == [None] else [str(c) for c in demcodes]
-
-                # 2) Show PARAMETERS USED (for validation)
-                params_df = pd.DataFrame({
-                    "Parameter": ["QUESTION", "SURVEYR (years)", "DEMCODE(s)"],
-                    "Value": [question_code, ", ".join(map(str, selected_years)), ", ".join(dem_display)]
-                })
-                st.markdown("##### Parameters used")
-                st.dataframe(params_df, use_container_width=True, hide_index=True)
-
-                # 3) Scale labels for this question
+            if st.button("🔎 Run query"):
+                # Scale labels
                 scale_pairs = get_scale_labels(sdf, question_code)
 
-                # 4) Pull and combine results for each DEMCODE
+                # Pull results per DEMCODE via loader (RAW filter on trio)
                 parts = []
                 for code in demcodes:
                     df_part = load_results2024_filtered(
-                        question_code=question_code,   # exact code
-                        years=selected_years,          # exact years
-                        group_value=code               # None -> overall (blank) enforced after normalization
+                        question_code=question_code,
+                        years=selected_years,
+                        group_value=code  # None => blank DEMCODE
                     )
                     if df_part is not None and not df_part.empty:
                         parts.append(df_part)
@@ -392,49 +342,44 @@ def run_menu1():
                     st.info("No data found for this selection.")
                     return
 
-                df = pd.concat(parts, ignore_index=True)
+                df_raw = pd.concat(parts, ignore_index=True)
 
-                # 5) Normalize to canonical columns
-                df = normalize_results_columns(df)
-
-                # 6) STRICT guard on exact selections (QUESTION, SURVEYR, DEMCODE)
-                qmask = df["question_code"] == str(question_code).strip().upper()
-                ymask = df["year"].isin(pd.Series(selected_years, dtype="Int64"))
-                if demcodes == [None]:  # All respondents -> DEMCODE blank only
-                    gmask = (df["group_value"].astype(str).str.strip() == "")
+                # SECOND strict guard on RAW columns (defensive)
+                qmask = df_raw["QUESTION"].astype(str).str.strip().str.upper() == str(question_code).strip().upper()
+                ymask = df_raw["SURVEYR"].astype(str).isin([str(y) for y in selected_years])
+                if demcodes == [None]:
+                    gmask = df_raw["DEMCODE"].astype(str).str.strip() == ""
                 else:
-                    demcode_strs = [str(c) for c in demcodes]
-                    gmask = df["group_value"].astype(str).isin(demcode_strs)
+                    gmask = df_raw["DEMCODE"].astype(str).isin([("" if gv is None else str(gv)) for gv in demcodes])
+                df_raw = df_raw[qmask & ymask & gmask].copy()
 
-                df = df[qmask & ymask & gmask].copy()
-
-                if df.empty:
+                if df_raw.empty:
                     st.info("No data found after applying filters (exact QUESTION, selected SURVEYR years, DEMCODE set).")
                     return
 
-                # 7) Exclude sentinel 999 rows
-                df = drop_na_999(df)
-                if df.empty:
+                # Exclude 999 for display & narrative
+                df_raw = exclude_999_raw(df_raw)
+                if df_raw.empty:
                     st.info("Data exists, but all rows are not applicable (999).")
                     return
 
-                # 8) Title
+                # Title
                 st.subheader(f"{question_code} — {question_text}")
 
-                # 9) Build display table
-                df_disp = format_table_for_display(
-                    df_slice=df,
-                    scale_pairs=scale_pairs,
+                # Display table
+                df_disp = format_display_table_raw(
+                    df=df_raw,
                     category_in_play=category_in_play,
-                    dem_disp_map=({None: "All respondents"} | {str(k): v for k, v in disp_map.items()})
+                    dem_disp_map=({None: "All respondents"} | {str(k): v for k, v in disp_map.items()}),
+                    scale_pairs=scale_pairs
                 )
                 st.dataframe(df_disp, use_container_width=True)
 
-                # 10) Narrative (Positive only)
+                # Narrative (Positive only)
                 st.markdown("#### Summary (Positive only)")
-                st.write(build_positive_only_narrative(df_disp, category_in_play))
+                st.write(narrative_positive_only_raw(df_disp, category_in_play))
 
-                # 11) Excel download (exactly what is displayed)
+                # Excel download (exactly what is displayed)
                 with io.BytesIO() as buf:
                     with pd.ExcelWriter(buf, engine="xlsxwriter") as writer:
                         df_disp.to_excel(writer, sheet_name="Results", index=False)
@@ -453,6 +398,7 @@ def run_menu1():
                     file_name=f"PSES_{question_code}_{'-'.join(map(str, selected_years))}.xlsx",
                     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                 )
+            st.markdown('</div>', unsafe_allow_html=True)
 
 
 if __name__ == "__main__":
