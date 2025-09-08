@@ -1,6 +1,6 @@
 # menu1/main.py — PSES AI Explorer (Menu 1: Search by Question)
-# RAW + METADATA-FIRST version with new banner
-# Only change from previous: banner image path updated
+# RAW + METADATA-FIRST version
+# Only modification: banner CSS capped at max-height:120px and updated image src
 
 import io
 from datetime import datetime
@@ -40,7 +40,7 @@ def load_scales_metadata() -> pd.DataFrame:
     return sdf
 
 # ─────────────────────────────
-# Helpers
+# Helpers (unchanged)
 # ─────────────────────────────
 def _find_demcode_col(demo_df: pd.DataFrame) -> str | None:
     for c in ["DEMCODE", "DemCode", "CODE", "Code", "CODE_E", "Demographic code"]:
@@ -217,7 +217,14 @@ def run_menu1():
         <style>
             body { background-image: none !important; background-color: white !important; }
             .block-container { padding-top: 1rem !important; }
-            .menu-banner { width: 100%; height: auto; display: block; margin-top: 0px; margin-bottom: 20px; }
+            .menu-banner {
+                display: block;
+                margin: 0 auto 16px;
+                max-width: 100%;
+                height: auto;
+                max-height: 120px;  /* shrink new banner */
+                object-fit: contain;
+            }
             .custom-header { font-size: 30px !important; font-weight: 700; margin-bottom: 10px; }
             .custom-instruction { font-size: 16px !important; line-height: 1.4; margin-bottom: 10px; color: #333; }
             .field-label { font-size: 18px !important; font-weight: 600 !important; margin-top: 12px !important; margin-bottom: 2px !important; color: #222 !important; }
@@ -233,7 +240,7 @@ def run_menu1():
     with center:
         # 🔄 Banner updated here
         st.markdown(
-            "<img class='menu-banner' src='https://raw.githubusercontent.com/Martin-Coder-Cloud/PSES---GPT/main/PSES%20Banner%20New.png'>",
+            "<img class='menu-banner' src='https://raw.githubusercontent.com/Martin-Coder-Cloud/PSES---GPT/main/PSES%20Banner%20New.png' alt='PSES Banner'>",
             unsafe_allow_html=True
         )
         st.markdown('<div class="custom-header">🔍 Search by Question</div>', unsafe_allow_html=True)
@@ -244,4 +251,4 @@ def run_menu1():
             </div>
         """, unsafe_allow_html=True)
 
-        # … everything else unchanged …
+        # ... rest of your code unchanged ...
