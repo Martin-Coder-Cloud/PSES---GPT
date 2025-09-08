@@ -259,7 +259,7 @@ def run_menu1():
     left, center, right = st.columns([1, 3, 1])
     with center:
         st.markdown(
-            "<img class='menu-banner' src='https://raw.githubusercontent.com/Martin-Coder-Cloud/PSES---GPT/refs/heads/main/PSES%20email%20banner.png'>",
+            "<img class='menu-banner' src="<img class='menu-banner' src='https://raw.githubusercontent.com/Martin-Coder-Cloud/PSES---GPT/refs/heads/main/PSES%20email%20banner.png'>",
             unsafe_allow_html=True
         )
         st.markdown('<div class="custom-header">🔍 Search by Question</div>', unsafe_allow_html=True)
