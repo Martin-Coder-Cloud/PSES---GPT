@@ -1,128 +1,105 @@
 # utils/data_loader.py
-# Streamed loader for Results2024.csv.gz with minimal header normalization.
-# - Reads gzipped CSV in chunks
-# - Preserves data as text (dtype=str) so blanks stay ""
-# - DOES NOT rename columns; only strips whitespace and uppercases headers
-# - Exposes: load_results2024_filtered(question_code, years, group_value)
+# -----------------------------------------------------------------------------
+# Streamed loader for Results2024.csv.gz (RAW passthrough).
+# - Filters ONLY on QUESTION, SURVEYR (year), and DEMCODE (blank => All).
+# - Does NOT reference BYCOND or LEVEL* columns.
+# - Preserves the original columns/values (reads as text; blanks stay "").
+# - Returns the full matching rows (no normalization, no de-dup).
+# -----------------------------------------------------------------------------
 
-from __future__ import annotations
-
-import io
+from typing import List, Optional
 import os
 import gzip
-from typing import Iterable, List, Optional
 
+import gdown
 import pandas as pd
-import requests
+import streamlit as st
+
+# You can override this in .streamlit/secrets.toml with RESULTS2024_FILE_ID
+GDRIVE_FILE_ID_FALLBACK = "1VdMQQfEP-BNXle8GeD-Z_upt2pPIGvc8"
+LOCAL_GZ_PATH = "/tmp/Results2024.csv.gz"
 
 
-# You can change this to point to a local file if you prefer.
-DEFAULT_GDRIVE_FILE_ID = "1VdMQQfEP-BNXle8GeD-Z_upt2pPIGvc8"
-DEFAULT_LOCAL_PATH = os.environ.get("PSES_RESULTS_PATH", "/tmp/Results2024.csv.gz")
+@st.cache_resource(show_spinner="📥 Downloading Results2024.csv.gz…")
+def ensure_results2024_local(file_id: Optional[str] = None) -> str:
+    """Ensure the gzipped CSV is present locally and return its path."""
+    file_id = file_id or st.secrets.get("RESULTS2024_FILE_ID", GDRIVE_FILE_ID_FALLBACK)
+    if not file_id:
+        raise RuntimeError("RESULTS2024_FILE_ID missing in .streamlit/secrets.toml")
+
+    if not os.path.exists(LOCAL_GZ_PATH) or os.path.getsize(LOCAL_GZ_PATH) == 0:
+        url = f"https://drive.google.com/uc?id={file_id}"
+        os.makedirs(os.path.dirname(LOCAL_GZ_PATH), exist_ok=True)
+        gdown.download(url, LOCAL_GZ_PATH, quiet=False)
+    return LOCAL_GZ_PATH
 
 
-def _download_from_gdrive(file_id: str, dest_path: str) -> None:
-    """Download a file from Google Drive to dest_path (simple uc?id=... URL)."""
-    url = f"https://drive.google.com/uc?id={file_id}"
-    with requests.get(url, stream=True, timeout=60) as r:
-        r.raise_for_status()
-        os.makedirs(os.path.dirname(dest_path), exist_ok=True)
-        with open(dest_path, "wb") as f:
-            for chunk in r.iter_content(chunk_size=1024 * 1024):
-                if chunk:
-                    f.write(chunk)
-
-
-def _ensure_gz_file(path: str = DEFAULT_LOCAL_PATH, gdrive_file_id: str = DEFAULT_GDRIVE_FILE_ID) -> str:
-    """Ensure the gz file exists locally; if not, download from Google Drive."""
-    if not os.path.exists(path) or os.path.getsize(path) == 0:
-        _download_from_gdrive(gdrive_file_id, path)
-    return path
-
-
-def _chunk_reader(stream: io.BufferedReader, chunksize: int = 200_000) -> Iterable[pd.DataFrame]:
+def _chunk_reader(path: str, chunksize: int = 200_000):
     """
-    Yields DataFrame chunks from the gzipped CSV **as text**.
-    - dtype=str to preserve values exactly as strings
-    - keep_default_na=False and na_filter=False to keep blanks as ""
-    - column headers are STRIPPED and UPPERCASED (ONLY normalization we do)
+    Yield DataFrame chunks from the gzipped CSV as **text**:
+      - dtype=str to preserve values exactly
+      - keep_default_na=False / na_filter=False so blanks stay ""
+      - Only header normalization: strip + UPPERCASE
     """
-    with gzip.open(stream, mode="rt", newline="") as f:
+    with gzip.open(path, mode="rt", newline="") as f:
         for chunk in pd.read_csv(
             f,
             chunksize=chunksize,
-            dtype=str,             # everything as text
-            keep_default_na=False, # do NOT convert empty to NaN
-            na_filter=False,       # do NOT detect NA strings
+            dtype=str,
+            keep_default_na=False,
+            na_filter=False,
+            low_memory=True,
         ):
-            # 🔧 Normalize headers: strip whitespace, uppercase
             chunk.columns = [str(c).strip().upper() for c in chunk.columns]
             yield chunk
 
 
+@st.cache_data(show_spinner="🔎 Filtering results…")
 def load_results2024_filtered(
     question_code: str,
     years: List[int],
-    group_value: Optional[str]
+    group_value: Optional[str] = None,     # None or "" => All respondents (blank DEMCODE)
+    chunksize: int = 200_000,
 ) -> pd.DataFrame:
     """
-    Load Results2024.csv.gz in chunks and filter by:
-      - QUESTION == question_code (case-insensitive, stripped)
-      - SURVEYR in selected years (compared as strings)
-      - DEMCODE == "" if group_value is None (All respondents),
-        otherwise DEMCODE == str(group_value)
-      - For All respondents ONLY, also require BYCOND == "" (if present) AND LEVEL1ID in {"0",""} (if present)
+    Filter rows where:
+      - QUESTION equals `question_code` (case-insensitive, stripped)
+      - SURVEYR is in `years`
+      - DEMCODE is "" (when group_value is None/"") OR equals the provided code
 
-    Returns a concatenated DataFrame (may be empty). Columns remain as in source,
-    except headers are guaranteed to be UPPERCASE w/ no leading/trailing spaces.
+    Returns all matching rows with their original columns preserved.
     """
-    # Ensure local gz file is present
-    gz_path = _ensure_gz_file()
+    path = ensure_results2024_local()
 
-    str_years = {str(y) for y in years}
     q_target = str(question_code).strip().upper()
+    years_str = {str(y) for y in years}
+    want_blank_dem = (group_value is None) or (str(group_value).strip() == "") or (str(group_value).strip().upper() == "ALL")
 
-    parts: List[pd.DataFrame] = []
+    parts: list[pd.DataFrame] = []
 
-    with open(gz_path, "rb") as fh:
-        for chunk in _chunk_reader(fh):
-            # Defensive: ensure required columns exist
-            required = {"QUESTION", "SURVEYR", "DEMCODE"}
-            if not required.issubset(set(chunk.columns)):
-                continue
+    for chunk in _chunk_reader(path, chunksize=chunksize):
+        # Guard: chunk must have these columns
+        if not {"QUESTION", "SURVEYR", "DEMCODE"}.issubset(set(chunk.columns)):
+            continue
 
-            # Base masks
-            qmask = chunk["QUESTION"].astype(str).str.strip().str.upper() == q_target
-            ymask = chunk["SURVEYR"].astype(str).isin(str_years)
+        qmask = chunk["QUESTION"].astype(str).str.strip().str.upper() == q_target
+        ymask = chunk["SURVEYR"].astype(str).isin(years_str)
 
-            if group_value is None:
-                # All respondents => DEMCODE must be blank
-                gmask = chunk["DEMCODE"].astype(str).str.strip() == ""
+        if want_blank_dem:
+            gmask = chunk["DEMCODE"].astype(str).str.strip() == ""
+        else:
+            gmask = chunk["DEMCODE"].astype(str) == str(group_value)
 
-                # PS-wide guards (only if columns exist)
-                bycond_mask = True
-                if "BYCOND" in chunk.columns:
-                    bycond_mask = chunk["BYCOND"].astype(str).str.strip() == ""
-
-                lvl_mask = True
-                if "LEVEL1ID" in chunk.columns:
-                    lvl_mask = chunk["LEVEL1ID"].astype(str).str.strip().isin(["0", ""])
-
-                sub = chunk[qmask & ymask & gmask & bycond_mask & lvl_mask]
-            else:
-                gmask = chunk["DEMCODE"].astype(str) == str(group_value)
-                sub = chunk[qmask & ymask & gmask]
-
-            if not sub.empty:
-                parts.append(sub)
+        sub = chunk[qmask & ymask & gmask]
+        if not sub.empty:
+            parts.append(sub)
 
     if parts:
         return pd.concat(parts, ignore_index=True)
 
-    # Stable (empty) frame with common headers uppercased
+    # Provide a stable empty frame with common headers (helps downstream UI)
     return pd.DataFrame(columns=[
         "LEVEL1ID","LEVEL2ID","LEVEL3ID","LEVEL4ID","LEVEL5ID",
-        "SURVEYR","BYCOND","DEMCODE","QUESTION",
-        "ANSWER1","ANSWER2","ANSWER3","ANSWER4","ANSWER5","ANSWER6","ANSWER7",
+        "SURVEYR","DEMCODE","QUESTION","ANSWER1","ANSWER2","ANSWER3","ANSWER4","ANSWER5","ANSWER6","ANSWER7",
         "POSITIVE","NEUTRAL","NEGATIVE","SCORE5","SCORE100","ANSCOUNT"
     ])
