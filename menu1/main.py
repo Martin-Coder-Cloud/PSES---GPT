@@ -257,24 +257,13 @@ def narrative_positive_only_raw(df_disp: pd.DataFrame, category_in_play: bool) -
 # UI
 # ─────────────────────────────
 def run_menu1():
-    # Scoped, local styles only (no global container overrides)
+    # Local styles only (no global container overrides)
     st.markdown("""
     <style>
-      /* Scope EVERYTHING to Menu 1 only */
-      .menu1-wrap{ max-width: 900px; margin: 0 auto; padding: 0 12px; }
-
-      .menu1-wrap .menu-banner{
-        width: 50%;               /* 50% of the centered wrapper */
-        max-width: 420px;         /* guardrail on very wide screens */
-        height: auto;
-        display: block;
-        margin: 0 auto 16px;      /* centered */
-      }
-
-      .menu1-wrap .custom-header{ font-size: 26px; font-weight: 700; margin-bottom: 8px; }
-      .menu1-wrap .custom-instruction{ font-size: 15px; line-height: 1.4; margin-bottom: 8px; color: #333; }
-      .menu1-wrap .field-label{ font-size: 16px; font-weight: 600; margin: 10px 0 2px; color: #222; }
-      .menu1-wrap .big-button button{ font-size: 16px; padding: 0.6em 1.6em; margin-top: 16px; }
+      .custom-header{ font-size: 26px; font-weight: 700; margin-bottom: 8px; }
+      .custom-instruction{ font-size: 15px; line-height: 1.4; margin-bottom: 8px; color: #333; }
+      .field-label{ font-size: 16px; font-weight: 600; margin: 10px 0 2px; color: #222; }
+      .big-button button{ font-size: 16px; padding: 0.6em 1.6em; margin-top: 16px; }
     </style>
     """, unsafe_allow_html=True)
 
@@ -282,210 +271,204 @@ def run_menu1():
     qdf = load_questions_metadata()
     sdf = load_scales_metadata()
 
-    # Centered wrapper (no global/container overrides)
-    st.markdown("<div class='menu1-wrap'>", unsafe_allow_html=True)
+    # Centered column with generous margins on both sides
+    left, center, right = st.columns([1, 2, 1])
+    with center:
+        # Banner (50% of center column, centered)
+        st.markdown(
+            "<img "
+            "style='width:50%;max-width:420px;height:auto;display:block;margin:0 auto 16px;' "
+            "src='https://raw.githubusercontent.com/Martin-Coder-Cloud/PSES---GPT/main/PSES%20Banner%20New.png'>",
+            unsafe_allow_html=True
+        )
+        st.markdown('<div class="custom-header">🔍 Search by Question</div>', unsafe_allow_html=True)
+        st.markdown(
+            '<div class="custom-instruction">'
+            'Select a question, year(s), and (optionally) a demographic category and subgroup.<br>'
+            'The query always uses <b>QUESTION</b>, <b>Year</b>, and <b>DEMCODE</b>.'
+            '</div>',
+            unsafe_allow_html=True
+        )
 
-    # Banner + header
-    st.markdown(
-        "<img class='menu-banner' "
-        "src='https://raw.githubusercontent.com/Martin-Coder-Cloud/PSES---GPT/main/PSES%20Banner%20New.png'>",
-        unsafe_allow_html=True
-    )
-    st.markdown('<div class="custom-header">🔍 Search by Question</div>', unsafe_allow_html=True)
-    st.markdown(
-        '<div class="custom-instruction">'
-        'Select a question, year(s), and (optionally) a demographic category and subgroup.<br>'
-        'The query always uses <b>QUESTION</b>, <b>Year</b>, and <b>DEMCODE</b>.'
-        '</div>',
-        unsafe_allow_html=True
-    )
+        # Question (from metadata)
+        st.markdown('<div class="field-label">Select a survey question:</div>', unsafe_allow_html=True)
+        question_options = qdf["display"].tolist()
+        selected_label = st.selectbox("Question", question_options, key="question_dropdown", label_visibility="collapsed")
+        question_code = qdf.loc[qdf["display"] == selected_label, "code"].values[0]
+        question_text = qdf.loc[qdf["display"] == selected_label, "text"].values[0]
 
-    # Question (from metadata)
-    st.markdown('<div class="field-label">Select a survey question:</div>', unsafe_allow_html=True)
-    question_options = qdf["display"].tolist()
-    selected_label = st.selectbox("Question", question_options, key="question_dropdown", label_visibility="collapsed")
-    question_code = qdf.loc[qdf["display"] == selected_label, "code"].values[0]
-    question_text = qdf.loc[qdf["display"] == selected_label, "text"].values[0]
+        # Years
+        st.markdown('<div class="field-label">Select survey year(s):</div>', unsafe_allow_html=True)
+        all_years = [2024, 2022, 2020, 2019]
+        select_all = st.checkbox("All years", value=True, key="select_all_years")
+        selected_years = []
+        year_cols = st.columns(len(all_years))
+        for idx, yr in enumerate(all_years):
+            with year_cols[idx]:
+                checked = True if select_all else False
+                if st.checkbox(str(yr), value=checked, key=f"year_{yr}"):
+                    selected_years.append(yr)
+        selected_years = sorted(selected_years)
+        if not selected_years:
+            st.warning("⚠️ Please select at least one year.")
+            return
 
-    # Years
-    st.markdown('<div class="field-label">Select survey year(s):</div>', unsafe_allow_html=True)
-    all_years = [2024, 2022, 2020, 2019]
-    select_all = st.checkbox("All years", value=True, key="select_all_years")
-    selected_years = []
-    year_cols = st.columns(len(all_years))
-    for idx, yr in enumerate(all_years):
-        with year_cols[idx]:
-            checked = True if select_all else False
-            if st.checkbox(str(yr), value=checked, key=f"year_{yr}"):
-                selected_years.append(yr)
-    selected_years = sorted(selected_years)
-    if not selected_years:
-        st.warning("⚠️ Please select at least one year.")
-        st.markdown("</div>", unsafe_allow_html=True)
-        return
+        # Demographic category/subgroup (resolve codes from metadata)
+        DEMO_CAT_COL = "DEMCODE Category"
+        LABEL_COL = "DESCRIP_E"
+        st.markdown('<div class="field-label">Select a demographic category (or All respondents):</div>', unsafe_allow_html=True)
+        demo_categories = ["All respondents"] + sorted(demo_df[DEMO_CAT_COL].dropna().astype(str).unique().tolist())
+        demo_selection = st.selectbox("Demographic category", demo_categories, key="demo_main", label_visibility="collapsed")
 
-    # Demographic category/subgroup (resolve codes from metadata)
-    DEMO_CAT_COL = "DEMCODE Category"
-    LABEL_COL = "DESCRIP_E"
-    st.markdown('<div class="field-label">Select a demographic category (or All respondents):</div>', unsafe_allow_html=True)
-    demo_categories = ["All respondents"] + sorted(demo_df[DEMO_CAT_COL].dropna().astype(str).unique().tolist())
-    demo_selection = st.selectbox("Demographic category", demo_categories, key="demo_main", label_visibility="collapsed")
+        sub_selection = None
+        if demo_selection != "All respondents":
+            st.markdown(f'<div class="field-label">Subgroup ({demo_selection}) (optional):</div>', unsafe_allow_html=True)
+            sub_items = demo_df.loc[demo_df[DEMO_CAT_COL] == demo_selection, LABEL_COL].dropna().astype(str).unique().tolist()
+            sub_items = sorted(sub_items)
+            sub_selection = st.selectbox("(leave blank to include all subgroups in this category)", [""] + sub_items, key=f"sub_{demo_selection.replace(' ', '_')}", label_visibility="collapsed")
+            if sub_selection == "":
+                sub_selection = None
 
-    sub_selection = None
-    if demo_selection != "All respondents":
-        st.markdown(f'<div class="field-label">Subgroup ({demo_selection}) (optional):</div>', unsafe_allow_html=True)
-        sub_items = demo_df.loc[demo_df[DEMO_CAT_COL] == demo_selection, LABEL_COL].dropna().astype(str).unique().tolist()
-        sub_items = sorted(sub_items)
-        sub_selection = st.selectbox("(leave blank to include all subgroups in this category)", [""] + sub_items, key=f"sub_{demo_selection.replace(' ', '_')}", label_visibility="collapsed")
-        if sub_selection == "":
-            sub_selection = None
+        # Resolve DEMCODE(s) from metadata (4-digit) and show parameters BEFORE query
+        demcodes, disp_map, category_in_play = resolve_demographic_codes_from_metadata(demo_df, demo_selection, sub_selection)
+        dem_display = ["(blank)"] if demcodes == [None] else [str(c) for c in demcodes]
 
-    # Resolve DEMCODE(s) from metadata (4-digit) and show parameters BEFORE query
-    demcodes, disp_map, category_in_play = resolve_demographic_codes_from_metadata(demo_df, demo_selection, sub_selection)
-    dem_display = ["(blank)"] if demcodes == [None] else [str(c) for c in demcodes]
+        params_df = pd.DataFrame({
+            "Parameter": ["QUESTION (from metadata)", "SURVEYR (years)", "DEMCODE(s) (from metadata)"],
+            "Value": [question_code, ", ".join(map(str, selected_years)), ", ".join(dem_display)]
+        })
+        st.markdown("##### Parameters that will be passed to the database")
+        st.dataframe(params_df, use_container_width=True, hide_index=True)
 
-    params_df = pd.DataFrame({
-        "Parameter": ["QUESTION (from metadata)", "SURVEYR (years)", "DEMCODE(s) (from metadata)"],
-        "Value": [question_code, ", ".join(map(str, selected_years)), ", ".join(dem_display)]
-    })
-    st.markdown("##### Parameters that will be passed to the database")
-    st.dataframe(params_df, use_container_width=True, hide_index=True)
+        # Run query (RAW, no normalization)
+        with st.container():
+            st.markdown('<div class="big-button">', unsafe_allow_html=True)
+            if st.button("🔎 Run query"):
+                # Scale labels
+                scale_pairs = get_scale_labels(sdf, question_code)
 
-    # Run query (RAW, no normalization)
-    with st.container():
-        st.markdown('<div class="big-button">', unsafe_allow_html=True)
-        if st.button("🔎 Run query"):
-            # Scale labels
-            scale_pairs = get_scale_labels(sdf, question_code)
+                # Pull results per DEMCODE via loader (RAW filter on trio)
+                parts = []
+                for code in demcodes:
+                    df_part = load_results2024_filtered(
+                        question_code=question_code,
+                        years=selected_years,
+                        group_value=code  # None => blank DEMCODE
+                    )
+                    if df_part is not None and not df_part.empty:
+                        parts.append(df_part)
 
-            # Pull results per DEMCODE via loader (RAW filter on trio)
-            parts = []
-            for code in demcodes:
-                df_part = load_results2024_filtered(
-                    question_code=question_code,
-                    years=selected_years,
-                    group_value=code  # None => blank DEMCODE
+                if not parts:
+                    st.info("No data found for this selection.")
+                    return
+
+                df_raw = pd.concat(parts, ignore_index=True)
+
+                # Robust to header casing/whitespace WITHOUT normalizing the file
+                def _find(df, target):
+                    """Return the actual column name that matches target (case/space-insensitive)."""
+                    t = target.strip().lower()
+                    for c in df.columns:
+                        if c is None:
+                            continue
+                        if str(c).strip().lower() == t:
+                            return c
+                    return None
+
+                QCOL = _find(df_raw, "QUESTION")
+                SCOL = _find(df_raw, "SURVEYR")
+                DCOL = _find(df_raw, "DEMCODE")
+
+                if not all([QCOL, SCOL, DCOL]):
+                    st.error(
+                        "Required columns not found in data for filtering.\n\n"
+                        f"Expected at least: QUESTION, SURVEYR, DEMCODE\n"
+                        f"Columns present: {list(df_raw.columns)}"
+                    )
+                    return  # no st.stop(); let root render Return button
+
+                # Rename only in-memory so the rest of the code can rely on the expected keys
+                df_raw = df_raw.rename(columns={QCOL: "QUESTION", SCOL: "SURVEYR", DCOL: "DEMCODE"})
+
+                # SECOND strict guard on RAW columns (defensive)
+                qmask = df_raw["QUESTION"].astype(str).str.strip().str.upper() == str(question_code).strip().upper()
+                ymask = df_raw["SURVEYR"].astype(str).isin([str(y) for y in selected_years])
+                if demcodes == [None]:
+                    gmask = df_raw["DEMCODE"].astype(str).str.strip() == ""
+                else:
+                    gmask = df_raw["DEMCODE"].astype(str).isin([("" if gv is None else str(gv)) for gv in demcodes])
+                df_raw = df_raw[qmask & ymask & gmask].copy()
+
+                if df_raw.empty:
+                    st.info("No data found after applying filters (exact QUESTION, selected SURVEYR years, DEMCODE set).")
+                    return
+
+                # Exclude 999 for display & narrative
+                df_raw = exclude_999_raw(df_raw)
+                if df_raw.empty:
+                    st.info("Data exists, but all rows are not applicable (999).")
+                    return
+
+                # ===== Raw results (full rows) for validation =====
+                st.markdown("#### Raw results (full rows)")
+                # sort by year desc for readability
+                if "SURVEYR" in df_raw.columns:
+                    df_raw = df_raw.sort_values(
+                        by="SURVEYR",
+                        ascending=False,
+                        key=lambda s: pd.to_numeric(s, errors="coerce")
+                    )
+                st.dataframe(df_raw, use_container_width=True)
+
+                with io.BytesIO() as buf:
+                    with pd.ExcelWriter(buf, engine="xlsxwriter") as writer:
+                        df_raw.to_excel(writer, sheet_name="RawRows", index=False)
+                    raw_bytes = buf.getvalue()
+
+                st.download_button(
+                    label="⬇️ Download raw rows (full columns)",
+                    data=raw_bytes,
+                    file_name=f"PSES_{question_code}_{'-'.join(map(str, selected_years))}_RAW.xlsx",
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                 )
-                if df_part is not None and not df_part.empty:
-                    parts.append(df_part)
+                # ===== end Raw results =====
 
-            if not parts:
-                st.info("No data found for this selection.")
-                st.markdown("</div>", unsafe_allow_html=True)
-                return
+                # Title
+                st.subheader(f"{question_code} — {question_text}")
 
-            df_raw = pd.concat(parts, ignore_index=True)
-
-            # Robust to header casing/whitespace WITHOUT normalizing the file
-            def _find(df, target):
-                """Return the actual column name that matches target (case/space-insensitive)."""
-                t = target.strip().lower()
-                for c in df.columns:
-                    if c is None:
-                        continue
-                    if str(c).strip().lower() == t:
-                        return c
-                return None
-
-            QCOL = _find(df_raw, "QUESTION")
-            SCOL = _find(df_raw, "SURVEYR")
-            DCOL = _find(df_raw, "DEMCODE")
-
-            if not all([QCOL, SCOL, DCOL]):
-                st.error(
-                    "Required columns not found in data for filtering.\n\n"
-                    f"Expected at least: QUESTION, SURVEYR, DEMCODE\n"
-                    f"Columns present: {list(df_raw.columns)}"
+                # Display (formatted) table
+                df_disp = format_display_table_raw(
+                    df=df_raw,
+                    category_in_play=category_in_play,
+                    dem_disp_map=({None: "All respondents"} | {str(k): v for k, v in disp_map.items()}),
+                    scale_pairs=scale_pairs
                 )
-                st.markdown("</div>", unsafe_allow_html=True)
-                return  # no st.stop(); let root render Return button
+                st.dataframe(df_disp, use_container_width=True)
 
-            # Rename only in-memory so the rest of the code can rely on the expected keys
-            df_raw = df_raw.rename(columns={QCOL: "QUESTION", SCOL: "SURVEYR", DCOL: "DEMCODE"})
+                # Narrative (Positive only)
+                st.markdown("#### Summary (Positive only)")
+                st.write(narrative_positive_only_raw(df_disp, category_in_play))
 
-            # SECOND strict guard on RAW columns (defensive)
-            qmask = df_raw["QUESTION"].astype(str).str.strip().str.upper() == str(question_code).strip().upper()
-            ymask = df_raw["SURVEYR"].astype(str).isin([str(y) for y in selected_years])
-            if demcodes == [None]:
-                gmask = df_raw["DEMCODE"].astype(str).str.strip() == ""
-            else:
-                gmask = df_raw["DEMCODE"].astype(str).isin([("" if gv is None else str(gv)) for gv in demcodes])
-            df_raw = df_raw[qmask & ymask & gmask].copy()
+                # Excel download (exactly what is displayed)
+                with io.BytesIO() as buf:
+                    with pd.ExcelWriter(buf, engine="xlsxwriter") as writer:
+                        df_disp.to_excel(writer, sheet_name="Results", index=False)
+                        ctx = {
+                            "QUESTION": question_code,
+                            "SURVEYR (years)": ", ".join(map(str, selected_years)),
+                            "DEMCODE(s)": ", ".join(dem_display),
+                            "Generated at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                        }
+                        pd.DataFrame(list(ctx.items()), columns=["Field", "Value"]).to_excel(writer, sheet_name="Context", index=False)
+                    data = buf.getvalue()
 
-            if df_raw.empty:
-                st.info("No data found after applying filters (exact QUESTION, selected SURVEYR years, DEMCODE set).")
-                st.markdown("</div>", unsafe_allow_html=True)
-                return
-
-            # Exclude 999 for display & narrative
-            df_raw = exclude_999_raw(df_raw)
-            if df_raw.empty:
-                st.info("Data exists, but all rows are not applicable (999).")
-                st.markdown("</div>", unsafe_allow_html=True)
-                return
-
-            # ===== Raw results (full rows) for validation =====
-            st.markdown("#### Raw results (full rows)")
-            # sort by year desc for readability
-            if "SURVEYR" in df_raw.columns:
-                df_raw = df_raw.sort_values(
-                    by="SURVEYR",
-                    ascending=False,
-                    key=lambda s: pd.to_numeric(s, errors="coerce")
+                st.download_button(
+                    label="⬇️ Download Excel",
+                    data=data,
+                    file_name=f"PSES_{question_code}_{'-'.join(map(str, selected_years))}.xlsx",
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                 )
-            st.dataframe(df_raw, use_container_width=True)
-
-            with io.BytesIO() as buf:
-                with pd.ExcelWriter(buf, engine="xlsxwriter") as writer:
-                    df_raw.to_excel(writer, sheet_name="RawRows", index=False)
-                raw_bytes = buf.getvalue()
-
-            st.download_button(
-                label="⬇️ Download raw rows (full columns)",
-                data=raw_bytes,
-                file_name=f"PSES_{question_code}_{'-'.join(map(str, selected_years))}_RAW.xlsx",
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-            )
-            # ===== end Raw results =====
-
-            # Title
-            st.subheader(f"{question_code} — {question_text}")
-
-            # Display (formatted) table
-            df_disp = format_display_table_raw(
-                df=df_raw,
-                category_in_play=category_in_play,
-                dem_disp_map=({None: "All respondents"} | {str(k): v for k, v in disp_map.items()}),
-                scale_pairs=scale_pairs
-            )
-            st.dataframe(df_disp, use_container_width=True)
-
-            # Narrative (Positive only)
-            st.markdown("#### Summary (Positive only)")
-            st.write(narrative_positive_only_raw(df_disp, category_in_play))
-
-            # Excel download (exactly what is displayed)
-            with io.BytesIO() as buf:
-                with pd.ExcelWriter(buf, engine="xlsxwriter") as writer:
-                    df_disp.to_excel(writer, sheet_name="Results", index=False)
-                    ctx = {
-                        "QUESTION": question_code,
-                        "SURVEYR (years)": ", ".join(map(str, selected_years)),
-                        "DEMCODE(s)": ", ".join(dem_display),
-                        "Generated at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                    }
-                    pd.DataFrame(list(ctx.items()), columns=["Field", "Value"]).to_excel(writer, sheet_name="Context", index=False)
-                data = buf.getvalue()
-
-            st.download_button(
-                label="⬇️ Download Excel",
-                data=data,
-                file_name=f"PSES_{question_code}_{'-'.join(map(str, selected_years))}.xlsx",
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-            )
-        st.markdown('</div>', unsafe_allow_html=True)  # end .big-button
-
-    st.markdown("</div>", unsafe_allow_html=True)  # close .menu1-wrap
+            st.markdown('</div>', unsafe_allow_html=True)  # end .big-button
 
 
 if __name__ == "__main__":
