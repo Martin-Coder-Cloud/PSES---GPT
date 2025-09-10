@@ -5,6 +5,7 @@
 # • DEMCODE comparisons are exact **trimmed string** matches. No numeric coercion, no case changes.
 # • Shows Raw results (full rows) + formatted table with Answer 1–7 + narrative (2024-first).
 # • No BYCOND, no dedup. No st.stop().
+# • Added: Diagnostics expander to view schema/dtypes (no logic change).
 
 import io
 from datetime import datetime
@@ -470,6 +471,24 @@ def run_menu1():
         })
         st.markdown("##### Parameters that will be passed to the database")
         st.dataframe(params_df, use_container_width=True, hide_index=True)
+
+        # ─────────────────────────────────────────
+        # Diagnostics (added; observational only)
+        # ─────────────────────────────────────────
+        with st.expander("🛠 Diagnostics: file schema", expanded=False):
+            colA, colB = st.columns(2)
+            with colA:
+                if st.button("Show dtypes after loader read (text mode)"):
+                    from utils.data_loader import get_results2024_schema
+                    sch = get_results2024_schema()
+                    st.write("All columns should be object (text).")
+                    st.dataframe(sch, use_container_width=True, hide_index=True)
+            with colB:
+                if st.button("Show what pandas would infer (preview)"):
+                    from utils.data_loader import get_results2024_schema_inferred
+                    sch2 = get_results2024_schema_inferred()
+                    st.write("This is ONLY for insight; the app still reads everything as text.")
+                    st.dataframe(sch2, use_container_width=True, hide_index=True)
 
         # Run query (RAW, character-only filtering in loader)
         with st.container():
