@@ -1,9 +1,10 @@
 # utils/data_loader.py
 # -----------------------------------------------------------------------------
 # Streamed loader for Results2024.csv.gz (RAW passthrough).
-# - Filters ONLY on QUESTION, SURVEYR (year), and DEMCODE (blank => All).
-# - Does NOT reference BYCOND or LEVEL* columns.
-# - Preserves the original columns/values (reads as text; blanks stay "").
+# - Filters on QUESTION, SURVEYR (year), DEMCODE (blank => All respondents).
+# - Enforces PS-wide: LEVEL1ID == 0 OR missing (NaN/"").
+# - Does NOT reference BYCOND.
+# - Preserves original columns/values (reads as text; blanks stay "").
 # - Returns the full matching rows (no normalization, no de-dup).
 # -----------------------------------------------------------------------------
 
@@ -66,6 +67,7 @@ def load_results2024_filtered(
       - QUESTION equals `question_code` (case-insensitive, stripped)
       - SURVEYR is in `years`
       - DEMCODE is "" (when group_value is None/"") OR equals the provided code
+      - LEVEL1ID is 0 OR missing (PS-wide constraint)
 
     Returns all matching rows with their original columns preserved.
     """
@@ -73,7 +75,11 @@ def load_results2024_filtered(
 
     q_target = str(question_code).strip().upper()
     years_str = {str(y) for y in years}
-    want_blank_dem = (group_value is None) or (str(group_value).strip() == "") or (str(group_value).strip().upper() == "ALL")
+    want_blank_dem = (
+        group_value is None
+        or str(group_value).strip() == ""
+        or str(group_value).strip().upper() == "ALL"
+    )
 
     parts: list[pd.DataFrame] = []
 
@@ -90,7 +96,14 @@ def load_results2024_filtered(
         else:
             gmask = chunk["DEMCODE"].astype(str) == str(group_value)
 
-        sub = chunk[qmask & ymask & gmask]
+        # PS-wide: LEVEL1ID == 0 OR missing
+        if "LEVEL1ID" in chunk.columns:
+            lvl = pd.to_numeric(chunk["LEVEL1ID"], errors="coerce")  # "" -> NaN
+            lmask = lvl.isna() | (lvl == 0)
+        else:
+            lmask = pd.Series(True, index=chunk.index)  # if absent, don't drop rows
+
+        sub = chunk[qmask & ymask & gmask & lmask]
         if not sub.empty:
             parts.append(sub)
 
