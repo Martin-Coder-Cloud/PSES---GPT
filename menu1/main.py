@@ -1,7 +1,11 @@
-# menu1/main.py — PSES AI Explorer (Menu 1: Search by Question) — RAW + METADATA-FIRST
+# menu1/main.py — PSES AI Explorer (Menu 1: Search by Question)
+# RAW + METADATA-FIRST (restored full view)
 # • No normalization of the results dataset.
 # • Always resolve QUESTION and DEMCODE(s) from metadata first.
 # • DEMCODE(s) sent to the loader are 4-digit codes from Demographics.xlsx (blank only for "All respondents").
+# • Shows Raw results (full rows) for validation AND a formatted table with Answer 1–7 scale labels.
+# • Robust header matching; no st.stop() (so Return to Main Menu is preserved).
+# • No BYCOND or LEVEL* logic here.
 
 import io
 from datetime import datetime
@@ -87,7 +91,6 @@ def resolve_demographic_codes_from_metadata(
             if not row.empty:
                 raw_code = str(row.iloc[0][code_col])
                 code4 = _four_digit(raw_code)
-                # Only accept 4-digit; if it ends empty, we still return original (just in case)
                 code_final = code4 if code4 else raw_code
                 return [code_final], {code_final: subgroup_label}, True
         # Fallback: if code column is not present, use label as the identifier (not ideal)
@@ -149,6 +152,7 @@ def exclude_999_raw(df: pd.DataFrame) -> pd.DataFrame:
         keep &= (vals != 999)
     return out.loc[keep].copy()
 
+# Case-robust display table (handles ANSWER1..7 or answer1..7)
 def format_display_table_raw(df: pd.DataFrame, category_in_play: bool, dem_disp_map: dict, scale_pairs) -> pd.DataFrame:
     if df.empty:
         return df.copy()
@@ -165,8 +169,21 @@ def format_display_table_raw(df: pd.DataFrame, category_in_play: bool, dem_disp_
             return dem_disp_map.get(code, dem_disp_map.get(str(code), str(code)))
         out["Demographic"] = out["DEMCODE"].apply(to_label)
 
-    dist_cols = [f"answer{i}" for i in range(1, 8) if f"answer{i}" in out.columns]
-    rename_map = {k: v for k, v in scale_pairs if k in out.columns}
+    # Find distribution columns in either case
+    dist_cols = []
+    for i in range(1, 8):
+        lc, uc = f"answer{i}", f"ANSWER{i}"
+        if uc in out.columns:
+            dist_cols.append(uc)
+        elif lc in out.columns:
+            dist_cols.append(lc)
+
+    # Map either ANSWERi or answeri to the scale label
+    rename_map = {}
+    for k, v in scale_pairs:  # k like "answer1"
+        ku = k.upper()
+        if ku in out.columns: rename_map[ku] = v
+        if k  in out.columns: rename_map[k]  = v
 
     keep_cols = ["__YearNum__", "Year"] + (["Demographic"] if category_in_play else []) \
                 + dist_cols + ["POSITIVE", "NEUTRAL", "NEGATIVE", "ANSCOUNT"]
@@ -174,7 +191,7 @@ def format_display_table_raw(df: pd.DataFrame, category_in_play: bool, dem_disp_
     out = out[keep_cols].rename(columns=rename_map).copy()
 
     sort_cols = ["__YearNum__"] + (["Demographic"] if category_in_play else [])
-    sort_asc = [False] + ([True] if category_in_play else [])
+    sort_asc  = [False] + ([True] if category_in_play else [])
     out = out.sort_values(sort_cols, ascending=sort_asc, kind="mergesort").reset_index(drop=True)
     out = out.drop(columns=["__YearNum__"])
 
@@ -240,10 +257,22 @@ def narrative_positive_only_raw(df_disp: pd.DataFrame, category_in_play: bool) -
 # UI
 # ─────────────────────────────
 def run_menu1():
+    # Reset any landing-page CSS that might leak, and slightly widen center column feel
     st.markdown("""
         <style>
+            .block-container{
+                padding-top: 1rem !important;
+                padding-left: 1rem !important;
+                padding-right: 1rem !important;
+                padding-bottom: 1rem !important;
+                background-image: none !important;
+                background-repeat: initial !important;
+                background-size: initial !important;
+                background-position: initial !important;
+                background-attachment: initial !important;
+                color: initial !important;
+            }
             body { background-image: none !important; background-color: white !important; }
-            .block-container { padding-top: 1rem !important; }
             .menu-banner { width: 100%; height: auto; display: block; margin-top: 0px; margin-bottom: 20px; }
             .custom-header { font-size: 30px !important; font-weight: 700; margin-bottom: 10px; }
             .custom-instruction { font-size: 16px !important; line-height: 1.4; margin-bottom: 10px; color: #333; }
@@ -256,11 +285,11 @@ def run_menu1():
     qdf = load_questions_metadata()
     sdf = load_scales_metadata()
 
-    left, center, right = st.columns([1, 3, 1])
+    # Widen the content region a little vs. [1,3,1], but keep the centered look
+    left, center, right = st.columns([0.5, 4, 0.5])
     with center:
         st.markdown(
             "<img class='menu-banner' "
-            "style='max-width:600px; height:auto;' "
             "src='https://raw.githubusercontent.com/Martin-Coder-Cloud/PSES---GPT/main/PSES%20Banner%20New.png'>",
             unsafe_allow_html=True
         )
@@ -346,7 +375,7 @@ def run_menu1():
 
                 df_raw = pd.concat(parts, ignore_index=True)
 
-                # --- NEW: make filtering robust to header casing/whitespace WITHOUT normalizing the file ---
+                # Robust to header casing/whitespace WITHOUT normalizing the file
                 def _find(df, target):
                     """Return the actual column name that matches target (case/space-insensitive)."""
                     t = target.strip().lower()
@@ -367,11 +396,10 @@ def run_menu1():
                         f"Expected at least: QUESTION, SURVEYR, DEMCODE\n"
                         f"Columns present: {list(df_raw.columns)}"
                     )
-                    st.stop()
+                    return  # no st.stop(); let root render Return button
 
                 # Rename only in-memory so the rest of the code can rely on the expected keys
                 df_raw = df_raw.rename(columns={QCOL: "QUESTION", SCOL: "SURVEYR", DCOL: "DEMCODE"})
-                # --- end NEW ---
 
                 # SECOND strict guard on RAW columns (defensive)
                 qmask = df_raw["QUESTION"].astype(str).str.strip().str.upper() == str(question_code).strip().upper()
@@ -392,10 +420,34 @@ def run_menu1():
                     st.info("Data exists, but all rows are not applicable (999).")
                     return
 
+                # ===== Raw results (full rows) for validation =====
+                st.markdown("#### Raw results (full rows)")
+                # sort by year desc for readability
+                if "SURVEYR" in df_raw.columns:
+                    df_raw = df_raw.sort_values(
+                        by="SURVEYR",
+                        ascending=False,
+                        key=lambda s: pd.to_numeric(s, errors="coerce")
+                    )
+                st.dataframe(df_raw, use_container_width=True)
+
+                with io.BytesIO() as buf:
+                    with pd.ExcelWriter(buf, engine="xlsxwriter") as writer:
+                        df_raw.to_excel(writer, sheet_name="RawRows", index=False)
+                    raw_bytes = buf.getvalue()
+
+                st.download_button(
+                    label="⬇️ Download raw rows (full columns)",
+                    data=raw_bytes,
+                    file_name=f"PSES_{question_code}_{'-'.join(map(str, selected_years))}_RAW.xlsx",
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                )
+                # ===== end Raw results =====
+
                 # Title
                 st.subheader(f"{question_code} — {question_text}")
 
-                # Display table
+                # Display (formatted) table
                 df_disp = format_display_table_raw(
                     df=df_raw,
                     category_in_play=category_in_play,
