@@ -71,6 +71,7 @@ def load_results2024_filtered(
       - SURVEYR in selected years (compared as strings)
       - DEMCODE == "" if group_value is None (All respondents),
         otherwise DEMCODE == str(group_value)
+      - For All respondents ONLY, also require BYCOND == "" (if present) AND LEVEL1ID in {"0",""} (if present)
 
     Returns a concatenated DataFrame (may be empty). Columns remain as in source,
     except headers are guaranteed to be UPPERCASE w/ no leading/trailing spaces.
@@ -87,31 +88,39 @@ def load_results2024_filtered(
         for chunk in _chunk_reader(fh):
             # Defensive: ensure required columns exist
             required = {"QUESTION", "SURVEYR", "DEMCODE"}
-            missing = required.difference(set(chunk.columns))
-            if missing:
-                # If a chunk doesn't have expected columns, skip it
+            if not required.issubset(set(chunk.columns)):
                 continue
 
-            # Build masks using text comparisons
+            # Base masks
             qmask = chunk["QUESTION"].astype(str).str.strip().str.upper() == q_target
             ymask = chunk["SURVEYR"].astype(str).isin(str_years)
 
             if group_value is None:
                 # All respondents => DEMCODE must be blank
                 gmask = chunk["DEMCODE"].astype(str).str.strip() == ""
+
+                # PS-wide guards (only if columns exist)
+                bycond_mask = True
+                if "BYCOND" in chunk.columns:
+                    bycond_mask = chunk["BYCOND"].astype(str).str.strip() == ""
+
+                lvl_mask = True
+                if "LEVEL1ID" in chunk.columns:
+                    lvl_mask = chunk["LEVEL1ID"].astype(str).str.strip().isin(["0", ""])
+
+                sub = chunk[qmask & ymask & gmask & bycond_mask & lvl_mask]
             else:
                 gmask = chunk["DEMCODE"].astype(str) == str(group_value)
+                sub = chunk[qmask & ymask & gmask]
 
-            sub = chunk[qmask & ymask & gmask]
             if not sub.empty:
                 parts.append(sub)
 
     if parts:
         return pd.concat(parts, ignore_index=True)
 
+    # Stable (empty) frame with common headers uppercased
     return pd.DataFrame(columns=[
-        # Provide a stable (empty) frame with the common headers uppercased.
-        # This avoids KeyError downstream when concatenation returns empty.
         "LEVEL1ID","LEVEL2ID","LEVEL3ID","LEVEL4ID","LEVEL5ID",
         "SURVEYR","BYCOND","DEMCODE","QUESTION",
         "ANSWER1","ANSWER2","ANSWER3","ANSWER4","ANSWER5","ANSWER6","ANSWER7",
