@@ -1,165 +1,196 @@
 # utils/data_loader.py
-# RAW loader for PSES Results2024.csv.gz (NO normalization, NO renaming).
-# Operates on original CSV columns:
-#   SURVEYR, QUESTION, DEMCODE, answer1..answer7, POSITIVE, NEUTRAL, NEGATIVE, ANSCOUNT, ...
-#
-# Filtering is STRICT on the raw trio (QUESTION, SURVEYR, DEMCODE).
-#   - All respondents -> group_value=None  (filters DEMCODE == "")
-#   - Single subgroup -> group_value="0123"  (4-digit code from metadata)
-#   - Multiple       -> group_value=["0123","0456", ...]
-#
-# Usage:
-#   from utils.data_loader import load_results2024_filtered
-#   df = load_results2024_filtered("Q01", [2024,2022,2020,2019], group_value=None)
+# -----------------------------------------------------------------------------
+# Results2024 loader (character-only) + schema introspection utilities
+# - Reads gz CSV as pure text (dtype=str), blanks preserved (""), headers UPPER.
+# - Filters on QUESTION (exact trimmed), SURVEYR (years as strings), DEMCODE (exact trimmed).
+# - PS-wide: LEVEL1ID == "" or "0" (strings) when present; if absent, keep rows.
+# - No BYCOND. No dedup.
+# - Extras:
+#     • get_results2024_schema(): shows dtypes/examples AFTER the loader read
+#     • get_results2024_schema_inferred(): optional “what pandas would infer” preview
+# -----------------------------------------------------------------------------
 
-from __future__ import annotations
-from typing import Iterable, List, Optional, Union
-
-import gzip
-import io
+from typing import List, Optional
 import os
+import gzip
+
+import gdown
 import pandas as pd
+import streamlit as st
 
-# ------------------------------------------------------------------------------
-# Data source configuration
-# ------------------------------------------------------------------------------
-# Default path to your gzipped CSV inside the repo/container.
-# Adjust if your app uses a different location.
-DATA_PATH: str = "data/Results2024.csv.gz"
-# ------------------------------------------------------------------------------
+GDRIVE_FILE_ID_FALLBACK = "1VdMQQfEP-BNXle8GeD-Z_upt2pPIGvc8"
+LOCAL_GZ_PATH = "/tmp/Results2024.csv.gz"
 
 
-def set_data_source(local_path: Optional[str] = None) -> None:
+@st.cache_resource(show_spinner="📥 Downloading Results2024.csv.gz…")
+def ensure_results2024_local(file_id: Optional[str] = None) -> str:
+    file_id = file_id or st.secrets.get("RESULTS2024_FILE_ID", GDRIVE_FILE_ID_FALLBACK)
+    if not file_id:
+        raise RuntimeError("RESULTS2024_FILE_ID missing in .streamlit/secrets.toml")
+    if not os.path.exists(LOCAL_GZ_PATH) or os.path.getsize(LOCAL_GZ_PATH) == 0:
+        url = f"https://drive.google.com/uc?id={file_id}"
+        os.makedirs(os.path.dirname(LOCAL_GZ_PATH), exist_ok=True)
+        gdown.download(url, LOCAL_GZ_PATH, quiet=False)
+    return LOCAL_GZ_PATH
+
+
+def _chunk_reader(path: str, chunksize: int = 200_000):
     """
-    (Optional) Override the default local path at runtime from your app setup.
+    Yield DataFrame chunks from the gz CSV as text:
+      - dtype=str -> all values read as Python strings
+      - keep_default_na=False / na_filter=False -> blanks stay ""
+      - headers normalized to UPPERCASE (values unchanged)
+      - final safety: trim whitespace on ALL cells so matches are exact
     """
-    global DATA_PATH
-    if local_path:
-        DATA_PATH = local_path
-
-
-def _open_binary_stream() -> io.BufferedReader:
-    """
-    Opens the local .gz file in binary mode.
-    """
-    if not os.path.exists(DATA_PATH):
-        raise FileNotFoundError(f"Results file not found at {DATA_PATH}")
-    return open(DATA_PATH, "rb")
-
-
-def _chunk_reader(stream: io.BufferedReader, chunksize: int = 200_000):
-    """
-    Yields DataFrame chunks from the gzipped CSV **as text**.
-    - dtype=str to preserve values exactly as strings
-    - keep_default_na=False and na_filter=False to keep blanks as ""
-    """
-    with gzip.open(stream, mode="rt", newline="") as f:
+    with gzip.open(path, mode="rt", newline="") as f:
         for chunk in pd.read_csv(
             f,
             chunksize=chunksize,
-            dtype=str,             # everything as text
-            keep_default_na=False, # do NOT convert empty to NaN
-            na_filter=False,       # do NOT detect NA strings
+            dtype=str,
+            keep_default_na=False,
+            na_filter=False,
+            low_memory=True,
         ):
+            chunk.columns = [str(c).strip().upper() for c in chunk.columns]
+            # force every cell to a trimmed string; keep blanks as ""
+            for c in chunk.columns:
+                # chunk[c] is already str due to dtype=str, but trim for safety
+                chunk[c] = chunk[c].astype(str).str.strip()
             yield chunk
 
 
-def _apply_raw_filter(
-    df: pd.DataFrame,
-    question_code: str,
-    years: Iterable[int],
-    group_values: Optional[List[Optional[str]]],
-) -> pd.DataFrame:
-    """
-    Apply strict filters using RAW columns:
-      - QUESTION == question_code (case-insensitive; trimmed)
-      - SURVEYR in years (string compare against "2024","2022",...)
-      - DEMCODE:
-          * All respondents => blank only ("")
-          * Specific lists  => .isin(list) (values passed already 4-digit from metadata)
-    Returns a copy (could be empty).
-    """
-    required = {"QUESTION", "SURVEYR", "DEMCODE"}
-    if any(col not in df.columns for col in required):
-        # Schema mismatch; return empty preserving columns for consistency
-        return df.iloc[0:0].copy()
-
-    # QUESTION
-    q_norm = str(question_code).strip().upper()
-    qmask = df["QUESTION"].astype(str).str.strip().str.upper() == q_norm
-
-    # SURVEYR (compare as strings)
-    year_strs = {str(int(y)) for y in years}
-    ymask = df["SURVEYR"].astype(str).isin(year_strs)
-
-    # DEMCODE
-    if group_values is None or (len(group_values) == 1 and group_values[0] is None):
-        # All respondents -> DEMCODE must be blank
-        gmask = df["DEMCODE"].astype(str).str.strip() == ""
-    else:
-        # Accept exact codes as strings (metadata provides 4-digit codes)
-        codes = [("" if gv is None else str(gv)) for gv in group_values]
-        gmask = df["DEMCODE"].astype(str).isin(codes)
-
-    return df[qmask & ymask & gmask].copy()
+def _as_trimmed_str(x: Optional[str]) -> str:
+    return "" if x is None else str(x).strip()
 
 
+@st.cache_data(show_spinner="🔎 Filtering results…")
 def load_results2024_filtered(
     question_code: str,
-    years: Iterable[int],
-    group_value: Optional[Union[str, List[Optional[str]], None]] = None,
+    years: List[str] | List[int],
+    group_value: Optional[str] = None,  # None/"" -> All respondents (blank DEMCODE)
     chunksize: int = 200_000,
 ) -> pd.DataFrame:
     """
-    Stream and filter the large CSV WITHOUT any normalization.
-
-    Parameters
-    ----------
-    question_code : str
-        Exact question code, e.g. "Q01" (validated/selected from metadata).
-    years : Iterable[int]
-        e.g. [2024, 2022, 2020, 2019]
-    group_value : None | str | list[str|None]
-        None                  -> All respondents (blank DEMCODE only).
-        "0123"                -> one subgroup (4-digit DEMCODE).
-        ["0123","0456",None]  -> multiple (None includes blank).
-    chunksize : int
-        Rows per chunk to process (tune for memory/performance).
-
-    Returns
-    -------
-    pd.DataFrame
-        Concatenated filtered rows with RAW column names.
-        Empty DataFrame if no matches.
+    Filter rows where:
+      - QUESTION == question_code (exact trimmed string)
+      - SURVEYR in years (compared as trimmed strings)
+      - DEMCODE == group_value (exact trimmed; "" for All respondents)
+      - PS-wide: LEVEL1ID is "" or "0" (strings) when present; if absent, keep rows
     """
-    # Normalize group_value into a list or None
-    if isinstance(group_value, list):
-        gv_list = group_value
-    elif group_value is None:
-        gv_list = None
-    else:
-        gv_list = [group_value]
+    path = ensure_results2024_local()
 
-    results: List[pd.DataFrame] = []
+    q_target = _as_trimmed_str(question_code)
+    years_str = { _as_trimmed_str(y) for y in years }
 
-    with _open_binary_stream() as stream:
-        for chunk in _chunk_reader(stream, chunksize=chunksize):
-            # Ensure all columns are string-typed (paranoia; read_csv already set dtype=str)
-            for col in chunk.columns:
-                if chunk[col].dtype != object:
-                    chunk[col] = chunk[col].astype(str)
+    want_blank_dem = (group_value is None) or (_as_trimmed_str(group_value) == "")
+    dem_target = "" if want_blank_dem else _as_trimmed_str(group_value)
 
-            filtered = _apply_raw_filter(
-                df=chunk,
-                question_code=question_code,
-                years=years,
-                group_values=gv_list,
-            )
-            if not filtered.empty:
-                results.append(filtered)
+    parts: list[pd.DataFrame] = []
 
-    if not results:
-        # Return a truly empty frame with no rows (and let the caller handle the message)
-        return pd.DataFrame(columns=[])
+    for chunk in _chunk_reader(path, chunksize=chunksize):
+        if not {"QUESTION", "SURVEYR", "DEMCODE"}.issubset(set(chunk.columns)):
+            continue
 
-    return pd.concat(results, ignore_index=True)
+        qmask = chunk["QUESTION"] == q_target
+        ymask = chunk["SURVEYR"].isin(years_str)
+
+        dem_series = chunk["DEMCODE"]
+        gmask = (dem_series == "") if want_blank_dem else (dem_series == dem_target)
+
+        # PS-wide: LEVEL1ID == "" or "0" (strings) if column exists; else keep rows
+        if "LEVEL1ID" in chunk.columns:
+            lvl = chunk["LEVEL1ID"]
+            lmask = (lvl == "") | (lvl == "0")
+        else:
+            lmask = pd.Series(True, index=chunk.index)
+
+        sub = chunk[qmask & ymask & gmask & lmask]
+        if not sub.empty:
+            parts.append(sub)
+
+    if parts:
+        # guarantee character-only & trimmed on the merged frame as well
+        out = pd.concat(parts, ignore_index=True)
+        for c in out.columns:
+            out[c] = out[c].astype(str).str.strip()
+        return out
+
+    # stable empty frame
+    return pd.DataFrame(columns=[
+        "LEVEL1ID","LEVEL2ID","LEVEL3ID","LEVEL4ID","LEVEL5ID",
+        "SURVEYR","DEMCODE","QUESTION",
+        "ANSWER1","ANSWER2","ANSWER3","ANSWER4","ANSWER5","ANSWER6","ANSWER7",
+        "POSITIVE","NEUTRAL","NEGATIVE","SCORE5","SCORE100","ANSCOUNT"
+    ])
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Schema helpers you can call from the UI to SEE what the loader actually read
+# ─────────────────────────────────────────────────────────────────────────────
+@st.cache_data(show_spinner=False)
+def get_results2024_schema(sample_rows: int = 5000) -> pd.DataFrame:
+    """
+    Returns a small schema snapshot AFTER the loader's text read (i.e., as used by the app):
+      - column
+      - dtype_after_loader (should be 'object' for all)
+      - example_non_blank (first non-empty example)
+      - blank_rate (share of blanks "")
+    """
+    path = ensure_results2024_local()
+    with gzip.open(path, mode="rt", newline="") as f:
+        peek = pd.read_csv(
+            f,
+            nrows=sample_rows,
+            dtype=str,
+            keep_default_na=False,
+            na_filter=False,
+            low_memory=True,
+        )
+    peek.columns = [str(c).strip().upper() for c in peek.columns]
+    for c in peek.columns:
+        peek[c] = peek[c].astype(str).str.strip()
+
+    rows = []
+    for c in peek.columns:
+        s = peek[c]
+        ex = next((v for v in s if v != ""), "")
+        blank_rate = (s == "").mean() if len(s) else 0.0
+        rows.append({
+            "column": c,
+            "dtype_after_loader": str(s.dtype),  # expect 'object'
+            "example_non_blank": ex,
+            "blank_rate": round(float(blank_rate), 3),
+        })
+    return pd.DataFrame(rows)
+
+
+@st.cache_data(show_spinner=False)
+def get_results2024_schema_inferred(sample_rows: int = 5000) -> pd.DataFrame:
+    """
+    Optional: what pandas WOULD infer if we didn't force text (helps diagnose odd exports).
+      - column
+      - dtype_inferred_by_pandas
+      - example_non_blank
+    """
+    path = ensure_results2024_local()
+    with gzip.open(path, mode="rt", newline="") as f:
+        peek = pd.read_csv(
+            f,
+            nrows=sample_rows,
+            # NOTE: no dtype=str on purpose here
+            keep_default_na=True,
+            na_filter=True,
+            low_memory=True,
+        )
+    peek.columns = [str(c).strip().upper() for c in peek.columns]
+
+    rows = []
+    for c in peek.columns:
+        s = peek[c]
+        ex = next((v for v in s if pd.notna(v)), "")
+        rows.append({
+            "column": c,
+            "dtype_inferred_by_pandas": str(s.dtype),
+            "example_non_blank": ex,
+        })
+    return pd.DataFrame(rows)
