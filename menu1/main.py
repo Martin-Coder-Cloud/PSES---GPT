@@ -201,52 +201,190 @@ def format_display_table_raw(df: pd.DataFrame, category_in_play: bool, dem_disp_
 
     return out
 
-def narrative_positive_only_raw(df_disp: pd.DataFrame, category_in_play: bool) -> str:
-    pos_col = "POSITIVE" if "POSITIVE" in df_disp.columns else ("Positive" if "Positive" in df_disp.columns else None)
-    if df_disp.empty or pos_col is None:
-        return "No results available to summarize."
+# ─────────────────────────────
+# New narrative: 2024-first full sentences
+# ─────────────────────────────
+def build_narrative_2024_first_full(df_disp: pd.DataFrame, category_in_play: bool, question_code: str, question_text: str) -> str:
+    """
+    Full-sentence narrative (2024-first):
+      • Overall 2024 first with question text, then change since earliest year present.
+      • 2024 by demographic with change vs most recent prior year.
+      • 2024 gap (top vs bottom) and whether gap widened/narrowed vs prior year.
+      • Trends over time overall and for each group across all years in the table.
+    """
+    if df_disp is None or df_disp.empty:
+        return "No results are available to summarize."
 
+    # Find Positive column case-robustly
+    pos_col = None
+    for c in df_disp.columns:
+        if str(c).strip().lower() == "positive":
+            pos_col = c
+            break
+    if pos_col is None:
+        return "No results are available to summarize."
+
+    # Helpers
+    def pct(v):  # 1 decimal, with %
+        try:
+            return f"{float(v):.1f}%"
+        except Exception:
+            return "n/a"
+
+    def pts(v):  # signed points
+        try:
+            v = float(v)
+            sign = "+" if v >= 0 else "-"
+            return f"{sign}{abs(v):.1f} pts"
+        except Exception:
+            return "±0.0 pts"
+
+    # Prepare years
     t = df_disp.copy()
     t["_Y"] = pd.to_numeric(t["Year"], errors="coerce")
-    if t["_Y"].isna().all():
-        return "No results available to summarize."
-    latest = int(t["_Y"].max())
-    latest_rows = t[t["_Y"] == latest]
+    t = t.dropna(subset=["_Y"]).copy()
+    if t.empty:
+        return "No results are available to summarize."
 
-    lines = []
+    years_sorted = sorted(t["_Y"].unique().tolist())
+    target_year = 2024 if 2024 in years_sorted else int(max(years_sorted))
+    prev_years = [y for y in years_sorted if y < target_year]
+    prev_year = int(max(prev_years)) if prev_years else None
+    earliest_year = int(min(years_sorted))
+    latest_year = int(max(years_sorted))
+
+    # Compute an overall series (explicit overall row if present, else synthesize from groups)
+    def overall_series(df: pd.DataFrame) -> pd.Series:
+        if "Demographic" not in df.columns:
+            return df.set_index("_Y")[pos_col].apply(lambda x: pd.to_numeric(x, errors="coerce")).dropna()
+        # Try explicit overall/all-respondents rows
+        cand = df[df["Demographic"].astype(str).str.lower().isin(["all respondents", "overall"])]
+        if not cand.empty:
+            s = pd.to_numeric(cand.set_index("_Y")[pos_col], errors="coerce").dropna()
+            if not s.empty:
+                return s
+        # Otherwise synthesize from groups
+        tmp = df.copy()
+        tmp[pos_col] = pd.to_numeric(tmp[pos_col], errors="coerce")
+        series = {}
+        for y, g in tmp.groupby("_Y"):
+            vals = g[pos_col].dropna()
+            if vals.empty:
+                continue
+            if "ANSCOUNT" in g.columns and g["ANSCOUNT"].notna().any():
+                w = pd.to_numeric(g["ANSCOUNT"], errors="coerce").fillna(0)
+                total = float(w.sum())
+                series[y] = float((vals * w).sum() / total) if total > 0 else float(vals.mean())
+            else:
+                series[y] = float(vals.mean())
+        return pd.Series(series)
+
+    overall = overall_series(t)
+
+    parts: list[str] = []
+
+    # ---------- Overall 2024 (or latest) ----------
+    if target_year in overall.index:
+        ty = overall.loc[target_year]
+        # lead sentence with question code + text
+        lead = f"Overall, the results for {question_code} show that {pct(ty)} {question_text} in {target_year}."
+        parts.append(lead)
+
+        # stability / change since earliest year available
+        if earliest_year in overall.index and earliest_year != target_year:
+            ey = overall.loc[earliest_year]
+            change_total = ty - ey
+            if abs(change_total) < 1.0:
+                parts.append(f"Results have been stable since {earliest_year} (from {pct(ey)} to {pct(ty)}, {pts(change_total)}).")
+            else:
+                direction = "increased" if change_total > 0 else "decreased"
+                parts.append(f"Since {earliest_year}, overall results have {direction} by {pts(change_total)} (from {pct(ey)} to {pct(ty)}).")
+
+        # change vs prior year (if available)
+        if prev_year is not None and prev_year in overall.index:
+            py = overall.loc[prev_year]
+            diff = ty - py
+            verb = "higher" if diff >= 0 else "lower"
+            parts.append(f"Compared with {prev_year}, {target_year} is {pts(diff)} {verb} (from {pct(py)} to {pct(ty)}).")
+
+    # ---------- Demographic snapshot + gap + trends ----------
     if category_in_play and "Demographic" in t.columns:
-        groups = latest_rows.dropna(subset=[pos_col]).sort_values(pos_col, ascending=False)
-        if len(groups) >= 2:
-            top = groups.iloc[0]; bot = groups.iloc[-1]
-            lines.append(
-                f"In {latest}, {top['Demographic']} is highest on Positive ({float(top[pos_col]):.1f}%), "
-                f"while {bot['Demographic']} is lowest ({float(bot[pos_col]):.1f}%)."
-            )
-        elif len(groups) == 1:
-            g = groups.iloc[0]
-            lines.append(f"In {latest}, {g['Demographic']} has Positive at {float(g[pos_col]):.1f}%.")
+        # 2024 by group
+        ty_slice = t[t["_Y"] == target_year].copy()
+        ty_slice[pos_col] = pd.to_numeric(ty_slice[pos_col], errors="coerce")
+        ty_slice = ty_slice.dropna(subset=[pos_col])
 
-        ys = sorted(pd.to_numeric(t["Year"], errors="coerce").dropna().unique().tolist())
-        prev = int(ys[-2]) if len(ys) >= 2 else None
-        if prev is not None:
-            for gname in latest_rows.sort_values(pos_col, ascending=False).head(3)["Demographic"]:
-                s = t[t["Demographic"] == gname]
-                lp = s[s["Year"] == str(latest)][pos_col].dropna()
-                pp = s[s["Year"] == str(prev)][pos_col].dropna()
-                if not lp.empty and not pp.empty:
-                    delta = float(lp.iloc[0]) - float(pp.iloc[0])
-                    lines.append(f"{gname}: {latest} {float(lp.iloc[0]):.1f}% ({delta:+.1f} pts vs {prev}).")
+        if not ty_slice.empty:
+            lines = []
+            for g, gdf in t.groupby("Demographic"):
+                gdf = gdf.set_index("_Y")
+                if target_year in gdf.index:
+                    tyv = pd.to_numeric(gdf.loc[target_year, pos_col], errors="coerce")
+                    if pd.notna(tyv):
+                        if prev_year is not None and prev_year in gdf.index:
+                            pyv = pd.to_numeric(gdf.loc[prev_year, pos_col], errors="coerce")
+                            if pd.notna(pyv):
+                                delta_gp = tyv - pyv
+                                dir_word = "higher" if delta_gp >= 0 else "lower"
+                                lines.append(f"{g}: {pct(tyv)} in {target_year} ({pts(delta_gp)} {dir_word} than {prev_year}).")
+                            else:
+                                lines.append(f"{g}: {pct(tyv)} in {target_year}.")
+                        else:
+                            lines.append(f"{g}: {pct(tyv)} in {target_year}.")
+            if lines:
+                parts.append("By demographic in " + str(target_year) + ": " + " ".join(lines))
+
+            # 2024 gap and how it moved vs prior year
+            ordered = ty_slice[["Demographic", pos_col]].sort_values(pos_col, ascending=False)
+            if not ordered.empty:
+                top_g, top_v = ordered.iloc[0]["Demographic"], float(ordered.iloc[0][pos_col])
+                bot_g, bot_v = ordered.iloc[-1]["Demographic"], float(ordered.iloc[-1][pos_col])
+                gap_now = top_v - bot_v
+                if prev_year is not None:
+                    prev_slice = t[t["_Y"] == prev_year][["Demographic", pos_col]].copy()
+                    prev_slice[pos_col] = pd.to_numeric(prev_slice[pos_col], errors="coerce")
+                    prev_map = prev_slice.set_index("Demographic")[pos_col].to_dict()
+                    if top_g in prev_map and bot_g in prev_map and pd.notna(prev_map[top_g]) and pd.notna(prev_map[bot_g]):
+                        gap_prev = float(prev_map[top_g]) - float(prev_map[bot_g])
+                        gap_change = gap_now - gap_prev
+                        widen_status = "widened" if gap_change > 0 else ("narrowed" if gap_change < 0 else "held steady")
+                        parts.append(
+                            f"The {target_year} gap between {top_g} ({pct(top_v)}) and {bot_g} ({pct(bot_v)}) is {pts(gap_now)}; it has {widened_status if (gap_change==0) else widen_status} by {pts(gap_change)} since {prev_year}."
+                        )
+                    else:
+                        parts.append(
+                            f"The {target_year} gap between {top_g} ({pct(top_v)}) and {bot_g} ({pct(bot_v)}) is {pts(gap_now)}."
+                        )
+                else:
+                    parts.append(
+                        f"The {target_year} gap between {top_g} ({pct(top_v)}) and {bot_g} ({pct(bot_v)}) is {pts(gap_now)}."
+                    )
+
+        # Trends per group across all years present
+        trend_bits = []
+        for g, gdf in t.groupby("Demographic"):
+            gdf = gdf.dropna(subset=[pos_col]).copy()
+            if gdf.empty:
+                continue
+            gdf["_Y"] = pd.to_numeric(gdf["Year"], errors="coerce")
+            gdf = gdf.dropna(subset=["_Y"]).sort_values("_Y")
+            if gdf.empty:
+                continue
+            fy, ly = int(gdf["_Y"].iloc[0]), int(gdf["_Y"].iloc[-1])
+            fv, lv = float(pd.to_numeric(gdf[pos_col].iloc[0], errors="coerce")), float(pd.to_numeric(gdf[pos_col].iloc[-1], errors="coerce"))
+            if fy == ly:
+                trend_bits.append(f"{g}: {pct(lv)} in {ly}.")
+            else:
+                trend_bits.append(f"{g}: {pct(fv)} in {fy} → {pct(lv)} in {ly} ({pts(lv - fv)}).")
+        if trend_bits:
+            parts.append("Trends over time by demographic: " + " ".join(trend_bits))
     else:
-        ys = sorted(pd.to_numeric(t["Year"], errors="coerce").dropna().unique().tolist())
-        prev = int(ys[-2]) if len(ys) >= 2 else None
-        if prev is not None:
-            lp = latest_rows[pos_col].dropna()
-            pp = t[t["Year"] == str(prev)][pos_col].dropna()
-            if not lp.empty and not pp.empty:
-                delta = float(lp.iloc[0]) - float(pp.iloc[0])
-                lines.append(f"Overall: {latest} {float(lp.iloc[0]):.1f}% ({delta:+.1f} pts vs {prev}).")
+        # If no demographic view, add a concise overall trend (if not already covered)
+        if earliest_year in overall.index and latest_year in overall.index and earliest_year != latest_year:
+            fv, lv = float(overall.loc[earliest_year]), float(overall.loc[latest_year])
+            parts.append(f"Over time overall: {pct(fv)} in {earliest_year} → {pct(lv)} in {latest_year} ({pts(lv - fv)}).")
 
-    return " ".join(lines) if lines else "No notable changes to report based on Positive."
+    return " ".join(parts) if parts else "No notable changes are evident."
 
 # ─────────────────────────────
 # UI
@@ -272,7 +410,7 @@ def run_menu1():
         # Banner (larger): 65% width of the center column, capped at 540px, centered
         st.markdown(
             "<img "
-            "style='width:80%;max-width:780px;height:auto;display:block;margin:0 auto 16px;' "
+            "style='width:65%;max-width:540px;height:auto;display:block;margin:0 auto 16px;' "
             "src='https://raw.githubusercontent.com/Martin-Coder-Cloud/PSES---GPT/main/PSES%20Banner%20New.png'>",
             unsafe_allow_html=True
         )
@@ -449,9 +587,9 @@ def run_menu1():
                 )
                 st.dataframe(df_disp, use_container_width=True)
 
-                # Narrative (Positive only)
-                st.markdown("#### Summary (Positive only)")
-                st.write(narrative_positive_only_raw(df_disp, category_in_play))
+                # Narrative (2024-first, full sentences)
+                st.markdown("#### Summary")
+                st.write(build_narrative_2024_first_full(df_disp, category_in_play, question_code, question_text))
 
                 # Excel download (exactly what is displayed)
                 with io.BytesIO() as buf:
