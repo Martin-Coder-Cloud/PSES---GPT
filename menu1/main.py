@@ -346,6 +346,33 @@ def run_menu1():
 
                 df_raw = pd.concat(parts, ignore_index=True)
 
+                # --- NEW: make filtering robust to header casing/whitespace WITHOUT normalizing the file ---
+                def _find(df, target):
+                    """Return the actual column name that matches target (case/space-insensitive)."""
+                    t = target.strip().lower()
+                    for c in df.columns:
+                        if c is None:
+                            continue
+                        if str(c).strip().lower() == t:
+                            return c
+                    return None
+
+                QCOL = _find(df_raw, "QUESTION")
+                SCOL = _find(df_raw, "SURVEYR")
+                DCOL = _find(df_raw, "DEMCODE")
+
+                if not all([QCOL, SCOL, DCOL]):
+                    st.error(
+                        "Required columns not found in data for filtering.\n\n"
+                        f"Expected at least: QUESTION, SURVEYR, DEMCODE\n"
+                        f"Columns present: {list(df_raw.columns)}"
+                    )
+                    st.stop()
+
+                # Rename only in-memory so the rest of the code can rely on the expected keys
+                df_raw = df_raw.rename(columns={QCOL: "QUESTION", SCOL: "SURVEYR", DCOL: "DEMCODE"})
+                # --- end NEW ---
+
                 # SECOND strict guard on RAW columns (defensive)
                 qmask = df_raw["QUESTION"].astype(str).str.strip().str.upper() == str(question_code).strip().upper()
                 ymask = df_raw["SURVEYR"].astype(str).isin([str(y) for y in selected_years])
