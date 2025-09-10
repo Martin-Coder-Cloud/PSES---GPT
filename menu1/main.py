@@ -277,7 +277,7 @@ def run_menu1():
         # Banner (50% of center column, centered)
         st.markdown(
             "<img "
-            "style='width:50%;max-width:420px;height:auto;display:block;margin:0 auto 16px;' "
+            "style='width:65%;max-width:540px;height:auto;display:block;margin:0 auto 16px;' "
             "src='https://raw.githubusercontent.com/Martin-Coder-Cloud/PSES---GPT/main/PSES%20Banner%20New.png'>",
             unsafe_allow_html=True
         )
