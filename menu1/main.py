@@ -1,11 +1,10 @@
 # menu1/main.py — PSES AI Explorer (Menu 1: Search by Question)
-# RAW + METADATA-FIRST (full view, centered UI, 50% banner)
-# • No normalization of the results dataset.
-# • Always resolve QUESTION and DEMCODE(s) from metadata first.
-# • DEMCODE(s) sent to the loader are 4-digit codes from Demographics.xlsx (blank only for "All respondents").
-# • Shows Raw results (full rows) for validation AND a formatted table with Answer 1–7 scale labels.
+# RAW + METADATA-FIRST (full view, centered UI, larger banner)
+# • Filters only on QUESTION, SURVEYR (years), DEMCODE (blank for All respondents).
+# • PS-wide only: enforce LEVEL1ID == 0 or missing.
+# • Shows Raw results (full rows) + formatted table with Answer 1–7 scale labels + narrative.
 # • Robust header matching; no st.stop() (so Return to Main Menu is preserved).
-# • No BYCOND or LEVEL* logic here. Filters only on QUESTION, SURVEYR (years), DEMCODE.
+# • No BYCOND anywhere.
 
 import io
 from datetime import datetime
@@ -55,7 +54,6 @@ def _find_demcode_col(demo_df: pd.DataFrame) -> str | None:
     return None
 
 def _four_digit(s: str) -> str:
-    # Keep digits only and left-pad to 4 (metadata is authoritative; this just standardizes)
     s = "".join(ch for ch in str(s) if ch.isdigit())
     return s.zfill(4) if s else ""
 
@@ -81,7 +79,6 @@ def resolve_demographic_codes_from_metadata(
     # Subset metadata to chosen category
     df_cat = demo_df[demo_df[DEMO_CAT_COL] == category_label] if DEMO_CAT_COL in demo_df.columns else demo_df.copy()
     if df_cat.empty:
-        # Fall back to overall if category not found
         return [None], {None: "All respondents"}, False
 
     # If a specific subgroup is selected, resolve its code from metadata
@@ -93,7 +90,6 @@ def resolve_demographic_codes_from_metadata(
                 code4 = _four_digit(raw_code)
                 code_final = code4 if code4 else raw_code
                 return [code_final], {code_final: subgroup_label}, True
-        # Fallback: if code column is not present, use label as the identifier (not ideal)
         return [subgroup_label], {subgroup_label: subgroup_label}, True
 
     # No subgroup selected -> include all 4-digit codes defined for the category
@@ -103,19 +99,18 @@ def resolve_demographic_codes_from_metadata(
             raw_code = str(r[code_col])
             label = str(r[LABEL_COL])
             code4 = _four_digit(raw_code)
-            if code4:  # must be 4-digit to pass
+            if code4:
                 pairs.append((code4, label))
         if pairs:
             demcodes = [c for c, _ in pairs]
             disp_map = {c: l for c, l in pairs}
             return demcodes, disp_map, True
 
-    # Fallback when code column missing: use labels (last resort)
+    # Fallback when code column missing
     if LABEL_COL in df_cat.columns:
         labels = df_cat[LABEL_COL].astype(str).tolist()
         return labels, {l: l for l in labels}, True
 
-    # If nothing resolvable, treat as overall
     return [None], {None: "All respondents"}, False
 
 def get_scale_labels(scales_df: pd.DataFrame, question_code: str):
@@ -152,8 +147,8 @@ def exclude_999_raw(df: pd.DataFrame) -> pd.DataFrame:
         keep &= (vals != 999)
     return out.loc[keep].copy()
 
-# Case-robust display table (handles ANSWER1..7 or answer1..7)
 def format_display_table_raw(df: pd.DataFrame, category_in_play: bool, dem_disp_map: dict, scale_pairs) -> pd.DataFrame:
+    """Case-robust display table (handles ANSWER1..7 or answer1..7)."""
     if df.empty:
         return df.copy()
 
@@ -169,7 +164,7 @@ def format_display_table_raw(df: pd.DataFrame, category_in_play: bool, dem_disp_
             return dem_disp_map.get(code, dem_disp_map.get(str(code), str(code)))
         out["Demographic"] = out["DEMCODE"].apply(to_label)
 
-    # Find distribution columns in either case
+    # Distribution columns
     dist_cols = []
     for i in range(1, 8):
         lc, uc = f"answer{i}", f"ANSWER{i}"
@@ -178,7 +173,7 @@ def format_display_table_raw(df: pd.DataFrame, category_in_play: bool, dem_disp_
         elif lc in out.columns:
             dist_cols.append(lc)
 
-    # Map either ANSWERi or answeri to the scale label
+    # Map to scale labels
     rename_map = {}
     for k, v in scale_pairs:  # k like "answer1"
         ku = k.upper()
@@ -257,7 +252,7 @@ def narrative_positive_only_raw(df_disp: pd.DataFrame, category_in_play: bool) -
 # UI
 # ─────────────────────────────
 def run_menu1():
-    # Local styles only (no global container overrides)
+    # Local text styles (no global container overrides)
     st.markdown("""
     <style>
       .custom-header{ font-size: 26px; font-weight: 700; margin-bottom: 8px; }
@@ -274,10 +269,10 @@ def run_menu1():
     # Centered column with generous margins on both sides
     left, center, right = st.columns([1, 2, 1])
     with center:
-        # Banner (50% of center column, centered)
+        # Banner (larger): 65% width of the center column, capped at 540px, centered
         st.markdown(
             "<img "
-            "style='width:90%;max-width:780px;height:auto;display:block;margin:0 auto 16px;' "
+            "style='width:80%;max-width:780px;height:auto;display:block;margin:0 auto 16px;' "
             "src='https://raw.githubusercontent.com/Martin-Coder-Cloud/PSES---GPT/main/PSES%20Banner%20New.png'>",
             unsafe_allow_html=True
         )
@@ -390,7 +385,7 @@ def run_menu1():
                 # Rename only in-memory so the rest of the code can rely on the expected keys
                 df_raw = df_raw.rename(columns={QCOL: "QUESTION", SCOL: "SURVEYR", DCOL: "DEMCODE"})
 
-                # SECOND strict guard on RAW columns (defensive)
+                # Strict trio filter (defensive)
                 qmask = df_raw["QUESTION"].astype(str).str.strip().str.upper() == str(question_code).strip().upper()
                 ymask = df_raw["SURVEYR"].astype(str).isin([str(y) for y in selected_years])
                 if demcodes == [None]:
@@ -401,6 +396,15 @@ def run_menu1():
 
                 if df_raw.empty:
                     st.info("No data found after applying filters (exact QUESTION, selected SURVEYR years, DEMCODE set).")
+                    return
+
+                # Enforce PS-wide: LEVEL1ID == 0 or missing (belt-and-suspenders)
+                if "LEVEL1ID" in df_raw.columns:
+                    lvl = pd.to_numeric(df_raw["LEVEL1ID"], errors="coerce")
+                    df_raw = df_raw[(lvl.isna()) | (lvl == 0)].copy()
+
+                if df_raw.empty:
+                    st.info("No PS-wide rows (LEVEL1ID==0 or missing) for this selection.")
                     return
 
                 # Exclude 999 for display & narrative
