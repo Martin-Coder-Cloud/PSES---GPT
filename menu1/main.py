@@ -407,18 +407,18 @@ def run_menu1():
     # Centered column with generous margins on both sides
     left, center, right = st.columns([1, 2, 1])
     with center:
-        # Banner (65% width, max 540px, centered)
+        # Banner (85% width, max 940px, centered)
         st.markdown(
             "<img "
-            "style='width:65%;max-width:540px;height:auto;display:block;margin:0 auto 16px;' "
+            "style='width:85%;max-width:940px;height:auto;display:block;margin:0 auto 16px;' "
             "src='https://raw.githubusercontent.com/Martin-Coder-Cloud/PSES---GPT/main/PSES%20Banner%20New.png'>",
             unsafe_allow_html=True
         )
         st.markdown('<div class="custom-header">🔍 Search by Question</div>', unsafe_allow_html=True)
         st.markdown(
             '<div class="custom-instruction">'
-            'Select a question, year(s), and (optionally) a demographic category and subgroup.<br>'
-            'The query always uses <b>QUESTION</b>, <b>Year</b>, and <b>DEMCODE</b>.'
+            'To explore the survey results for a particular question, please select from the drop dowm menu the question, check the survey year(s) your interested, and (optionally) select a demographic category and subgroup from the drop down menu.<br>'
+            
             '</div>',
             unsafe_allow_html=True
         )
@@ -559,6 +559,111 @@ def run_menu1():
                         sch2 = _fallback_inferred()
                     st.write("Preview only — the app still reads as text.")
                     st.dataframe(sch2, use_container_width=True, hide_index=True)
+
+            # --- DEMCODE scan (global + current QUESTION/years) ---
+            st.markdown("---")
+            if st.button("Scan DEMCODEs (global + for current QUESTION/years)"):
+                import gzip, re
+                from collections import Counter
+                import pandas as pd
+
+                # Canonicalization identical to loader (matching only)
+                def _canon_year(s):
+                    t = "" if s is None else str(s).strip()
+                    return re.sub(r"\.0+$", "", t) if re.fullmatch(r"\d+(?:\.0+)?", t) else t
+
+                def _canon_demcode(s):
+                    if s is None:
+                        return ""
+                    t = str(s).replace("\u00A0", " ").strip()
+                    t = t.replace(" ", "")
+                    if re.fullmatch(r"\d+(?:\.0+)?", t):
+                        t = re.sub(r"\.0+$", "", t)
+                    return t.zfill(4) if t.isdigit() and len(t) < 4 else t
+
+                # Get source path via loader (same file you use in queries)
+                try:
+                    from utils.data_loader import ensure_results2024_local
+                    path = ensure_results2024_local()
+                except Exception:
+                    path = "/tmp/Results2024.csv.gz"
+
+                total_rows = 0
+                dem_blank = 0
+                dem_nonblank = 0
+                dem_counter_all = Counter()
+                dem_counter_cur = Counter()
+
+                years_canon = set(_canon_year(y) for y in selected_years)
+                q_current = str(question_code).strip()
+
+                # Stream the file in text mode, everything as strings (no inference)
+                try:
+                    with gzip.open(path, mode="rt", newline="") as f:
+                        for chunk in pd.read_csv(
+                            f,
+                            chunksize=300_000,
+                            dtype=str,
+                            keep_default_na=False,
+                            na_filter=False,
+                            low_memory=True,
+                        ):
+                            # normalize headers and trim all cells
+                            chunk.columns = [str(c).strip().upper() for c in chunk.columns]
+                            for c in chunk.columns:
+                                chunk[c] = chunk[c].astype(str).str.strip()
+
+                            total_rows += len(chunk)
+
+                            if "DEMCODE" not in chunk.columns:
+                                continue
+
+                            # Global DEMCODE presence
+                            dem_norm = chunk["DEMCODE"].apply(_canon_demcode)
+                            nonblank_mask = dem_norm != ""
+                            dem_nonblank += int(nonblank_mask.sum())
+                            dem_blank += int((~nonblank_mask).sum())
+
+                            # Count global codes
+                            dem_counter_all.update(dem_norm[nonblank_mask].tolist())
+
+                            # Count codes for current QUESTION + selected years
+                            if {"QUESTION", "SURVEYR"}.issubset(chunk.columns):
+                                qmask = chunk["QUESTION"] == q_current
+                                ymask = chunk["SURVEYR"].apply(_canon_year).isin(years_canon)
+                                cur_mask = nonblank_mask & qmask & ymask
+                                if cur_mask.any():
+                                    dem_counter_cur.update(dem_norm[cur_mask].tolist())
+
+                    # Summaries
+                    st.write("**DEMCODE presence (entire file):**")
+                    st.write({
+                        "total_rows": int(total_rows),
+                        "demcode_nonblank_rows": int(dem_nonblank),
+                        "demcode_blank_rows": int(dem_blank),
+                        "distinct_demcodes_overall": int(len(dem_counter_all)),
+                    })
+
+                    # Top overall DEMCODEs
+                    if dem_counter_all:
+                        df_all = pd.DataFrame(dem_counter_all.most_common(30), columns=["DEMCODE (canon)", "count"])
+                        st.markdown("**Top DEMCODEs overall (first 30):**")
+                        st.dataframe(df_all, use_container_width=True, hide_index=True)
+                    else:
+                        st.info("No non-blank DEMCODEs found anywhere in the file.")
+
+                    # Top DEMCODEs for current QUESTION + years
+                    st.markdown(f"**Top DEMCODEs for {q_current} in years {', '.join(selected_years)} (first 30):**")
+                    if dem_counter_cur:
+                        df_cur = pd.DataFrame(dem_counter_cur.most_common(30), columns=["DEMCODE (canon)", "count"])
+                        st.dataframe(df_cur, use_container_width=True, hide_index=True)
+                    else:
+                        st.info("No DEMCODEs found for the current QUESTION + years selection.")
+
+                except FileNotFoundError:
+                    st.error(f"Results file not found at: {path}")
+                except Exception as e:
+                    st.exception(e)
 
         # Run query (RAW, character-only filtering in loader)
         with st.container():
