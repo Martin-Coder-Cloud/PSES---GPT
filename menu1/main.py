@@ -1,6 +1,6 @@
 # menu1/main.py — PSES AI Explorer (Menu 1: Search by Question)
-# Fast path: cached big file, one-pass DEMCODE filtering, opt-in downloads
-# Keeps everything as TEXT; only trims filter columns in the loader.
+# Cached big-file, one-pass DEMCODE filtering, opt-in raw/Excel.
+# All data as TEXT; trims only filter columns in the loader.
 
 from __future__ import annotations
 
@@ -12,11 +12,11 @@ import streamlit as st
 
 from utils.data_loader import (
     load_results2024_filtered,
-    get_results2024_schema,             # used in diagnostics expander
-    get_results2024_schema_inferred,    # used in diagnostics expander
+    get_results2024_schema,
+    get_results2024_schema_inferred,
 )
 
-# Stable alias to avoid any accidental local-shadowing of `pd`
+# Stable alias to avoid any accidental local-shadowing of `pd` in functions
 PD = pd
 
 
@@ -164,14 +164,18 @@ def format_display_table_raw(df: pd.DataFrame, category_in_play: bool, dem_disp_
     dist_cols = []
     for i in range(1, 8):
         lc, uc = f"answer{i}", f"ANSWER{i}"
-        if uc in out.columns: dist_cols.append(uc)
-        elif lc in out.columns: dist_cols.append(lc)
+        if uc in out.columns:
+            dist_cols.append(uc)
+        elif lc in out.columns:
+            dist_cols.append(lc)
 
     rename_map = {}
     for k, v in scale_pairs:
         ku = k.upper()
-        if ku in out.columns: rename_map[ku] = v
-        if k  in out.columns: rename_map[k]  = v
+        if ku in out.columns:
+            rename_map[ku] = v
+        if k in out.columns:
+            rename_map[k] = v
 
     keep_cols = ["Year"] + (["Demographic"] if category_in_play else []) \
                 + dist_cols + ["POSITIVE", "NEUTRAL", "NEGATIVE", "ANSCOUNT"]
@@ -179,10 +183,10 @@ def format_display_table_raw(df: pd.DataFrame, category_in_play: bool, dem_disp_
     out = out[keep_cols].rename(columns=rename_map).copy()
 
     sort_cols = ["Year"] + (["Demographic"] if category_in_play else [])
-    sort_asc  = [False] + ([True] if category_in_play else [])
+    sort_asc = [False] + ([True] if category_in_play else [])
     out = out.sort_values(sort_cols, ascending=sort_asc, kind="mergesort").reset_index(drop=True)
 
-    # leave all values as text for display
+    # All values remain text for display
     return out
 
 
@@ -224,6 +228,7 @@ def build_narrative_2024_first_full(df_disp: pd.DataFrame, category_in_play: boo
             years.append(y)
     if not years:
         return "No results are available to summarize."
+
     target_year = "2024" if "2024" in years else years[-1]
     prev_year = None
     for y in reversed(years):
@@ -282,7 +287,7 @@ def build_narrative_2024_first_full(df_disp: pd.DataFrame, category_in_play: boo
             if lines:
                 parts.append("By demographic in " + target_year + ": " + " ".join(lines))
 
-            # Gap analysis (find top and bottom Positive within the target year)
+            # Gap analysis in target year
             ordered = ty_slice[["Demographic", pos_col]].dropna()
             if not ordered.empty:
                 ordered["_posf_"] = ordered[pos_col].apply(f2)
@@ -329,7 +334,7 @@ def build_narrative_2024_first_full(df_disp: pd.DataFrame, category_in_play: boo
             parts.append("Trends over time by demographic: " + " ".join(trend_bits))
 
     else:
-        # Overall trend if we had overall series
+        # Overall trend if overall series present
         if overall_map and earliest_year in overall_map and latest_year in overall_map and earliest_year != latest_year:
             d = pts(overall_map[latest_year], overall_map[earliest_year])
             if d is not None:
@@ -342,6 +347,7 @@ def build_narrative_2024_first_full(df_disp: pd.DataFrame, category_in_play: boo
 # UI
 # ─────────────────────────────
 def run_menu1():
+    # Clean, centered layout; moderate banner size
     st.markdown("""
     <style>
       .custom-header{ font-size: 26px; font-weight: 700; margin-bottom: 8px; }
@@ -408,7 +414,7 @@ def run_menu1():
             if sub_selection == "":
                 sub_selection = None
 
-        # Resolve DEMCODEs once
+        # Resolve DEMCODEs once (as text)
         demcodes, disp_map, category_in_play = resolve_demographic_codes_from_metadata(demo_df, demo_selection, sub_selection)
         dem_display = ["(blank)"] if demcodes == [None] else [str(c).strip() for c in demcodes]
 
@@ -430,12 +436,12 @@ def run_menu1():
             with colA:
                 if st.button("Show dtypes after loader read (text mode)"):
                     sch = get_results2024_schema()
-                    st.write("All columns should be object (text).")
+                    st.write("All columns are read as text (object).")
                     st.dataframe(sch, use_container_width=True, hide_index=True)
             with colB:
                 if st.button("Show what pandas would infer (preview)"):
                     sch2 = get_results2024_schema_inferred()
-                    st.write("Preview only — the app still reads as text.")
+                    st.write("Preview only — the app forces text on read.")
                     st.dataframe(sch2, use_container_width=True, hide_index=True)
 
         # Run query (single pass, cached big file)
@@ -450,7 +456,7 @@ def run_menu1():
                     group_values=demcodes,  # list[str|None]
                 )
             except TypeError:
-                # Back-compat with old loader signature (group_value=...), as a fallback
+                # Back-compat: old loader that only accepts group_value=...
                 parts = []
                 if demcodes == [None]:
                     try:
@@ -481,7 +487,7 @@ def run_menu1():
                 st.info("No data found for this selection.")
                 return
 
-            # Exclude 999s for display/narrative
+            # Exclude 999s for display/narrative only
             df_raw = exclude_999_raw(df_raw)
             if df_raw.empty:
                 st.info("Data exists, but all rows are not applicable (999).")
@@ -511,7 +517,7 @@ def run_menu1():
             )
             st.dataframe(df_disp, use_container_width=True)
 
-            # Narrative (2024-first)
+            # Narrative (2024-first, full sentences)
             st.markdown("#### Summary")
             st.write(build_narrative_2024_first_full(df_disp, category_in_play, question_code, question_text))
 
