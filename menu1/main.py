@@ -5,9 +5,10 @@
 # • DEMCODE comparisons are exact **trimmed string** matches. No numeric coercion, no case changes.
 # • Shows Raw results (full rows) + formatted table with Answer 1–7 + narrative (2024-first).
 # • No BYCOND, no dedup. No st.stop().
-# • Added: Diagnostics expander to view schema/dtypes (no logic change).
+# • Diagnostics expander now has a built-in fallback if utils.data_loader helpers are missing.
 
 import io
+import gzip
 from datetime import datetime
 
 import pandas as pd
@@ -473,21 +474,90 @@ def run_menu1():
         st.dataframe(params_df, use_container_width=True, hide_index=True)
 
         # ─────────────────────────────────────────
-        # Diagnostics (added; observational only)
+        # Diagnostics (self-contained fallback)
         # ─────────────────────────────────────────
         with st.expander("🛠 Diagnostics: file schema", expanded=False):
+            def _fallback_after_loader(sample_rows: int = 5000) -> pd.DataFrame:
+                """Read a small sample in text mode and report schema (object dtypes expected)."""
+                # Try to reuse the loader's ensure_results2024_local if available
+                path = None
+                try:
+                    from utils.data_loader import ensure_results2024_local  # type: ignore
+                    path = ensure_results2024_local()
+                except Exception:
+                    path = "/tmp/Results2024.csv.gz"
+                with gzip.open(path, mode="rt", newline="") as f:
+                    peek = pd.read_csv(
+                        f,
+                        nrows=sample_rows,
+                        dtype=str,
+                        keep_default_na=False,
+                        na_filter=False,
+                        low_memory=True,
+                    )
+                peek.columns = [str(c).strip().upper() for c in peek.columns]
+                for c in peek.columns:
+                    peek[c] = peek[c].astype(str).str.strip()
+                rows = []
+                for c in peek.columns:
+                    s = peek[c]
+                    ex = next((v for v in s if v != ""), "")
+                    blank_rate = (s == "").mean() if len(s) else 0.0
+                    rows.append({
+                        "column": c,
+                        "dtype_after_loader": str(s.dtype),
+                        "example_non_blank": ex,
+                        "blank_rate": round(float(blank_rate), 3),
+                    })
+                return pd.DataFrame(rows)
+
+            def _fallback_inferred(sample_rows: int = 5000) -> pd.DataFrame:
+                """Show what pandas would infer (preview only; app still uses text mode)."""
+                path = None
+                try:
+                    from utils.data_loader import ensure_results2024_local  # type: ignore
+                    path = ensure_results2024_local()
+                except Exception:
+                    path = "/tmp/Results2024.csv.gz"
+                with gzip.open(path, mode="rt", newline="") as f:
+                    peek = pd.read_csv(
+                        f,
+                        nrows=sample_rows,
+                        keep_default_na=True,
+                        na_filter=True,
+                        low_memory=True,
+                    )
+                peek.columns = [str(c).strip().upper() for c in peek.columns]
+                rows = []
+                for c in peek.columns:
+                    s = peek[c]
+                    ex = next((v for v in s if pd.notna(v)), "")
+                    rows.append({
+                        "column": c,
+                        "dtype_inferred_by_pandas": str(s.dtype),
+                        "example_non_blank": ex,
+                    })
+                return pd.DataFrame(rows)
+
             colA, colB = st.columns(2)
             with colA:
                 if st.button("Show dtypes after loader read (text mode)"):
-                    from utils.data_loader import get_results2024_schema
-                    sch = get_results2024_schema()
+                    try:
+                        from utils.data_loader import get_results2024_schema  # optional helper
+                        sch = get_results2024_schema()
+                    except Exception:
+                        sch = _fallback_after_loader()
                     st.write("All columns should be object (text).")
                     st.dataframe(sch, use_container_width=True, hide_index=True)
+
             with colB:
                 if st.button("Show what pandas would infer (preview)"):
-                    from utils.data_loader import get_results2024_schema_inferred
-                    sch2 = get_results2024_schema_inferred()
-                    st.write("This is ONLY for insight; the app still reads everything as text.")
+                    try:
+                        from utils.data_loader import get_results2024_schema_inferred  # optional helper
+                        sch2 = get_results2024_schema_inferred()
+                    except Exception:
+                        sch2 = _fallback_inferred()
+                    st.write("Preview only — the app still reads as text.")
                     st.dataframe(sch2, use_container_width=True, hide_index=True)
 
         # Run query (RAW, character-only filtering in loader)
