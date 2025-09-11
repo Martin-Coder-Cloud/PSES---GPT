@@ -2,8 +2,9 @@
 # -----------------------------------------------------------------------------
 # Results2024 loader (character-only) + schema introspection utilities
 # - Reads gz CSV as pure text (dtype=str), blanks preserved (""), headers UPPER.
-# - Filters on QUESTION (exact trimmed), SURVEYR (years as strings), DEMCODE (exact trimmed).
-# - PS-wide: LEVEL1ID == "" or "0" (strings) when present; if absent, keep rows.
+# - Filters on QUESTION (exact trimmed), SURVEYR (years as strings, canonicalized),
+#   DEMCODE (exact trimmed, canonicalized to handle "1937.0" and leading-zero loss).
+# - PS-wide: LEVEL1ID == "" or "0" (and other zero-ish strings) when present; else keep rows.
 # - No BYCOND. No dedup.
 # - Extras:
 #     • get_results2024_schema(): shows dtypes/examples AFTER the loader read
@@ -13,6 +14,7 @@
 from typing import List, Optional
 import os
 import gzip
+import re
 
 import gdown
 import pandas as pd
@@ -54,13 +56,42 @@ def _chunk_reader(path: str, chunksize: int = 200_000):
             chunk.columns = [str(c).strip().upper() for c in chunk.columns]
             # force every cell to a trimmed string; keep blanks as ""
             for c in chunk.columns:
-                # chunk[c] is already str due to dtype=str, but trim for safety
                 chunk[c] = chunk[c].astype(str).str.strip()
             yield chunk
 
 
 def _as_trimmed_str(x: Optional[str]) -> str:
     return "" if x is None else str(x).strip()
+
+
+# ─────────────────────────────────────────────────────────────
+# Canonicalization helpers (for MATCHING ONLY; display stays raw)
+# ─────────────────────────────────────────────────────────────
+def _canon_year(s: Optional[str]) -> str:
+    """
+    Normalize SURVEYR-like tokens for comparison:
+      - trim
+      - if looks like digits optionally followed by .0..., strip the .0...
+    """
+    t = "" if s is None else str(s).strip()
+    return re.sub(r"\.0+$", "", t) if re.fullmatch(r"\d+(?:\.0+)?", t) else t
+
+
+def _canon_demcode(s: Optional[str]) -> str:
+    """
+    Normalize DEMCODE for comparison only:
+      - convert to str, normalize NBSP to space, trim
+      - remove all spaces (defensive)
+      - if looks like digits optionally followed by .0..., strip .0...
+      - if pure digits and length < 4, left-pad to 4
+    """
+    if s is None:
+        return ""
+    t = str(s).replace("\u00A0", " ").strip()
+    t = t.replace(" ", "")
+    if re.fullmatch(r"\d+(?:\.0+)?", t):
+        t = re.sub(r"\.0+$", "", t)
+    return t.zfill(4) if t.isdigit() and len(t) < 4 else t
 
 
 @st.cache_data(show_spinner="🔎 Filtering results…")
@@ -73,17 +104,17 @@ def load_results2024_filtered(
     """
     Filter rows where:
       - QUESTION == question_code (exact trimmed string)
-      - SURVEYR in years (compared as trimmed strings)
-      - DEMCODE == group_value (exact trimmed; "" for All respondents)
+      - SURVEYR in years (compared via canonicalized strings)
+      - DEMCODE == group_value (canonicalized; "" for All respondents)
       - PS-wide: LEVEL1ID is "" or "0" (strings) when present; if absent, keep rows
     """
     path = ensure_results2024_local()
 
     q_target = _as_trimmed_str(question_code)
-    years_str = { _as_trimmed_str(y) for y in years }
+    years_canon = {_canon_year(y) for y in years}
 
     want_blank_dem = (group_value is None) or (_as_trimmed_str(group_value) == "")
-    dem_target = "" if want_blank_dem else _as_trimmed_str(group_value)
+    dem_target_canon = "" if want_blank_dem else _canon_demcode(group_value)
 
     parts: list[pd.DataFrame] = []
 
@@ -91,16 +122,21 @@ def load_results2024_filtered(
         if not {"QUESTION", "SURVEYR", "DEMCODE"}.issubset(set(chunk.columns)):
             continue
 
+        # QUESTION exact (already trimmed strings)
         qmask = chunk["QUESTION"] == q_target
-        ymask = chunk["SURVEYR"].isin(years_str)
 
-        dem_series = chunk["DEMCODE"]
-        gmask = (dem_series == "") if want_blank_dem else (dem_series == dem_target)
+        # SURVEYR canonicalized on both sides
+        ymask = chunk["SURVEYR"].apply(_canon_year).isin(years_canon)
 
-        # PS-wide: LEVEL1ID == "" or "0" (strings) if column exists; else keep rows
+        # DEMCODE canonicalized on both sides
+        dem_series_canon = chunk["DEMCODE"].apply(_canon_demcode)
+        gmask = (dem_series_canon == "") if want_blank_dem else (dem_series_canon == dem_target_canon)
+
+        # PS-wide: LEVEL1ID == "" or "0" or other zero-ish strings (e.g., "0.0", "0000")
         if "LEVEL1ID" in chunk.columns:
-            lvl = chunk["LEVEL1ID"]
-            lmask = (lvl == "") | (lvl == "0")
+            lvl = chunk["LEVEL1ID"].astype(str).str.strip()
+            zeroish = lvl.eq("") | lvl.eq("0") | lvl.str.fullmatch(r"0+(?:\.0+)?").fillna(False)
+            lmask = zeroish
         else:
             lmask = pd.Series(True, index=chunk.index)
 
