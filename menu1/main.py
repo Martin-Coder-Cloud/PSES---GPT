@@ -1,11 +1,10 @@
 # menu1/main.py — PSES AI Explorer (Menu 1: Search by Question)
 # RAW + METADATA-FIRST (centered UI, banner)
-# • Filters on QUESTION, SURVEYR (years as strings), DEMCODE (exact 4-digit code as characters).
+# • Filters on QUESTION, SURVEYR (years as strings), DEMCODE (exact trimmed characters).
 # • PS-wide only: keep LEVEL1ID == "" or "0" (strings) when present.
-# • DEMCODE comparisons are exact **trimmed string** matches. No numeric coercion, no case changes.
-# • Shows Raw results (full rows) + formatted table with Answer 1–7 + narrative (2024-first).
+# • Shows Raw results + formatted table (Answer 1–7 + P/N/N + ANSCOUNT) + 2024-first narrative.
 # • No BYCOND, no dedup. No st.stop().
-# • Diagnostics expander now has a built-in fallback if utils.data_loader helpers are missing.
+# • Diagnostics expander includes schema previews + DEMCODE scan.
 
 import io
 import gzip
@@ -14,7 +13,7 @@ from datetime import datetime
 import pandas as pd
 import streamlit as st
 
-from utils.data_loader import load_results2024_filtered  # RAW loader (no normalization)
+from utils.data_loader import load_results2024_filtered  # RAW loader (character-only)
 
 # ─────────────────────────────
 # Cached metadata
@@ -32,7 +31,7 @@ def load_questions_metadata() -> pd.DataFrame:
     # Expect "question" (code) and "english" (text)
     if "question" in qdf.columns and "english" in qdf.columns:
         qdf = qdf.rename(columns={"question": "code", "english": "text"})
-    qdf["code"] = qdf["code"].astype(str).str.strip()  # exact characters; no .upper()
+    qdf["code"] = qdf["code"].astype(str).str.strip()
     qdf["qnum"] = qdf["code"].str.extract(r'Q?(\d+)', expand=False)
     with pd.option_context("mode.chained_assignment", None):
         qdf["qnum"] = pd.to_numeric(qdf["qnum"], errors="coerce")
@@ -56,7 +55,7 @@ def _find_demcode_col(demo_df: pd.DataFrame) -> str | None:
     return None
 
 def _four_digit(s: str) -> str:
-    # Keep digits only and left-pad to 4 (metadata is authoritative; dataset matches exact characters)
+    # Keep digits only and left-pad to 4 (metadata is authoritative)
     s = "".join(ch for ch in str(s) if ch.isdigit())
     return s.zfill(4) if s else ""
 
@@ -82,10 +81,9 @@ def resolve_demographic_codes_from_metadata(
     # Subset metadata to chosen category
     df_cat = demo_df[demo_df[DEMO_CAT_COL] == category_label] if DEMO_CAT_COL in demo_df.columns else demo_df.copy()
     if df_cat.empty:
-        # Fall back to overall if category not found
         return [None], {None: "All respondents"}, False
 
-    # If a specific subgroup is selected, resolve its code from metadata (exact characters)
+    # If a specific subgroup is selected, resolve its code from metadata
     if subgroup_label:
         if code_col and LABEL_COL in df_cat.columns:
             row = df_cat[df_cat[LABEL_COL] == subgroup_label]
@@ -94,8 +92,8 @@ def resolve_demographic_codes_from_metadata(
                 code4 = _four_digit(raw_code)
                 code_final = code4 if code4 else raw_code
                 return [code_final.strip()], {code_final.strip(): subgroup_label}, True
-        # Fallback: if code column is not present, use label as the identifier (not ideal)
-        return [subgroup_label.strip()], {subgroup_label.strip(): subgroup_label}, True
+        # Fallback: if code column missing, use the label as identifier
+        return [str(subgroup_label).strip()], {str(subgroup_label).strip(): subgroup_label}, True
 
     # No subgroup selected -> include all 4-digit codes defined for the category
     if code_col and LABEL_COL in df_cat.columns:
@@ -104,7 +102,7 @@ def resolve_demographic_codes_from_metadata(
             raw_code = str(r[code_col])
             label = str(r[LABEL_COL])
             code4 = _four_digit(raw_code)
-            if code4:  # must be 4-digit to pass
+            if code4:
                 pairs.append((code4.strip(), label))
         if pairs:
             demcodes = [c for c, _ in pairs]
@@ -113,8 +111,7 @@ def resolve_demographic_codes_from_metadata(
 
     # Fallback when code column missing: use labels (last resort)
     if LABEL_COL in df_cat.columns:
-        labels = df_cat[LABEL_COL].astype(str).tolist()
-        labels = [l.strip() for l in labels]
+        labels = [str(l).strip() for l in df_cat[LABEL_COL].tolist()]
         return labels, {l: l for l in labels}, True
 
     # If nothing resolvable, treat as overall
@@ -137,9 +134,7 @@ def get_scale_labels(scales_df: pd.DataFrame, question_code: str):
             vals = candidates[col].dropna().astype(str)
             if not vals.empty:
                 lbl = vals.iloc[0].strip()
-        if not lbl:
-            lbl = f"Answer {i}"
-        labels.append((col, lbl))
+        labels.append((col, lbl or f"Answer {i}"))
     return labels
 
 def exclude_999_raw(df: pd.DataFrame) -> pd.DataFrame:
@@ -175,10 +170,8 @@ def format_display_table_raw(df: pd.DataFrame, category_in_play: bool, dem_disp_
     dist_cols = []
     for i in range(1, 8):
         lc, uc = f"answer{i}", f"ANSWER{i}"
-        if uc in out.columns:
-            dist_cols.append(uc)
-        elif lc in out.columns:
-            dist_cols.append(lc)
+        if uc in out.columns: dist_cols.append(uc)
+        elif lc in out.columns: dist_cols.append(lc)
 
     # Map to scale labels
     rename_map = {}
@@ -213,13 +206,6 @@ def format_display_table_raw(df: pd.DataFrame, category_in_play: bool, dem_disp_
 # Narrative: 2024-first, full sentences
 # ─────────────────────────────
 def build_narrative_2024_first_full(df_disp: pd.DataFrame, category_in_play: bool, question_code: str, question_text: str) -> str:
-    """
-    Full-sentence narrative (2024-first):
-      • Overall 2024 first, with question text, then change since earliest year present.
-      • 2024 by demographic with change vs most recent prior year.
-      • 2024 gap (top vs bottom) and whether gap widened/narrowed vs prior year.
-      • Trends over time overall and for each group across all years in the table.
-    """
     if df_disp is None or df_disp.empty:
         return "No results are available to summarize."
 
@@ -227,32 +213,24 @@ def build_narrative_2024_first_full(df_disp: pd.DataFrame, category_in_play: boo
     pos_col = None
     for c in df_disp.columns:
         if str(c).strip().lower() == "positive":
-            pos_col = c
-            break
+            pos_col = c; break
     if pos_col is None:
         return "No results are available to summarize."
 
-    # Helpers
     def pct(v):
-        try:
-            return f"{float(v):.1f}%"
-        except Exception:
-            return "n/a"
+        try: return f"{float(v):.1f}%"
+        except Exception: return "n/a"
 
     def pts(v):
         try:
-            v = float(v)
-            sign = "+" if v >= 0 else "-"
+            v = float(v); sign = "+" if v >= 0 else "-"
             return f"{sign}{abs(v):.1f} pts"
-        except Exception:
-            return "±0.0 pts"
+        except Exception: return "±0.0 pts"
 
-    # Prepare years
     t = df_disp.copy()
     t["_Y"] = pd.to_numeric(t["Year"], errors="coerce")
     t = t.dropna(subset=["_Y"]).copy()
-    if t.empty:
-        return "No results are available to summarize."
+    if t.empty: return "No results are available to summarize."
 
     years_sorted = sorted(t["_Y"].unique().tolist())
     target_year = 2024 if 2024 in years_sorted else int(max(years_sorted))
@@ -261,22 +239,19 @@ def build_narrative_2024_first_full(df_disp: pd.DataFrame, category_in_play: boo
     earliest_year = int(min(years_sorted))
     latest_year = int(max(years_sorted))
 
-    # Compute overall series (explicit overall row if present, else weighted average across groups)
+    # Overall series: use explicit overall if present; else (weighted) mean across groups per year
     def overall_series(df: pd.DataFrame) -> pd.Series:
         if "Demographic" not in df.columns:
-            return df.set_index("_Y")[pos_col].apply(lambda x: pd.to_numeric(x, errors="coerce")).dropna()
+            return pd.to_numeric(df.set_index("_Y")[pos_col], errors="coerce").dropna()
         cand = df[df["Demographic"].astype(str).str.lower().isin(["all respondents", "overall"])]
         if not cand.empty:
             s = pd.to_numeric(cand.set_index("_Y")[pos_col], errors="coerce").dropna()
-            if not s.empty:
-                return s
-        tmp = df.copy()
-        tmp[pos_col] = pd.to_numeric(tmp[pos_col], errors="coerce")
+            if not s.empty: return s
+        tmp = df.copy(); tmp[pos_col] = pd.to_numeric(tmp[pos_col], errors="coerce")
         series = {}
         for y, g in tmp.groupby("_Y"):
             vals = g[pos_col].dropna()
-            if vals.empty:
-                continue
+            if vals.empty: continue
             if "ANSCOUNT" in g.columns and g["ANSCOUNT"].notna().any():
                 w = pd.to_numeric(g["ANSCOUNT"], errors="coerce").fillna(0)
                 total = float(w.sum())
@@ -286,7 +261,6 @@ def build_narrative_2024_first_full(df_disp: pd.DataFrame, category_in_play: boo
         return pd.Series(series)
 
     overall = overall_series(t)
-
     parts: list[str] = []
 
     # Overall 2024 (or latest)
@@ -294,17 +268,14 @@ def build_narrative_2024_first_full(df_disp: pd.DataFrame, category_in_play: boo
         ty = overall.loc[target_year]
         parts.append(f"Overall, the results for {question_code} show that {pct(ty)} {question_text} in {target_year}.")
         if earliest_year in overall.index and earliest_year != target_year:
-            ey = overall.loc[earliest_year]
-            change_total = ty - ey
+            ey = overall.loc[earliest_year]; change_total = ty - ey
             if abs(change_total) < 1.0:
                 parts.append(f"Results have been stable since {earliest_year} (from {pct(ey)} to {pct(ty)}, {pts(change_total)}).")
             else:
-                direction = "increased" if change_total > 0 else "decreased"
+                direction = 'increased' if change_total > 0 else 'decreased'
                 parts.append(f"Since {earliest_year}, overall results have {direction} by {pts(change_total)} (from {pct(ey)} to {pct(ty)}).")
         if prev_year is not None and prev_year in overall.index:
-            py = overall.loc[prev_year]
-            diff = ty - py
-            verb = "higher" if diff >= 0 else "lower"
+            py = overall.loc[prev_year]; diff = ty - py; verb = "higher" if diff >= 0 else "lower"
             parts.append(f"Compared with {prev_year}, {target_year} is {pts(diff)} {verb} (from {pct(py)} to {pct(ty)}).")
 
     # Demographic snapshot + gap + trends
@@ -323,8 +294,7 @@ def build_narrative_2024_first_full(df_disp: pd.DataFrame, category_in_play: boo
                         if prev_year is not None and prev_year in gdf.index:
                             pyv = pd.to_numeric(gdf.loc[prev_year, pos_col], errors="coerce")
                             if pd.notna(pyv):
-                                delta_gp = tyv - pyv
-                                dir_word = "higher" if delta_gp >= 0 else "lower"
+                                delta_gp = tyv - pyv; dir_word = "higher" if delta_gp >= 0 else "lower"
                                 lines.append(f"{g}: {pct(tyv)} in {target_year} ({pts(delta_gp)} {dir_word} than {prev_year}).")
                             else:
                                 lines.append(f"{g}: {pct(tyv)} in {target_year}.")
@@ -333,7 +303,6 @@ def build_narrative_2024_first_full(df_disp: pd.DataFrame, category_in_play: boo
             if lines:
                 parts.append("By demographic in " + str(target_year) + ": " + " ".join(lines))
 
-            # 2024 gap and how it moved vs prior year
             ordered = ty_slice[["Demographic", pos_col]].sort_values(pos_col, ascending=False)
             if not ordered.empty:
                 top_g, top_v = ordered.iloc[0]["Demographic"], float(ordered.iloc[0][pos_col])
@@ -359,27 +328,21 @@ def build_narrative_2024_first_full(df_disp: pd.DataFrame, category_in_play: boo
                         f"The {target_year} gap between {top_g} ({pct(top_v)}) and {bot_g} ({pct(bot_v)}) is {pts(gap_now)}."
                     )
 
-        # Trends per demographic across all years
         trend_bits = []
         for g, gdf in t.groupby("Demographic"):
             gdf = gdf.dropna(subset=[pos_col]).copy()
-            if gdf.empty:
-                continue
+            if gdf.empty: continue
             gdf["_Y"] = pd.to_numeric(gdf["Year"], errors="coerce")
             gdf = gdf.dropna(subset=["_Y"]).sort_values("_Y")
-            if gdf.empty:
-                continue
+            if gdf.empty: continue
             fy, ly = int(gdf["_Y"].iloc[0]), int(gdf["_Y"].iloc[-1])
             fv = float(pd.to_numeric(gdf[pos_col].iloc[0], errors="coerce"))
             lv = float(pd.to_numeric(gdf[pos_col].iloc[-1], errors="coerce"))
-            if fy == ly:
-                trend_bits.append(f"{g}: {pct(lv)} in {ly}.")
-            else:
-                trend_bits.append(f"{g}: {pct(fv)} in {fy} → {pct(lv)} in {ly} ({pts(lv - fv)}).")
+            if fy == ly: trend_bits.append(f"{g}: {pct(lv)} in {ly}.")
+            else:        trend_bits.append(f"{g}: {pct(fv)} in {fy} → {pct(lv)} in {ly} ({pts(lv - fv)}).")
         if trend_bits:
             parts.append("Trends over time by demographic: " + " ".join(trend_bits))
     else:
-        # Overall trend if no demographic view
         if earliest_year in overall.index and latest_year in overall.index and earliest_year != latest_year:
             fv, lv = float(overall.loc[earliest_year]), float(overall.loc[latest_year])
             parts.append(f"Over time overall: {pct(fv)} in {earliest_year} → {pct(lv)} in {latest_year} ({pts(lv - fv)}).")
@@ -390,7 +353,6 @@ def build_narrative_2024_first_full(df_disp: pd.DataFrame, category_in_play: boo
 # UI
 # ─────────────────────────────
 def run_menu1():
-    # Local text styles (no global container overrides)
     st.markdown("""
     <style>
       .custom-header{ font-size: 26px; font-weight: 700; margin-bottom: 8px; }
@@ -407,19 +369,16 @@ def run_menu1():
     # Centered column with generous margins on both sides
     left, center, right = st.columns([1, 2, 1])
     with center:
-        # Banner (85% width, max 940px, centered)
+        # Banner (75% width, max 940px, centered)
         st.markdown(
-            "<img "
-            "style='width:85%;max-width:940px;height:auto;display:block;margin:0 auto 16px;' "
+            "<img style='width:75%;max-width:940px;height:auto;display:block;margin:0 auto 16px;' "
             "src='https://raw.githubusercontent.com/Martin-Coder-Cloud/PSES---GPT/main/PSES%20Banner%20New.png'>",
             unsafe_allow_html=True
         )
         st.markdown('<div class="custom-header">🔍 Search by Question</div>', unsafe_allow_html=True)
         st.markdown(
-            '<div class="custom-instruction">'
-            'To explore the survey results for a particular question, please select from the drop dowm menu the question, check the survey year(s) your interested, and (optionally) select a demographic category and subgroup from the drop down menu.<br>'
-            
-            '</div>',
+            '<div class="custom-instruction">Select a question, year(s), and (optionally) a demographic category and subgroup.<br>'
+            'The query always uses <b>QUESTION</b>, <b>Year</b>, and <b>DEMCODE</b>.</div>',
             unsafe_allow_html=True
         )
 
@@ -430,7 +389,7 @@ def run_menu1():
         question_code = qdf.loc[qdf["display"] == selected_label, "code"].values[0]
         question_text = qdf.loc[qdf["display"] == selected_label, "text"].values[0]
 
-        # Years (stored and matched as strings)
+        # Years (strings)
         st.markdown('<div class="field-label">Select survey year(s):</div>', unsafe_allow_html=True)
         all_years = ["2024", "2022", "2020", "2019"]
         select_all = st.checkbox("All years", value=True, key="select_all_years")
@@ -459,10 +418,9 @@ def run_menu1():
             sub_items = demo_df.loc[demo_df[DEMO_CAT_COL] == demo_selection, LABEL_COL].dropna().astype(str).unique().tolist()
             sub_items = sorted(sub_items)
             sub_selection = st.selectbox("(leave blank to include all subgroups in this category)", [""] + sub_items, key=f"sub_{demo_selection.replace(' ', '_')}", label_visibility="collapsed")
-            if sub_selection == "":
-                sub_selection = None
+            if sub_selection == "": sub_selection = None
 
-        # Resolve DEMCODE(s) from metadata (4-digit strings) and show parameters BEFORE query
+        # Resolve DEMCODE(s) from metadata (4-digit) and show parameters BEFORE query
         demcodes, disp_map, category_in_play = resolve_demographic_codes_from_metadata(demo_df, demo_selection, sub_selection)
         dem_display = ["(blank)"] if demcodes == [None] else [str(c).strip() for c in demcodes]
 
@@ -479,8 +437,6 @@ def run_menu1():
         with st.expander("🛠 Diagnostics: file schema", expanded=False):
             def _fallback_after_loader(sample_rows: int = 5000) -> pd.DataFrame:
                 """Read a small sample in text mode and report schema (object dtypes expected)."""
-                # Try to reuse the loader's ensure_results2024_local if available
-                path = None
                 try:
                     from utils.data_loader import ensure_results2024_local  # type: ignore
                     path = ensure_results2024_local()
@@ -513,7 +469,6 @@ def run_menu1():
 
             def _fallback_inferred(sample_rows: int = 5000) -> pd.DataFrame:
                 """Show what pandas would infer (preview only; app still uses text mode)."""
-                path = None
                 try:
                     from utils.data_loader import ensure_results2024_local  # type: ignore
                     path = ensure_results2024_local()
@@ -549,7 +504,6 @@ def run_menu1():
                         sch = _fallback_after_loader()
                     st.write("All columns should be object (text).")
                     st.dataframe(sch, use_container_width=True, hide_index=True)
-
             with colB:
                 if st.button("Show what pandas would infer (preview)"):
                     try:
@@ -563,28 +517,28 @@ def run_menu1():
             # --- DEMCODE scan (global + current QUESTION/years) ---
             st.markdown("---")
             if st.button("Scan DEMCODEs (global + for current QUESTION/years)"):
-                import gzip, re
+                import gzip as _gzip, re as _re
                 from collections import Counter
-                import pandas as pd
+                import pandas as _pd  # alias to avoid shadowing top-level `pd`
 
                 # Canonicalization identical to loader (matching only)
                 def _canon_year(s):
                     t = "" if s is None else str(s).strip()
-                    return re.sub(r"\.0+$", "", t) if re.fullmatch(r"\d+(?:\.0+)?", t) else t
+                    return _re.sub(r"\.0+$", "", t) if _re.fullmatch(r"\d+(?:\.0+)?", t) else t
 
                 def _canon_demcode(s):
                     if s is None:
                         return ""
                     t = str(s).replace("\u00A0", " ").strip()
                     t = t.replace(" ", "")
-                    if re.fullmatch(r"\d+(?:\.0+)?", t):
-                        t = re.sub(r"\.0+$", "", t)
+                    if _re.fullmatch(r"\d+(?:\.0+)?", t):
+                        t = _re.sub(r"\.0+$", "", t)
                     return t.zfill(4) if t.isdigit() and len(t) < 4 else t
 
-                # Get source path via loader (same file you use in queries)
+                # Get source path via loader (same file the app uses)
                 try:
-                    from utils.data_loader import ensure_results2024_local
-                    path = ensure_results2024_local()
+                    from utils.data_loader import ensure_results2024_local as _ensure
+                    path = _ensure()
                 except Exception:
                     path = "/tmp/Results2024.csv.gz"
 
@@ -599,8 +553,8 @@ def run_menu1():
 
                 # Stream the file in text mode, everything as strings (no inference)
                 try:
-                    with gzip.open(path, mode="rt", newline="") as f:
-                        for chunk in pd.read_csv(
+                    with _gzip.open(path, mode="rt", newline="") as f:
+                        for chunk in _pd.read_csv(
                             f,
                             chunksize=300_000,
                             dtype=str,
@@ -646,7 +600,7 @@ def run_menu1():
 
                     # Top overall DEMCODEs
                     if dem_counter_all:
-                        df_all = pd.DataFrame(dem_counter_all.most_common(30), columns=["DEMCODE (canon)", "count"])
+                        df_all = _pd.DataFrame(dem_counter_all.most_common(30), columns=["DEMCODE (canon)", "count"])
                         st.markdown("**Top DEMCODEs overall (first 30):**")
                         st.dataframe(df_all, use_container_width=True, hide_index=True)
                     else:
@@ -655,7 +609,7 @@ def run_menu1():
                     # Top DEMCODEs for current QUESTION + years
                     st.markdown(f"**Top DEMCODEs for {q_current} in years {', '.join(selected_years)} (first 30):**")
                     if dem_counter_cur:
-                        df_cur = pd.DataFrame(dem_counter_cur.most_common(30), columns=["DEMCODE (canon)", "count"])
+                        df_cur = _pd.DataFrame(dem_counter_cur.most_common(30), columns=["DEMCODE (canon)", "count"])
                         st.dataframe(df_cur, use_container_width=True, hide_index=True)
                     else:
                         st.info("No DEMCODEs found for the current QUESTION + years selection.")
@@ -672,7 +626,7 @@ def run_menu1():
                 # Scale labels
                 scale_pairs = get_scale_labels(sdf, question_code)
 
-                # Pull results per DEMCODE via loader (RAW filter on trio; exact trimmed string matches)
+                # Pull results per DEMCODE via loader
                 parts = []
                 for code in demcodes:
                     df_part = load_results2024_filtered(
@@ -689,13 +643,11 @@ def run_menu1():
 
                 df_raw = pd.concat(parts, ignore_index=True)
 
-                # Robust to header casing/whitespace WITHOUT normalizing the file (just rename in-memory)
+                # Case-robust column alignment (rename in-memory)
                 def _find(df, target):
-                    """Return the actual column name that matches target (case/space-insensitive)."""
                     t = target.strip().lower()
                     for c in df.columns:
-                        if c is None:
-                            continue
+                        if c is None: continue
                         if str(c).strip().lower() == t:
                             return c
                     return None
@@ -712,10 +664,9 @@ def run_menu1():
                     )
                     return  # no st.stop(); let root render Return button
 
-                # Rename only in-memory so the rest of the code can rely on the expected keys
                 df_raw = df_raw.rename(columns={QCOL: "QUESTION", SCOL: "SURVEYR", DCOL: "DEMCODE"})
 
-                # Belt-and-suspenders strict filter AGAIN (exact trimmed matches; characters only)
+                # Second strict filter (exact, trimmed)
                 qmask = df_raw["QUESTION"].astype(str).str.strip() == str(question_code).strip()
                 ymask = df_raw["SURVEYR"].astype(str).str.strip().isin(set(selected_years))
                 dem_series = df_raw["DEMCODE"].astype(str).str.strip()
@@ -730,7 +681,7 @@ def run_menu1():
                     st.info("No data found after applying filters (exact QUESTION, selected SURVEYR years, DEMCODE set).")
                     return
 
-                # Enforce PS-wide: LEVEL1ID == "" or "0" (strings) when present
+                # PS-wide: LEVEL1ID == "" or "0"
                 if "LEVEL1ID" in df_raw.columns:
                     lvl = df_raw["LEVEL1ID"].astype(str).str.strip()
                     df_raw = df_raw[(lvl == "") | (lvl == "0")].copy()
@@ -739,13 +690,13 @@ def run_menu1():
                     st.info("No PS-wide rows (LEVEL1ID == '' or '0') for this selection.")
                     return
 
-                # Exclude 999 for display & narrative (cast only for this check/formatting)
+                # Exclude 999 for display & narrative
                 df_raw = exclude_999_raw(df_raw)
                 if df_raw.empty:
                     st.info("Data exists, but all rows are not applicable (999).")
                     return
 
-                # ===== Raw results (full rows) for validation =====
+                # ===== Raw results (full rows) =====
                 st.markdown("#### Raw results (full rows)")
                 if "SURVEYR" in df_raw.columns:
                     df_raw = df_raw.sort_values(
@@ -771,20 +722,27 @@ def run_menu1():
                 # Title
                 st.subheader(f"{question_code} — {question_text}")
 
-                # Display (formatted) table — label via exact trimmed code
+                # Display (formatted) table
+                dem_map_clean = {None: "All respondents"}
+                try:
+                    for k, v in (disp_map or {}).items():
+                        dem_map_clean[(None if k is None else str(k).strip())] = v
+                except Exception:
+                    pass
+
                 df_disp = format_display_table_raw(
                     df=df_raw,
                     category_in_play=category_in_play,
-                    dem_disp_map=({None: "All respondents"} | {str(k).strip(): v for k, v in (disp_map or {}).items()}),
+                    dem_disp_map=dem_map_clean,
                     scale_pairs=scale_pairs
                 )
                 st.dataframe(df_disp, use_container_width=True)
 
-                # Narrative (2024-first, full sentences)
+                # Narrative (2024-first)
                 st.markdown("#### Summary")
                 st.write(build_narrative_2024_first_full(df_disp, category_in_play, question_code, question_text))
 
-                # Excel download (exactly what is displayed)
+                # Excel download (displayed table)
                 with io.BytesIO() as buf:
                     with pd.ExcelWriter(buf, engine="xlsxwriter") as writer:
                         df_disp.to_excel(writer, sheet_name="Results", index=False)
