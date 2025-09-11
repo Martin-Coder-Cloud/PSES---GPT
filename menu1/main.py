@@ -381,8 +381,8 @@ def run_menu1():
         )
         st.markdown('<div class="custom-header">🔍 Search by Question</div>', unsafe_allow_html=True)
         st.markdown(
-            '<div class="custom-instruction">Select a question, year(s), and (optionally) a demographic category and subgroup.<br>'
-            'The query always uses <b>QUESTION</b>, <b>Year</b>, and <b>DEMCODE</b>.</div>',
+            '<div class="custom-instruction">To view the survey results, please select a question from the drop-down menu below, check the survey year(s) available, and (optionally) select from the menu a demographic category and subgroup that you may be interested in.<br>'
+            '',
             unsafe_allow_html=True
         )
 
