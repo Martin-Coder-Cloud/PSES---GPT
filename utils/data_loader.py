@@ -1,115 +1,98 @@
 # utils/data_loader.py
-# -----------------------------------------------------------------------------
-# Streamed loader for Results2024.csv.gz (RAW passthrough).
-# - Filters on QUESTION (exact trimmed), SURVEYR (years as strings), DEMCODE (exact trimmed).
-# - Enforces PS-wide: LEVEL1ID == "" OR "0" (strings) when present; if missing, keep rows.
-# - No BYCOND, no dedup. Preserves original columns/values.
-# -----------------------------------------------------------------------------
-
-from typing import List, Optional
+# Fast, cached reader + one-pass filter for Menu 1
 import os
 import gzip
+from typing import Iterable, List, Optional, Tuple
 
-import gdown
 import pandas as pd
 import streamlit as st
 
-# You can override this in .streamlit/secrets.toml with RESULTS2024_FILE_ID
-GDRIVE_FILE_ID_FALLBACK = "1VdMQQfEP-BNXle8GeD-Z_upt2pPIGvc8"
-LOCAL_GZ_PATH = "/tmp/Results2024.csv.gz"
+# If you already have this in your file, keep your version.
+# It should return the local file path to Results2024.csv.gz.
+try:
+    ensure_results2024_local  # type: ignore
+except NameError:
+    def ensure_results2024_local() -> str:
+        # Fallback; adjust if your project resolves the path differently.
+        return "/tmp/Results2024.csv.gz"
 
+def _file_signature(path: str) -> Tuple[str, int, int]:
+    """Return (path, mtime, size) to key the cache and auto-invalidate when file changes."""
+    try:
+        stat = os.stat(path)
+        return (path, int(stat.st_mtime), int(stat.st_size))
+    except Exception:
+        return (path, 0, 0)
 
-@st.cache_resource(show_spinner="📥 Downloading Results2024.csv.gz…")
-def ensure_results2024_local(file_id: Optional[str] = None) -> str:
-    """Ensure the gzipped CSV is present locally and return its path."""
-    file_id = file_id or st.secrets.get("RESULTS2024_FILE_ID", GDRIVE_FILE_ID_FALLBACK)
-    if not file_id:
-        raise RuntimeError("RESULTS2024_FILE_ID missing in .streamlit/secrets.toml")
-
-    if not os.path.exists(LOCAL_GZ_PATH) or os.path.getsize(LOCAL_GZ_PATH) == 0:
-        url = f"https://drive.google.com/uc?id={file_id}"
-        os.makedirs(os.path.dirname(LOCAL_GZ_PATH), exist_ok=True)
-        gdown.download(url, LOCAL_GZ_PATH, quiet=False)
-    return LOCAL_GZ_PATH
-
-
-def _chunk_reader(path: str, chunksize: int = 200_000):
+@st.cache_data(show_spinner=True)
+def _read_results2024_text_mode(path: str, mtime: int, size: int) -> pd.DataFrame:
     """
-    Yield DataFrame chunks from the gzipped CSV as **text**:
-      - dtype=str to preserve values exactly
-      - keep_default_na=False / na_filter=False so blanks stay ""
-      - Header normalized to UPPERCASE (values are not changed)
+    Read the large CSV.GZ once as TEXT (dtype=str).
+    - No NA parsing.
+    - Uppercase headers only.
+    - No whole-frame trimming; we’ll trim only filter columns during masking.
     """
     with gzip.open(path, mode="rt", newline="") as f:
-        for chunk in pd.read_csv(
+        df = pd.read_csv(
             f,
-            chunksize=chunksize,
             dtype=str,
             keep_default_na=False,
             na_filter=False,
             low_memory=True,
-        ):
-            chunk.columns = [str(c).strip().upper() for c in chunk.columns]
-            yield chunk
+        )
+    df.columns = [str(c).strip().upper() for c in df.columns]
+    return df
 
+def _trim(s: pd.Series) -> pd.Series:
+    return s.astype(str).str.strip()
 
-@st.cache_data(show_spinner="🔎 Filtering results…")
 def load_results2024_filtered(
     question_code: str,
-    years: List[str] | List[int],
-    group_value: Optional[str] = None,     # None or "" => All respondents (blank DEMCODE)
-    chunksize: int = 200_000,
+    years: Iterable[str],
+    group_values: Optional[List[Optional[str]]] = None,
 ) -> pd.DataFrame:
     """
-    Filter rows where:
-      - QUESTION equals `question_code` (exact trimmed string)
-      - SURVEYR is in `years` (compared as trimmed strings)
-      - DEMCODE equals the provided code after .strip()  ("" when group_value is None/"")
-      - PS-wide: LEVEL1ID is "" or "0" (strings) when present; if absent, keep rows.
-
-    Returns all matching rows with their original columns preserved.
+    One-pass filter on cached DF.
+    Filters:
+      - QUESTION == question_code (exact, trimmed)
+      - SURVEYR in {years} (strings)
+      - DEMCODE in {group_values} (trimmed) ; None -> blank "" (All respondents)
+      - PS-wide only: LEVEL1ID == "" or "0" (if column exists)
+    Returns the filtered slice as TEXT (all columns str).
     """
     path = ensure_results2024_local()
+    sig = _file_signature(path)
+    df = _read_results2024_text_mode(*sig)
 
-    q_target = str(question_code).strip()
-    years_str = {str(y).strip() for y in years}
+    # Build masks using only the needed columns (trimmed strings)
+    if "QUESTION" not in df.columns or "SURVEYR" not in df.columns or "DEMCODE" not in df.columns:
+        # Return empty frame with same columns to keep callers happy
+        return df.head(0).copy()
 
-    want_blank_dem = (group_value is None) or (str(group_value).strip() == "")
-    dem_target = "" if want_blank_dem else str(group_value).strip()
+    qmask = _trim(df["QUESTION"]) == str(question_code).strip()
+    years_set = {str(y).strip() for y in years}
+    ymask = _trim(df["SURVEYR"]).isin(years_set)
 
-    parts: list[pd.DataFrame] = []
+    # DEMCODE set
+    dem_series = _trim(df["DEMCODE"])
+    targets = set()
+    if not group_values:
+        # treat as All respondents by default
+        targets.add("")
+    else:
+        for gv in group_values:
+            if gv is None:
+                targets.add("")   # All respondents (blank DEMCODE)
+            else:
+                targets.add(str(gv).strip())
+    gmask = dem_series.isin(targets)
 
-    for chunk in _chunk_reader(path, chunksize=chunksize):
-        # Guard: chunk must have these columns
-        if not {"QUESTION", "SURVEYR", "DEMCODE"}.issubset(set(chunk.columns)):
-            continue
+    mask = qmask & ymask & gmask
+    out = df.loc[mask].copy()
 
-        qmask = chunk["QUESTION"].astype(str).str.strip() == q_target
-        ymask = chunk["SURVEYR"].astype(str).str.strip().isin(years_str)
+    # PS-wide guard
+    if "LEVEL1ID" in out.columns:
+        lvl = _trim(out["LEVEL1ID"])
+        out = out[(lvl == "") | (lvl == "0")].copy()
 
-        dem_series = chunk["DEMCODE"].astype(str).str.strip()
-        if want_blank_dem:
-            gmask = dem_series == ""
-        else:
-            gmask = dem_series == dem_target  # exact trimmed string match
-
-        # PS-wide: LEVEL1ID == "" or "0" (strings) if column exists
-        if "LEVEL1ID" in chunk.columns:
-            lvl = chunk["LEVEL1ID"].astype(str).str.strip()
-            lmask = (lvl == "") | (lvl == "0")
-        else:
-            lmask = pd.Series(True, index=chunk.index)
-
-        sub = chunk[qmask & ymask & gmask & lmask]
-        if not sub.empty:
-            parts.append(sub)
-
-    if parts:
-        return pd.concat(parts, ignore_index=True)
-
-    # Stable empty frame with common headers (helps downstream UI)
-    return pd.DataFrame(columns=[
-        "LEVEL1ID","LEVEL2ID","LEVEL3ID","LEVEL4ID","LEVEL5ID",
-        "SURVEYR","DEMCODE","QUESTION","ANSWER1","ANSWER2","ANSWER3","ANSWER4","ANSWER5","ANSWER6","ANSWER7",
-        "POSITIVE","NEUTRAL","NEGATIVE","SCORE5","SCORE100","ANSCOUNT"
-    ])
+    return out
