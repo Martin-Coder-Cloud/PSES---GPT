@@ -251,34 +251,46 @@ def _ai_build_payload(
     latest = ys[-1] if ys else None
     baseline = ys[0] if len(ys) >= 2 else (ys[-1] if ys else None)
 
-    groups = []
-    has_subgroups = False
+    # Overall series (from explicit “All respondents” row if present; otherwise from the table itself)
+    overall_series = []
+    overall_label = "All respondents"
     if category_in_play and demo_col in df_disp.columns:
-        unique_groups = [g for g in df_disp[demo_col].dropna().unique().tolist()]
-        has_subgroups = len(unique_groups) > 0
+        base = df_disp[df_disp[demo_col] == overall_label]
+    else:
+        base = df_disp
+    for _, r in base.sort_values(year_col).iterrows():
+        yr = PD.to_numeric(r[year_col], errors="coerce")
+        if PD.isna(yr):
+            continue
+        val = PD.to_numeric(r.get(metric_col, None), errors="coerce")
+        n = PD.to_numeric(r.get(n_col, None), errors="coerce") if n_col in base.columns else None
+        overall_series.append({
+            "year": int(yr),
+            "value": (float(val) if PD.notna(val) else None),
+            "n": (int(n) if PD.notna(n) else None) if n is not None else None
+        })
+
+    # Group series (exclude overall from comparisons)
+    groups = []
+    has_groups = False
+    if category_in_play and demo_col in df_disp.columns:
+        names = [g for g in df_disp[demo_col].dropna().unique().tolist() if str(g) != overall_label]
+        has_groups = len(names) > 0
         for gname, gdf in df_disp.groupby(demo_col, dropna=False):
+            if str(gname) == overall_label:
+                continue
             series = []
             for _, r in gdf.sort_values(year_col).iterrows():
-                yr = int(PD.to_numeric(r[year_col], errors="coerce"))
-                val = float(PD.to_numeric(r.get(metric_col, None), errors="coerce"))
-                n = None
-                if n_col in gdf.columns:
-                    n_val = PD.to_numeric(r.get(n_col, None), errors="coerce")
-                    n = int(n_val) if PD.notna(n_val) else None
-                series.append({"year": yr, "value": val, "n": n})
+                yr = PD.to_numeric(r[year_col], errors="coerce")
+                if PD.isna(yr):
+                    continue
+                val = PD.to_numeric(r.get(metric_col, None), errors="coerce")
+                n = PD.to_numeric(r.get(n_col, None), errors="coerce") if n_col in gdf.columns else None
+                series.append({"year": int(yr), "value": (float(val) if PD.notna(val) else None), "n": (int(n) if PD.notna(n) else None) if n is not None else None})
             groups.append({"name": (str(gname) if PD.notna(gname) else ""), "series": series})
     else:
-        series = []
-        for _, r in df_disp.sort_values(year_col).iterrows():
-            yr = int(PD.to_numeric(r[year_col], errors="coerce"))
-            val = float(PD.to_numeric(r.get(metric_col, None), errors="coerce"))
-            n = None
-            if n_col and n_col in df_disp.columns:
-                n_val = PD.to_numeric(r.get(n_col, None), errors="coerce")
-                n = int(n_val) if PD.notna(n_val) else None
-            series.append({"year": yr, "value": val, "n": n})
-        groups = [{"name": "All respondents", "series": series}]
-        has_subgroups = False
+        # No groups view — we already put the overall in overall_series
+        has_groups = False
 
     return {
         "question_code": str(question_code),
@@ -286,11 +298,14 @@ def _ai_build_payload(
         "years": ys,
         "latest_year": latest,
         "baseline_year": baseline,
-        "groups": groups,
-        "has_subgroups": has_subgroups,
+        "overall_label": overall_label,
+        "overall_series": overall_series,
+        "groups": groups,               # excludes overall
+        "has_groups": has_groups,
         "metric_column": str(metric_col),
         "metric_label": str(metric_label),
         "context": "Public Service Employee Survey (PSES): workplace/workforce perceptions among federal public servants. Values represent the share selecting a positive option (e.g., Strongly agree/Agree) or 'Yes' where applicable.",
+        "thresholds": {"notable": 2.0, "mention": 1.0}  # pts
     }
 
 
@@ -315,19 +330,24 @@ def _ai_narrative_and_storytable(
     client = OpenAI()  # uses OPENAI_API_KEY from env
     data = _ai_build_payload(df_disp, question_code, question_text, category_in_play, metric_col, metric_label)
 
+    # Updated thresholds & required opening statement about overall change
     system = (
         "You are a survey insights writer for the Public Service Employee Survey (PSES). "
         "Write an executive-ready narrative for senior management about workplace/workforce perceptions. "
         "The values are shares of employees selecting a positive option (e.g., Strongly agree/Agree) "
         "or 'Yes' where that scale applies.\n\n"
         "STRICT RULES:\n"
-        "• Start with the latest year (prefer 2024) overall point if available, phrased as employees' views on the question.\n"
-        "• If there are NO groups, DO NOT mention groups at all.\n"
+        "• ALWAYS begin with a one-sentence statement on the overall change for the question since the baseline: "
+        "classify as 'stable' if |Δ| ≤ 1 pt, 'increasing' or 'decreasing' if 1 < |Δ| ≤ 2 pts (mention-worthy), "
+        "and 'notably increasing' or 'notably decreasing' if |Δ| > 2 pts.\n"
+        "• Use the overall_series for this opening; do not confuse it with subgroup results.\n"
+        "• If there are NO groups, do not mention any group analysis.\n"
         "• If groups exist, NEVER use the words 'subgroup' or 'segment'. Refer to each group by its label.\n"
-        "• When comparing groups, identify the highest and lowest group in the latest year, state the gap in points, and how that gap changed vs the baseline year if both are present.\n"
-        "• Summarize the trend concisely (no long lists): typical change range in points, plus largest increase/decrease; name the group(s).\n"
-        "• Treat |Δ| ≥ 5 pts as notable and ≥ 3 pts as mention-worthy.\n"
-        "• Use whole percents and 'pts' for deltas. Keep to ~5-15 sentences, plain language.\n"
+        "• When groups exist, compare the highest vs lowest group in the latest year (exclude the overall row from this comparison), "
+        "state the gap in points, and how that gap changed vs the baseline if both are present.\n"
+        "• Summarize the trend concisely (no long lists): typical change range in points, plus the largest increase/decrease; name the groups.\n"
+        "• Treat |Δ| > 2 pts as a notable change; 1–2 pts is worth mentioning; ≤1 pt is stable.\n"
+        "• Use whole percents and 'pts' for deltas. Keep to ~5–15 sentences, plain language.\n"
         "• Do not invent data; only use provided numbers."
     )
     user = (
@@ -336,8 +356,8 @@ def _ai_narrative_and_storytable(
         + "\n\n"
         "Instructions:\n"
         f"- The metric column is '{metric_col}' and represents '{metric_label}'.\n"
-        "- If some rows are missing the metric, skip them; do not guess.\n"
-        "- Use group labels exactly as given (but never say 'subgroup').\n"
+        "- Use overall_series to determine stability/increase/decrease first.\n"
+        "- Exclude the overall row ('All respondents') from top/bottom group comparisons; use it only for context.\n"
         "- Return JSON with keys: 'narrative' (string) and 'table' (array). The 'table' may be empty."
     )
 
@@ -379,7 +399,8 @@ def build_trend_summary_table(df_disp: pd.DataFrame, category_in_play: bool, met
             return PD.DataFrame()
 
     df = df_disp.copy()
-    if not category_in_play or "Demographic" not in df.columns:
+    # Always ensure a Demographic column for pivot; include overall if present
+    if "Demographic" not in df.columns:
         df["Demographic"] = "All respondents"
 
     df["__Y__"] = PD.to_numeric(df["Year"], errors="coerce")
@@ -506,9 +527,7 @@ def run_menu1():
             "src='https://raw.githubusercontent.com/Martin-Coder-Cloud/PSES---GPT/main/PSES%20Banner%20New.png'>",
             unsafe_allow_html=True,
         )
-        # UPDATED TITLE
         st.markdown('<div class="custom-header">🔍 Search by Survey Question</div>', unsafe_allow_html=True)
-        # UPDATED INSTRUCTIONAL TEXT
         st.markdown(
             '<div class="custom-instruction">Please select a question you are interested in, the survey year and, optionally, a demographic breakdown.<br>'
             'This application provides only Public Service-wide results. The output is a result table, a short analysis and a summary table.</div>',
@@ -574,7 +593,13 @@ def run_menu1():
         demcodes, disp_map, category_in_play = resolve_demographic_codes_from_metadata(
             demo_df, demo_selection, sub_selection
         )
-        dem_display = ["(blank)"] if demcodes == [None] else [str(c).strip() for c in demcodes]
+
+        # ALWAYS include overall row when a category is in play
+        if category_in_play and (None not in demcodes):
+            demcodes = [None] + demcodes
+
+        # For preview: show labels (use 'All respondents' for None)
+        dem_display = ["All respondents" if c is None else str(c).strip() for c in demcodes]
 
         # Parameters preview
         params_df = PD.DataFrame(
@@ -610,34 +635,22 @@ def run_menu1():
                     df_raw = load_results2024_filtered(
                         question_code=question_code,
                         years=selected_years,
-                        group_values=demcodes,  # list[str|None]
+                        group_values=demcodes,  # list[str|None] — includes None for overall when category_in_play
                     )
                 except TypeError:
                     # Back-compat: old loader that only accepts group_value=...
                     parts = []
-                    if demcodes == [None]:
+                    for gv in demcodes:
                         try:
                             parts.append(
                                 load_results2024_filtered(
                                     question_code=question_code,
                                     years=selected_years,
-                                    group_value=None,
+                                    group_value=(None if gv is None else str(gv).strip()),
                                 )
                             )
                         except TypeError:
-                            parts = []
-                    else:
-                        for gv in demcodes:
-                            try:
-                                parts.append(
-                                    load_results2024_filtered(
-                                        question_code=question_code,
-                                        years=selected_years,
-                                        group_value=(None if gv is None else str(gv).strip()),
-                                    )
-                                )
-                            except TypeError:
-                                continue
+                            continue
                     df_raw = (
                         PD.concat([p for p in parts if p is not None and not p.empty], ignore_index=True)
                         if parts
