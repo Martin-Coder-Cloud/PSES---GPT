@@ -4,3 +4,5 @@ openpyxl==3.1.2
 gdown==5.1.0
 XlsxWriter
 openai>=1.40.0
+reportlab==3.6.13
+
