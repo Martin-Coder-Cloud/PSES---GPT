@@ -208,7 +208,30 @@ def format_display_table_raw(
 # ─────────────────────────────
 # AI helpers (auto-run)
 # ─────────────────────────────
-def _ai_build_payload(df_disp: pd.DataFrame, question_code: str, question_text: str, category_in_play: bool) -> dict:
+def _detect_metric_column(df: pd.DataFrame) -> tuple[str, str]:
+    """
+    Returns (metric_col_name, human_label).
+    Preference: POSITIVE → AGREE → YES (case-insensitive).
+    """
+    cols = {c.lower(): c for c in df.columns}
+    if "positive" in cols:
+        return (cols["positive"], "positive response")
+    if "agree" in cols:
+        return (cols["agree"], "positive response")
+    if "yes" in cols:
+        return (cols["yes"], "Yes response")
+    # Fallback (app logic still prefers POSITIVE; AI will handle gracefully)
+    return ("POSITIVE", "positive response")
+
+
+def _ai_build_payload(
+    df_disp: pd.DataFrame,
+    question_code: str,
+    question_text: str,
+    category_in_play: bool,
+    metric_col: str,
+    metric_label: str,
+) -> dict:
     # Robust column detection
     def col(df, *cands):
         for c in cands:
@@ -222,8 +245,7 @@ def _ai_build_payload(df_disp: pd.DataFrame, question_code: str, question_text: 
 
     year_col = col(df_disp, "Year") or "Year"
     demo_col = col(df_disp, "Demographic") or "Demographic"
-    pos_col = col(df_disp, "POSITIVE", "Positive") or "POSITIVE"
-    n_col = col(df_disp, "ANSCOUNT", "AnsCount", "N")
+    n_col    = col(df_disp, "ANSCOUNT", "AnsCount", "N")
 
     ys = PD.to_numeric(df_disp[year_col], errors="coerce").dropna().astype(int).unique().tolist()
     ys = sorted(ys)
@@ -239,23 +261,23 @@ def _ai_build_payload(df_disp: pd.DataFrame, question_code: str, question_text: 
             series = []
             for _, r in gdf.sort_values(year_col).iterrows():
                 yr = int(PD.to_numeric(r[year_col], errors="coerce"))
-                pos = float(PD.to_numeric(r.get(pos_col, None), errors="coerce"))
+                val = float(PD.to_numeric(r.get(metric_col, None), errors="coerce"))
                 n = None
                 if n_col in gdf.columns:
                     n_val = PD.to_numeric(r.get(n_col, None), errors="coerce")
                     n = int(n_val) if PD.notna(n_val) else None
-                series.append({"year": yr, "positive": pos, "n": n})
+                series.append({"year": yr, "value": val, "n": n})
             groups.append({"name": (str(gname) if PD.notna(gname) else ""), "series": series})
     else:
         series = []
         for _, r in df_disp.sort_values(year_col).iterrows():
             yr = int(PD.to_numeric(r[year_col], errors="coerce"))
-            pos = float(PD.to_numeric(r.get(pos_col, None), errors="coerce"))
+            val = float(PD.to_numeric(r.get(metric_col, None), errors="coerce"))
             n = None
             if n_col and n_col in df_disp.columns:
                 n_val = PD.to_numeric(r.get(n_col, None), errors="coerce")
                 n = int(n_val) if PD.notna(n_val) else None
-            series.append({"year": yr, "positive": pos, "n": n})
+            series.append({"year": yr, "value": val, "n": n})
         groups = [{"name": "All respondents", "series": series}]
         has_subgroups = False
 
@@ -267,12 +289,20 @@ def _ai_build_payload(df_disp: pd.DataFrame, question_code: str, question_text: 
         "baseline_year": baseline,
         "groups": groups,
         "has_subgroups": has_subgroups,
-        "metric": "POSITIVE",
+        "metric_column": str(metric_col),
+        "metric_label": str(metric_label),
+        "context": "Public Service Employee Survey (PSES): workplace/workforce perceptions among federal public servants. Values represent the share selecting a positive option (e.g., Strongly agree/Agree) or 'Yes' where applicable.",
     }
 
 
 def _ai_narrative_and_storytable(
-    df_disp: pd.DataFrame, question_code: str, question_text: str, category_in_play: bool, temperature: float = 0.2
+    df_disp: pd.DataFrame,
+    question_code: str,
+    question_text: str,
+    category_in_play: bool,
+    metric_col: str,
+    metric_label: str,
+    temperature: float = 0.2,
 ) -> dict:
     """Calls OpenAI and returns {'narrative': str, 'table': list[dict]]}."""
     try:
@@ -284,23 +314,32 @@ def _ai_narrative_and_storytable(
         return {"narrative": "", "table": []}
 
     client = OpenAI()  # uses OPENAI_API_KEY from env
-    data = _ai_build_payload(df_disp, question_code, question_text, category_in_play)
+    data = _ai_build_payload(df_disp, question_code, question_text, category_in_play, metric_col, metric_label)
 
     system = (
-        "You are a survey insights writer. Produce an executive-ready summary for senior management.\n"
-        "Use the POSITIVE metric only. Rules:\n"
-        "• Start with the latest year (prefer 2024) overall point, if available.\n"
-        "• If there are NO subgroups, DO NOT mention subgroup analysis at all; focus only on overall.\n"
-        "• If subgroups exist, call out the top and bottom subgroup in the latest year, the gap between them, and how that gap changed vs the baseline year (earliest selected).\n"
-        "• Summarize trend concisely (no long lists): typical change range in points, plus biggest increase/decrease; name the subgroup(s).\n"
+        "You are a survey insights writer for the Public Service Employee Survey (PSES). "
+        "Write an executive-ready narrative for senior management about workplace/workforce perceptions. "
+        "The values are shares of employees selecting a positive option (e.g., Strongly agree/Agree) "
+        "or 'Yes' where that scale applies.\n\n"
+        "STRICT RULES:\n"
+        "• Start with the latest year (prefer 2024) overall point if available, phrased as employees' views on the question.\n"
+        "• If there are NO groups, DO NOT mention groups at all.\n"
+        "• If groups exist, NEVER use the words 'subgroup' or 'segment'. Refer to each group by its label, e.g., 'English-speaking employees'.\n"
+        "• When comparing groups, identify the highest and lowest group in the latest year, state the gap in points, and how that gap changed vs the baseline year if both are present.\n"
+        "• Summarize the trend concisely (no long lists): typical change range in points, plus largest increase/decrease; name the group(s).\n"
         "• Treat |Δ| ≥ 5 pts as notable and ≥ 3 pts as mention-worthy.\n"
         "• Use whole percents and 'pts' for deltas. Keep to ~4–6 sentences, plain language.\n"
-        "Return strictly valid JSON with keys: narrative (string), table (array). The 'table' is ignored by the app."
+        "• Do not invent data; only use provided numbers."
     )
     user = (
-        "Here is the results table as JSON. Only use the numbers provided.\n"
-        "Return JSON with 'narrative' (string) and 'table' (array). If has_subgroups=false, do not mention subgroups.\n\n"
-        f"{json.dumps(data, ensure_ascii=False)}"
+        "DATA (JSON):\n"
+        + json.dumps(data, ensure_ascii=False)
+        + "\n\n"
+        "Instructions:\n"
+        f"- The metric column is '{metric_col}' and represents '{metric_label}'.\n"
+        "- If some rows are missing the metric, skip them; do not guess.\n"
+        "- Use group labels exactly as given (but never say 'subgroup').\n"
+        "- Return JSON with keys: 'narrative' (string) and 'table' (array). The 'table' may be empty."
     )
 
     try:
@@ -328,35 +367,30 @@ def _ai_narrative_and_storytable(
 # ─────────────────────────────
 # Summary trend table builder (years as columns)
 # ─────────────────────────────
-def build_trend_summary_table(df_disp: pd.DataFrame, category_in_play: bool) -> pd.DataFrame:
+def build_trend_summary_table(df_disp: pd.DataFrame, category_in_play: bool, metric_col: str) -> pd.DataFrame:
     if df_disp is None or df_disp.empty or "Year" not in df_disp.columns:
         return PD.DataFrame()
 
-    # Find Positive column (case-robust)
-    pos_col = None
-    for c in df_disp.columns:
-        if str(c).strip().lower() == "positive":
-            pos_col = c
-            break
-    if pos_col is None:
-        return PD.DataFrame()
+    # Confirm metric column exists (try case-insensitive if needed)
+    if metric_col not in df_disp.columns:
+        low = {c.lower(): c for c in df_disp.columns}
+        if metric_col.lower() in low:
+            metric_col = low[metric_col.lower()]
+        else:
+            return PD.DataFrame()
 
     df = df_disp.copy()
-    # If no demographic chosen, create a single "All respondents" segment
     if not category_in_play or "Demographic" not in df.columns:
         df["Demographic"] = "All respondents"
 
-    # Sort years ascending to define column order
     df["__Y__"] = PD.to_numeric(df["Year"], errors="coerce")
     df = df.sort_values("__Y__")
 
-    # Pivot to Segment x Year grid
     pivot = df.pivot_table(
-        index="Demographic", columns="Year", values=pos_col, aggfunc="first"
+        index="Demographic", columns="Year", values=metric_col, aggfunc="first"
     ).copy()
     pivot.index.name = "Segment"
 
-    # Format as whole percentages; keep n/a where missing
     for c in pivot.columns:
         vals = PD.to_numeric(pivot[c], errors="coerce").round(0)
         mask = vals.notna()
@@ -364,10 +398,7 @@ def build_trend_summary_table(df_disp: pd.DataFrame, category_in_play: bool) -> 
         out.loc[mask] = vals.loc[mask].astype(int).astype(str) + "%"
         pivot[c] = out
 
-    # Move Segment to a column and return
     pivot = pivot.reset_index()
-
-    # Ensure year columns ordered ascending numerically
     year_cols = sorted([col for col in pivot.columns if col != "Segment"], key=lambda x: int(x))
     pivot = pivot[["Segment"] + year_cols]
     return pivot
@@ -577,6 +608,9 @@ def run_menu1():
             # Show the results table (always)
             st.dataframe(df_disp, use_container_width=True)
 
+            # Decide which metric to use (POSITIVE → AGREE → YES)
+            metric_col, metric_label = _detect_metric_column(df_disp)
+
             # === AUTO AI narrative ===
             st.markdown("### Analysis Summary")
             with st.spinner("Contacting AI…"):
@@ -585,6 +619,8 @@ def run_menu1():
                     question_code=question_code,
                     question_text=question_text,
                     category_in_play=category_in_play,
+                    metric_col=metric_col,
+                    metric_label=metric_label,
                     temperature=0.2,
                 )
             narrative = (ai_out.get("narrative") or "").strip()
@@ -595,7 +631,7 @@ def run_menu1():
 
             # === Trend Summary Table (years as columns) ===
             st.markdown("### Summary Table")
-            trend_df = build_trend_summary_table(df_disp, category_in_play)
+            trend_df = build_trend_summary_table(df_disp, category_in_play, metric_col)
             if trend_df is not None and not trend_df.empty:
                 st.dataframe(trend_df, use_container_width=True, hide_index=True)
             else:
@@ -606,7 +642,6 @@ def run_menu1():
                 with io.BytesIO() as buf:
                     with PD.ExcelWriter(buf, engine="xlsxwriter") as writer:
                         df_disp.to_excel(writer, sheet_name="Results", index=False)
-                        # Also include the summary table in the Excel if available
                         if trend_df is not None and not trend_df.empty:
                             trend_df.to_excel(writer, sheet_name="Summary Table", index=False)
                         ctx = {
