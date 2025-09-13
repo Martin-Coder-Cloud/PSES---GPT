@@ -327,7 +327,7 @@ def _ai_narrative_and_storytable(
         "• When comparing groups, identify the highest and lowest group in the latest year, state the gap in points, and how that gap changed vs the baseline year if both are present.\n"
         "• Summarize the trend concisely (no long lists): typical change range in points, plus largest increase/decrease; name the group(s).\n"
         "• Treat |Δ| ≥ 5 pts as notable and ≥ 3 pts as mention-worthy.\n"
-        "• Use whole percents and 'pts' for deltas. Keep to ~4–6 sentences, plain language.\n"
+        "• Use whole percents and 'pts' for deltas. Keep to ~5-15 sentences, plain language.\n"
         "• Do not invent data; only use provided numbers."
     )
     user = (
@@ -434,7 +434,7 @@ def build_pdf_report(
     flow = []
     flow.append(Paragraph("PSES Analysis Report", title))
     flow.append(Paragraph(f"{question_code} — {question_text}", body))
-    flow.append(Paragraph("(% of positive answer)", small))
+    flow.append(Paragraph("(% positive answers)", small))
     flow.append(Spacer(1, 10))
 
     # Context
@@ -502,14 +502,16 @@ def run_menu1():
     left, center, right = st.columns([1, 2, 1])
     with center:
         st.markdown(
-            "<img style='width:65%;max-width:540px;height:auto;display:block;margin:0 auto 16px;' "
+            "<img style='width:85%;max-width:940px;height:auto;display:block;margin:0 auto 16px;' "
             "src='https://raw.githubusercontent.com/Martin-Coder-Cloud/PSES---GPT/main/PSES%20Banner%20New.png'>",
             unsafe_allow_html=True,
         )
-        st.markdown('<div class="custom-header">🔍 Search by Question</div>', unsafe_allow_html=True)
+        # UPDATED TITLE
+        st.markdown('<div class="custom-header">🔍 Search by Survey Question</div>', unsafe_allow_html=True)
+        # UPDATED INSTRUCTIONAL TEXT
         st.markdown(
-            '<div class="custom-instruction">Select a question, year(s), and (optionally) a demographic category and subgroup.<br>'
-            "The query always uses <b>QUESTION</b>, <b>Year</b>, and <b>DEMCODE</b>.</div>",
+            '<div class="custom-instruction">Please select a question you are interested in, the survey year and, optionally, a demographic breakdown.<br>'
+            'This application provides only Public Service-wide results. The output is a result table, a short analysis and a summary table.</div>',
             unsafe_allow_html=True,
         )
 
@@ -682,7 +684,7 @@ def run_menu1():
             st.markdown("### Analysis Summary")
             st.markdown(
                 f"<div class='q-sub'>{question_code} — {question_text}</div>"
-                f"<div class='tiny-note'>(% of positive answer)</div>",
+                f"<div class='tiny-note'>(% positive answers)</div>",
                 unsafe_allow_html=True,
             )
             with st.spinner("Contacting AI…"):
@@ -705,7 +707,7 @@ def run_menu1():
             st.markdown("### Summary Table")
             st.markdown(
                 f"<div class='q-sub'>{question_code} — {question_text}</div>"
-                f"<div class='tiny-note'>(% of positive answer)</div>",
+                f"<div class='tiny-note'>(% positive answers)</div>",
                 unsafe_allow_html=True,
             )
             trend_df = build_trend_summary_table(df_disp, category_in_play, metric_col)
