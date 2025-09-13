@@ -1,5 +1,5 @@
 # menu1/main.py — PSES AI Explorer (Menu 1: Search by Question)
-# Cached big-file, one-pass DEMCODE filtering, opt-in raw/Excel.
+# Cached big-file, one-pass DEMCODE filtering, opt-in raw/Excel & PDF.
 # All data as TEXT; trims only filter columns in the loader.
 from __future__ import annotations
 
@@ -130,7 +130,7 @@ def get_scale_labels(scales_df: pd.DataFrame, question_code: str):
             if not candidates.empty:
                 break
     labels = []
-    for i in range(1, 8):
+    for i in range(1, 7 + 1):
         col = f"answer{i}"
         lbl = None
         if not candidates.empty and col in candidates.columns:
@@ -142,7 +142,7 @@ def get_scale_labels(scales_df: pd.DataFrame, question_code: str):
 
 
 def exclude_999_raw(df: pd.DataFrame) -> pd.DataFrame:
-    cols = [f"answer{i}" for i in range(1, 8)] + ["POSITIVE", "NEUTRAL", "NEGATIVE", "ANSCOUNT"]
+    cols = [f"answer{i}" for i in range(1, 7 + 1)] + ["POSITIVE", "NEUTRAL", "NEGATIVE", "ANSCOUNT"]
     present = [c for c in cols if c in df.columns]
     if not present:
         return df
@@ -173,7 +173,7 @@ def format_display_table_raw(
         out["Demographic"] = out["DEMCODE"].apply(to_label)
 
     dist_cols = []
-    for i in range(1, 8):
+    for i in range(1, 7 + 1):
         lc, uc = f"answer{i}", f"ANSWER{i}"
         if uc in out.columns:
             dist_cols.append(uc)
@@ -192,7 +192,7 @@ def format_display_table_raw(
         ["Year"]
         + (["Demographic"] if category_in_play else [])
         + dist_cols
-        + ["POSITIVE", "NEUTRAL", "NEGATIVE", "ANSCOUNT"]
+        + ["POSITIVE", "NEUTRAL", "NEGATIVE", "ANSCOUNT", "AGREE", "YES"]
     )
     keep_cols = [c for c in keep_cols if c in out.columns]
     out = out[keep_cols].rename(columns=rename_map).copy()
@@ -215,13 +215,12 @@ def _detect_metric_column(df: pd.DataFrame) -> tuple[str, str]:
     """
     cols = {c.lower(): c for c in df.columns}
     if "positive" in cols:
-        return (cols["positive"], "positive response")
+        return (cols["positive"], "positive answer")
     if "agree" in cols:
-        return (cols["agree"], "positive response")
+        return (cols["agree"], "positive answer")
     if "yes" in cols:
-        return (cols["yes"], "Yes response")
-    # Fallback (app logic still prefers POSITIVE; AI will handle gracefully)
-    return ("POSITIVE", "positive response")
+        return (cols["yes"], "Yes answer")
+    return ("POSITIVE", "positive answer")
 
 
 def _ai_build_payload(
@@ -324,7 +323,7 @@ def _ai_narrative_and_storytable(
         "STRICT RULES:\n"
         "• Start with the latest year (prefer 2024) overall point if available, phrased as employees' views on the question.\n"
         "• If there are NO groups, DO NOT mention groups at all.\n"
-        "• If groups exist, NEVER use the words 'subgroup' or 'segment'. Refer to each group by its label, e.g., 'English-speaking employees'.\n"
+        "• If groups exist, NEVER use the words 'subgroup' or 'segment'. Refer to each group by its label.\n"
         "• When comparing groups, identify the highest and lowest group in the latest year, state the gap in points, and how that gap changed vs the baseline year if both are present.\n"
         "• Summarize the trend concisely (no long lists): typical change range in points, plus largest increase/decrease; name the group(s).\n"
         "• Treat |Δ| ≥ 5 pts as notable and ≥ 3 pts as mention-worthy.\n"
@@ -371,7 +370,7 @@ def build_trend_summary_table(df_disp: pd.DataFrame, category_in_play: bool, met
     if df_disp is None or df_disp.empty or "Year" not in df_disp.columns:
         return PD.DataFrame()
 
-    # Confirm metric column exists (try case-insensitive if needed)
+    # Case-insensitive metric check
     if metric_col not in df_disp.columns:
         low = {c.lower(): c for c in df_disp.columns}
         if metric_col.lower() in low:
@@ -405,10 +404,84 @@ def build_trend_summary_table(df_disp: pd.DataFrame, category_in_play: bool, met
 
 
 # ─────────────────────────────
+# Report (PDF) builder
+# ─────────────────────────────
+def build_pdf_report(
+    question_code: str,
+    question_text: str,
+    selected_years: list[str],
+    dem_display: list[str],
+    narrative: str,
+    df_summary: pd.DataFrame,
+) -> bytes | None:
+    try:
+        from reportlab.lib import colors
+        from reportlab.lib.pagesizes import LETTER
+        from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+        from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle
+    except Exception:
+        st.error("PDF export requires `reportlab`. Please add `reportlab==3.6.13` to requirements.txt.")
+        return None
+
+    buf = io.BytesIO()
+    doc = SimpleDocTemplate(buf, pagesize=LETTER, topMargin=36, bottomMargin=36, leftMargin=40, rightMargin=40)
+    styles = getSampleStyleSheet()
+    title = styles["Heading1"]
+    h2 = styles["Heading2"]
+    body = styles["BodyText"]
+    small = ParagraphStyle("small", parent=styles["BodyText"], fontSize=9, textColor="#555555")
+
+    flow = []
+    flow.append(Paragraph("PSES Analysis Report", title))
+    flow.append(Paragraph(f"{question_code} — {question_text}", body))
+    flow.append(Paragraph("(% of positive answer)", small))
+    flow.append(Spacer(1, 10))
+
+    # Context
+    ctx = f"""
+    <b>Years:</b> {', '.join(selected_years)}<br/>
+    <b>Demographic selection:</b> {', '.join(dem_display)}
+    """
+    flow.append(Paragraph(ctx, body))
+    flow.append(Spacer(1, 10))
+
+    # Narrative
+    flow.append(Paragraph("Analysis Summary", h2))
+    for chunk in narrative.split("\n"):
+        if chunk.strip():
+            flow.append(Paragraph(chunk.strip(), body))
+            flow.append(Spacer(1, 4))
+
+    # Summary table
+    if df_summary is not None and not df_summary.empty:
+        flow.append(Spacer(1, 10))
+        flow.append(Paragraph("Summary Table", h2))
+        # Table data
+        data = [df_summary.columns.tolist()] + df_summary.astype(str).values.tolist()
+        tbl = Table(data, repeatRows=1)
+        tbl.setStyle(
+            TableStyle(
+                [
+                    ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#F0F0F0")),
+                    ("TEXTCOLOR", (0, 0), (-1, 0), colors.black),
+                    ("ALIGN", (0, 0), (-1, -1), "LEFT"),
+                    ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+                    ("BOTTOMPADDING", (0, 0), (-1, 0), 6),
+                    ("GRID", (0, 0), (-1, -1), 0.25, colors.HexColor("#CCCCCC")),
+                ]
+            )
+        )
+        flow.append(tbl)
+
+    doc.build(flow)
+    return buf.getvalue()
+
+
+# ─────────────────────────────
 # UI
 # ─────────────────────────────
 def run_menu1():
-    # Clean, centered layout; moderate banner size
+    # Clean, centered layout; moderate banner size + small-note styling
     st.markdown(
         """
     <style>
@@ -416,6 +489,8 @@ def run_menu1():
       .custom-instruction{ font-size: 15px; line-height: 1.4; margin-bottom: 8px; color: #333; }
       .field-label{ font-size: 16px; font-weight: 600; margin: 10px 0 2px; color: #222; }
       .big-button button{ font-size: 16px; padding: 0.6em 1.6em; margin-top: 16px; }
+      .tiny-note{ font-size: 12px; color: #666; margin-top: -4px; margin-bottom: 10px; }
+      .q-sub{ font-size: 14px; color: #333; margin-top: -4px; margin-bottom: 2px; }
     </style>
     """,
         unsafe_allow_html=True,
@@ -512,7 +587,7 @@ def run_menu1():
 
         # Lightweight toggles
         show_raw = st.checkbox("Show raw rows (validation)", value=False)
-        make_downloads = st.checkbox("Prepare downloads (Excel)", value=False)
+        make_downloads = st.checkbox("Prepare downloads (Excel & PDF)", value=False)
 
         # Diagnostics (optional)
         with st.expander("🛠 Diagnostics: file schema", expanded=False):
@@ -613,6 +688,11 @@ def run_menu1():
 
             # === AUTO AI narrative ===
             st.markdown("### Analysis Summary")
+            st.markdown(
+                f"<div class='q-sub'>{question_code} — {question_text}</div>"
+                f"<div class='tiny-note'>(% of positive answer)</div>",
+                unsafe_allow_html=True,
+            )
             with st.spinner("Contacting AI…"):
                 ai_out = _ai_narrative_and_storytable(
                     df_disp=df_disp,
@@ -631,16 +711,22 @@ def run_menu1():
 
             # === Trend Summary Table (years as columns) ===
             st.markdown("### Summary Table")
+            st.markdown(
+                f"<div class='q-sub'>{question_code} — {question_text}</div>"
+                f"<div class='tiny-note'>(% of positive answer)</div>",
+                unsafe_allow_html=True,
+            )
             trend_df = build_trend_summary_table(df_disp, category_in_play, metric_col)
             if trend_df is not None and not trend_df.empty:
                 st.dataframe(trend_df, use_container_width=True, hide_index=True)
             else:
                 st.info("No summary table could be generated for the current selection.")
 
-            # Optional downloads
+            # Optional downloads (Excel & PDF)
             if make_downloads:
-                with io.BytesIO() as buf:
-                    with PD.ExcelWriter(buf, engine="xlsxwriter") as writer:
+                # Excel with Results + Summary + Context
+                with io.BytesIO() as xbuf:
+                    with PD.ExcelWriter(xbuf, engine="xlsxwriter") as writer:
                         df_disp.to_excel(writer, sheet_name="Results", index=False)
                         if trend_df is not None and not trend_df.empty:
                             trend_df.to_excel(writer, sheet_name="Summary Table", index=False)
@@ -653,14 +739,31 @@ def run_menu1():
                         PD.DataFrame(list(ctx.items()), columns=["Field", "Value"]).to_excel(
                             writer, sheet_name="Context", index=False
                         )
-                    data = buf.getvalue()
+                    xdata = xbuf.getvalue()
 
                 st.download_button(
                     label="⬇️ Download Excel",
-                    data=data,
+                    data=xdata,
                     file_name=f"PSES_{question_code}_{'-'.join(selected_years)}.xlsx",
                     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                 )
+
+                # PDF report (Analysis Summary + Summary Table)
+                pdf_bytes = build_pdf_report(
+                    question_code=question_code,
+                    question_text=question_text,
+                    selected_years=selected_years,
+                    dem_display=dem_display,
+                    narrative=narrative,
+                    df_summary=trend_df if trend_df is not None else PD.DataFrame(),
+                )
+                if pdf_bytes:
+                    st.download_button(
+                        label="⬇️ Download PDF report",
+                        data=pdf_bytes,
+                        file_name=f"PSES_{question_code}_{'-'.join(selected_years)}.pdf",
+                        mime="application/pdf",
+                    )
 
 
 if __name__ == "__main__":
