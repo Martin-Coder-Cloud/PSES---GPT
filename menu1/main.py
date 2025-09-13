@@ -533,7 +533,8 @@ def run_menu1():
                     selected_years.append(yr)
         selected_years = sorted(selected_years)
         if not selected_years:
-            st.warning(⚠️ Please select at least one year.")
+            st.warning("⚠️ Please select at least one year.")
+                                # or (no emoji)
             return
 
         # Demographic category/subgroup
