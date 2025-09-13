@@ -1,5 +1,5 @@
 # menu1/main.py — PSES AI Explorer (Menu 1: Search by Question)
-# Cached big-file, one-pass DEMCODE filtering, opt-in raw/Excel & PDF.
+# Cached big-file, one-pass DEMCODE filtering, always-on Excel & PDF downloads.
 # All data as TEXT; trims only filter columns in the loader.
 from __future__ import annotations
 
@@ -456,7 +456,6 @@ def build_pdf_report(
     if df_summary is not None and not df_summary.empty:
         flow.append(Spacer(1, 10))
         flow.append(Paragraph("Summary Table", h2))
-        # Table data
         data = [df_summary.columns.tolist()] + df_summary.astype(str).values.tolist()
         tbl = Table(data, repeatRows=1)
         tbl.setStyle(
@@ -585,10 +584,6 @@ def run_menu1():
         st.markdown("##### Parameters that will be passed to the database")
         st.dataframe(params_df, use_container_width=True, hide_index=True)
 
-        # Lightweight toggles
-        show_raw = st.checkbox("Show raw rows (validation)", value=False)
-        make_downloads = st.checkbox("Prepare downloads (Excel & PDF)", value=False)
-
         # Diagnostics (optional)
         with st.expander("🛠 Diagnostics: file schema", expanded=False):
             colA, colB = st.columns(2)
@@ -658,11 +653,8 @@ def run_menu1():
                     return
 
                 # Optional raw rows (skip by default)
-                if show_raw:
-                    st.markdown("#### Raw results (full rows)")
-                    if "SURVEYR" in df_raw.columns:
-                        df_raw = df_raw.sort_values(by="SURVEYR", ascending=False)
-                    st.dataframe(df_raw, use_container_width=True)
+                if "SURVEYR" in df_raw.columns:
+                    df_raw = df_raw.sort_values(by="SURVEYR", ascending=False)
 
                 # Title + formatted table
                 st.subheader(f"{question_code} — {question_text}")
@@ -722,48 +714,49 @@ def run_menu1():
             else:
                 st.info("No summary table could be generated for the current selection.")
 
-            # Optional downloads (Excel & PDF)
-            if make_downloads:
-                # Excel with Results + Summary + Context
-                with io.BytesIO() as xbuf:
-                    with PD.ExcelWriter(xbuf, engine="xlsxwriter") as writer:
-                        df_disp.to_excel(writer, sheet_name="Results", index=False)
-                        if trend_df is not None and not trend_df.empty:
-                            trend_df.to_excel(writer, sheet_name="Summary Table", index=False)
-                        ctx = {
-                            "QUESTION": question_code,
-                            "SURVEYR (years)": ", ".join(selected_years),
-                            "DEMCODE(s)": ", ".join(dem_display),
-                            "Generated at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                        }
-                        PD.DataFrame(list(ctx.items()), columns=["Field", "Value"]).to_excel(
-                            writer, sheet_name="Context", index=False
-                        )
-                    xdata = xbuf.getvalue()
-
-                st.download_button(
-                    label="⬇️ Download Excel",
-                    data=xdata,
-                    file_name=f"PSES_{question_code}_{'-'.join(selected_years)}.xlsx",
-                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                )
-
-                # PDF report (Analysis Summary + Summary Table)
-                pdf_bytes = build_pdf_report(
-                    question_code=question_code,
-                    question_text=question_text,
-                    selected_years=selected_years,
-                    dem_display=dem_display,
-                    narrative=narrative,
-                    df_summary=trend_df if trend_df is not None else PD.DataFrame(),
-                )
-                if pdf_bytes:
-                    st.download_button(
-                        label="⬇️ Download PDF report",
-                        data=pdf_bytes,
-                        file_name=f"PSES_{question_code}_{'-'.join(selected_years)}.pdf",
-                        mime="application/pdf",
+            # === Always-on downloads: Excel (data) & PDF (report) ===
+            # Excel with Results + Summary + Context
+            with io.BytesIO() as xbuf:
+                with PD.ExcelWriter(xbuf, engine="xlsxwriter") as writer:
+                    df_disp.to_excel(writer, sheet_name="Results", index=False)
+                    if trend_df is not None and not trend_df.empty:
+                        trend_df.to_excel(writer, sheet_name="Summary Table", index=False)
+                    ctx = {
+                        "QUESTION": question_code,
+                        "SURVEYR (years)": ", ".join(selected_years),
+                        "DEMCODE(s)": ", ".join(dem_display),
+                        "Generated at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                    }
+                    PD.DataFrame(list(ctx.items()), columns=["Field", "Value"]).to_excel(
+                        writer, sheet_name="Context", index=False
                     )
+                xdata = xbuf.getvalue()
+
+            st.download_button(
+                label="⬇️ Download data (Excel)",
+                data=xdata,
+                file_name=f"PSES_{question_code}_{'-'.join(selected_years)}.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            )
+
+            # PDF report (Analysis Summary + Summary Table)
+            pdf_bytes = build_pdf_report(
+                question_code=question_code,
+                question_text=question_text,
+                selected_years=selected_years,
+                dem_display=dem_display,
+                narrative=narrative,
+                df_summary=trend_df if trend_df is not None else PD.DataFrame(),
+            )
+            if pdf_bytes:
+                st.download_button(
+                    label="⬇️ Download summary report (PDF)",
+                    data=pdf_bytes,
+                    file_name=f"PSES_{question_code}_{'-'.join(selected_years)}.pdf",
+                    mime="application/pdf",
+                )
+            else:
+                st.caption("PDF export unavailable (install `reportlab` in requirements to enable).")
 
 
 if __name__ == "__main__":
