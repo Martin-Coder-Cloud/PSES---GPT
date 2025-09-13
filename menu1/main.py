@@ -206,9 +206,9 @@ def format_display_table_raw(
 
 
 # ─────────────────────────────
-# AI helpers (auto-run; replaces the system summary)
+# AI helpers (auto-run)
 # ─────────────────────────────
-def _ai_build_payload(df_disp: pd.DataFrame, question_code: str, question_text: str) -> dict:
+def _ai_build_payload(df_disp: pd.DataFrame, question_code: str, question_text: str, category_in_play: bool) -> dict:
     # Robust column detection
     def col(df, *cands):
         for c in cands:
@@ -225,14 +225,16 @@ def _ai_build_payload(df_disp: pd.DataFrame, question_code: str, question_text: 
     pos_col = col(df_disp, "POSITIVE", "Positive") or "POSITIVE"
     n_col = col(df_disp, "ANSCOUNT", "AnsCount", "N")
 
-    # Years (sorted ints)
     ys = PD.to_numeric(df_disp[year_col], errors="coerce").dropna().astype(int).unique().tolist()
     ys = sorted(ys)
     latest = ys[-1] if ys else None
     baseline = ys[0] if len(ys) >= 2 else (ys[-1] if ys else None)
 
     groups = []
-    if demo_col in df_disp.columns:
+    has_subgroups = False
+    if category_in_play and demo_col in df_disp.columns:
+        unique_groups = [g for g in df_disp[demo_col].dropna().unique().tolist()]
+        has_subgroups = len(unique_groups) > 0
         for gname, gdf in df_disp.groupby(demo_col, dropna=False):
             series = []
             for _, r in gdf.sort_values(year_col).iterrows():
@@ -245,7 +247,6 @@ def _ai_build_payload(df_disp: pd.DataFrame, question_code: str, question_text: 
                 series.append({"year": yr, "positive": pos, "n": n})
             groups.append({"name": (str(gname) if PD.notna(gname) else ""), "series": series})
     else:
-        # overall-only shape
         series = []
         for _, r in df_disp.sort_values(year_col).iterrows():
             yr = int(PD.to_numeric(r[year_col], errors="coerce"))
@@ -256,6 +257,7 @@ def _ai_build_payload(df_disp: pd.DataFrame, question_code: str, question_text: 
                 n = int(n_val) if PD.notna(n_val) else None
             series.append({"year": yr, "positive": pos, "n": n})
         groups = [{"name": "All respondents", "series": series}]
+        has_subgroups = False
 
     return {
         "question_code": str(question_code),
@@ -264,12 +266,15 @@ def _ai_build_payload(df_disp: pd.DataFrame, question_code: str, question_text: 
         "latest_year": latest,
         "baseline_year": baseline,
         "groups": groups,
+        "has_subgroups": has_subgroups,
         "metric": "POSITIVE",
     }
 
 
-def _ai_narrative_and_storytable(df_disp: pd.DataFrame, question_code: str, question_text: str, temperature: float = 0.2) -> dict:
-    """Calls OpenAI and returns {'narrative': str, 'table': list[dict]]}. Uses Chat Completions with JSON output for wider compatibility."""
+def _ai_narrative_and_storytable(
+    df_disp: pd.DataFrame, question_code: str, question_text: str, category_in_play: bool, temperature: float = 0.2
+) -> dict:
+    """Calls OpenAI and returns {'narrative': str, 'table': list[dict]]}."""
     try:
         from openai import OpenAI
     except Exception:
@@ -279,22 +284,22 @@ def _ai_narrative_and_storytable(df_disp: pd.DataFrame, question_code: str, ques
         return {"narrative": "", "table": []}
 
     client = OpenAI()  # uses OPENAI_API_KEY from env
-    data = _ai_build_payload(df_disp, question_code, question_text)
+    data = _ai_build_payload(df_disp, question_code, question_text, category_in_play)
 
     system = (
         "You are a survey insights writer. Produce an executive-ready summary for senior management.\n"
         "Use the POSITIVE metric only. Rules:\n"
         "• Start with the latest year (prefer 2024) overall point, if available.\n"
-        "• Call out top and bottom subgroup in the latest year, the gap between them, and how that gap changed vs the baseline year (earliest selected).\n"
+        "• If there are NO subgroups, DO NOT mention subgroup analysis at all; focus only on overall.\n"
+        "• If subgroups exist, call out the top and bottom subgroup in the latest year, the gap between them, and how that gap changed vs the baseline year (earliest selected).\n"
         "• Summarize trend concisely (no long lists): typical change range in points, plus biggest increase/decrease; name the subgroup(s).\n"
-        "• Treat |Δ| ≥ 5 pts as notable and ≥ 3 pts as worth mentioning where relevant.\n"
+        "• Treat |Δ| ≥ 5 pts as notable and ≥ 3 pts as mention-worthy.\n"
         "• Use whole percents and 'pts' for deltas. Keep to ~4–6 sentences, plain language.\n"
-        "Also produce a compact 'story table' that mirrors the narrative (overall, top/bottom, gap, standout movers).\n"
-        "Return strictly valid JSON with keys: narrative (string), table (array of rows with segment, positive_2024, delta_vs_baseline_pts, note)."
+        "Return strictly valid JSON with keys: narrative (string), table (array). The 'table' is ignored by the app."
     )
     user = (
         "Here is the results table as JSON. Only use the numbers provided.\n"
-        "Return JSON with 'narrative' and 'table' keys only.\n\n"
+        "Return JSON with 'narrative' (string) and 'table' (array). If has_subgroups=false, do not mention subgroups.\n\n"
         f"{json.dumps(data, ensure_ascii=False)}"
     )
 
@@ -310,7 +315,6 @@ def _ai_narrative_and_storytable(df_disp: pd.DataFrame, question_code: str, ques
         )
         content = comp.choices[0].message.content if comp.choices else "{}"
         out = json.loads(content)
-        # minimal validation
         if not isinstance(out, dict):
             out = {"narrative": "", "table": []}
         out.setdefault("narrative", "")
@@ -319,6 +323,54 @@ def _ai_narrative_and_storytable(df_disp: pd.DataFrame, question_code: str, ques
     except Exception as e:
         st.error(f"AI summary failed: {e}")
         return {"narrative": "", "table": []}
+
+
+# ─────────────────────────────
+# Summary trend table builder (years as columns)
+# ─────────────────────────────
+def build_trend_summary_table(df_disp: pd.DataFrame, category_in_play: bool) -> pd.DataFrame:
+    if df_disp is None or df_disp.empty or "Year" not in df_disp.columns:
+        return PD.DataFrame()
+
+    # Find Positive column (case-robust)
+    pos_col = None
+    for c in df_disp.columns:
+        if str(c).strip().lower() == "positive":
+            pos_col = c
+            break
+    if pos_col is None:
+        return PD.DataFrame()
+
+    df = df_disp.copy()
+    # If no demographic chosen, create a single "All respondents" segment
+    if not category_in_play or "Demographic" not in df.columns:
+        df["Demographic"] = "All respondents"
+
+    # Sort years ascending to define column order
+    df["__Y__"] = PD.to_numeric(df["Year"], errors="coerce")
+    df = df.sort_values("__Y__")
+
+    # Pivot to Segment x Year grid
+    pivot = df.pivot_table(
+        index="Demographic", columns="Year", values=pos_col, aggfunc="first"
+    ).copy()
+    pivot.index.name = "Segment"
+
+    # Format as whole percentages; keep n/a where missing
+    for c in pivot.columns:
+        vals = PD.to_numeric(pivot[c], errors="coerce").round(0)
+        mask = vals.notna()
+        out = PD.Series("n/a", index=pivot.index, dtype="object")
+        out.loc[mask] = vals.loc[mask].astype(int).astype(str) + "%"
+        pivot[c] = out
+
+    # Move Segment to a column and return
+    pivot = pivot.reset_index()
+
+    # Ensure year columns ordered ascending numerically
+    year_cols = sorted([col for col in pivot.columns if col != "Segment"], key=lambda x: int(x))
+    pivot = pivot[["Segment"] + year_cols]
+    return pivot
 
 
 # ─────────────────────────────
@@ -447,84 +499,92 @@ def run_menu1():
 
         # Run query (single pass, cached big file)
         if st.button("🔎 Run query"):
-            scale_pairs = get_scale_labels(load_scales_metadata(), question_code)
+            with st.spinner("Processing data..."):
+                scale_pairs = get_scale_labels(load_scales_metadata(), question_code)
 
-            # Preferred fast path (new loader signature)
-            try:
-                df_raw = load_results2024_filtered(
-                    question_code=question_code,
-                    years=selected_years,
-                    group_values=demcodes,  # list[str|None]
-                )
-            except TypeError:
-                # Back-compat: old loader that only accepts group_value=...
-                parts = []
-                if demcodes == [None]:
-                    try:
-                        parts.append(
-                            load_results2024_filtered(
-                                question_code=question_code,
-                                years=selected_years,
-                                group_value=None,
-                            )
-                        )
-                    except TypeError:
-                        parts = []
-                else:
-                    for gv in demcodes:
+                # Preferred fast path (new loader signature)
+                try:
+                    df_raw = load_results2024_filtered(
+                        question_code=question_code,
+                        years=selected_years,
+                        group_values=demcodes,  # list[str|None]
+                    )
+                except TypeError:
+                    # Back-compat: old loader that only accepts group_value=...
+                    parts = []
+                    if demcodes == [None]:
                         try:
                             parts.append(
                                 load_results2024_filtered(
                                     question_code=question_code,
                                     years=selected_years,
-                                    group_value=(None if gv is None else str(gv).strip()),
+                                    group_value=None,
                                 )
                             )
                         except TypeError:
-                            continue
-                df_raw = PD.concat([p for p in parts if p is not None and not p.empty], ignore_index=True) if parts else PD.DataFrame()
+                            parts = []
+                    else:
+                        for gv in demcodes:
+                            try:
+                                parts.append(
+                                    load_results2024_filtered(
+                                        question_code=question_code,
+                                        years=selected_years,
+                                        group_value=(None if gv is None else str(gv).strip()),
+                                    )
+                                )
+                            except TypeError:
+                                continue
+                    df_raw = (
+                        PD.concat([p for p in parts if p is not None and not p.empty], ignore_index=True)
+                        if parts
+                        else PD.DataFrame()
+                    )
 
-            if df_raw is None or df_raw.empty:
-                st.info("No data found for this selection.")
-                return
+                if df_raw is None or df_raw.empty:
+                    st.info("No data found for this selection.")
+                    return
 
-            # Exclude 999s for display/narrative only
-            df_raw = exclude_999_raw(df_raw)
-            if df_raw.empty:
-                st.info("Data exists, but all rows are not applicable (999).")
-                return
+                # Exclude 999s for display/narrative only
+                df_raw = exclude_999_raw(df_raw)
+                if df_raw.empty:
+                    st.info("Data exists, but all rows are not applicable (999).")
+                    return
 
-            # Optional raw rows (skip by default)
-            if show_raw:
-                st.markdown("#### Raw results (full rows)")
-                if "SURVEYR" in df_raw.columns:
-                    df_raw = df_raw.sort_values(by="SURVEYR", ascending=False)
-                st.dataframe(df_raw, use_container_width=True)
+                # Optional raw rows (skip by default)
+                if show_raw:
+                    st.markdown("#### Raw results (full rows)")
+                    if "SURVEYR" in df_raw.columns:
+                        df_raw = df_raw.sort_values(by="SURVEYR", ascending=False)
+                    st.dataframe(df_raw, use_container_width=True)
 
-            # Title + formatted table
-            st.subheader(f"{question_code} — {question_text}")
-            dem_map_clean = {None: "All respondents"}
-            try:
-                for k, v in (disp_map or {}).items():
-                    dem_map_clean[(None if k is None else str(k).strip())] = v
-            except Exception:
-                pass
+                # Title + formatted table
+                st.subheader(f"{question_code} — {question_text}")
+                dem_map_clean = {None: "All respondents"}
+                try:
+                    for k, v in (disp_map or {}).items():
+                        dem_map_clean[(None if k is None else str(k).strip())] = v
+                except Exception:
+                    pass
 
-            df_disp = format_display_table_raw(
-                df=df_raw,
-                category_in_play=category_in_play,
-                dem_disp_map=dem_map_clean,
-                scale_pairs=scale_pairs,
-            )
+                df_disp = format_display_table_raw(
+                    df=df_raw,
+                    category_in_play=category_in_play,
+                    dem_disp_map=dem_map_clean,
+                    scale_pairs=scale_pairs,
+                )
+
+            # Show the results table (always)
             st.dataframe(df_disp, use_container_width=True)
 
-            # === AUTO AI narrative & story table (no button/expander) ===
-            st.markdown("#### AI Narrative")
-            with st.spinner("Generating AI summary..."):
+            # === AUTO AI narrative ===
+            st.markdown("### Analysis Summary")
+            with st.spinner("Contacting AI…"):
                 ai_out = _ai_narrative_and_storytable(
                     df_disp=df_disp,
                     question_code=question_code,
                     question_text=question_text,
+                    category_in_play=category_in_play,
                     temperature=0.2,
                 )
             narrative = (ai_out.get("narrative") or "").strip()
@@ -533,25 +593,22 @@ def run_menu1():
             else:
                 st.info("No AI narrative was produced.")
 
-            story_rows = ai_out.get("table", [])
-            if isinstance(story_rows, list) and story_rows:
-                st.markdown("#### AI Story Table")
-                try:
-                    story_df = PD.DataFrame(story_rows)
-                    # Order nice-to-have cols if present
-                    pref = [c for c in ["segment", "positive_2024", "delta_vs_baseline_pts", "note"] if c in story_df.columns]
-                    if pref:
-                        story_df = story_df[pref]
-                    # leave numbers as-is; the model returns numbers
-                    st.dataframe(story_df, use_container_width=True, hide_index=True)
-                except Exception:
-                    st.info("The AI returned a narrative but the story table could not be displayed.")
+            # === Trend Summary Table (years as columns) ===
+            st.markdown("### Summary Table")
+            trend_df = build_trend_summary_table(df_disp, category_in_play)
+            if trend_df is not None and not trend_df.empty:
+                st.dataframe(trend_df, use_container_width=True, hide_index=True)
+            else:
+                st.info("No summary table could be generated for the current selection.")
 
             # Optional downloads
             if make_downloads:
                 with io.BytesIO() as buf:
                     with PD.ExcelWriter(buf, engine="xlsxwriter") as writer:
                         df_disp.to_excel(writer, sheet_name="Results", index=False)
+                        # Also include the summary table in the Excel if available
+                        if trend_df is not None and not trend_df.empty:
+                            trend_df.to_excel(writer, sheet_name="Summary Table", index=False)
                         ctx = {
                             "QUESTION": question_code,
                             "SURVEYR (years)": ", ".join(selected_years),
