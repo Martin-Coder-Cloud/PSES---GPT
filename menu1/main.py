@@ -15,6 +15,8 @@ from utils.data_loader import (
     get_results2024_schema,
     get_results2024_schema_inferred,
 )
+import os, streamlit as st
+os.environ.setdefault("OPENAI_API_KEY", st.secrets.get("OPENAI_API_KEY", ""))
 
 # Stable alias to avoid any accidental local-shadowing of `pd` in functions
 PD = pd
@@ -344,6 +346,142 @@ def build_narrative_2024_first_full(df_disp: pd.DataFrame, category_in_play: boo
 
 
 # ─────────────────────────────
+# AI: optional narrative + story table (kept local to this file; no other changes)
+# ─────────────────────────────
+def _ai_build_payload(df_disp: pd.DataFrame, question_code: str, question_text: str) -> dict:
+    # Robust column detection
+    def col(df, *cands):
+        for c in cands:
+            if c in df.columns:
+                return c
+        low = {c.lower(): c for c in df.columns}
+        for c in cands:
+            if c.lower() in low:
+                return low[c.lower()]
+        return None
+
+    year_col = col(df_disp, "Year") or "Year"
+    demo_col = col(df_disp, "Demographic") or "Demographic"
+    pos_col  = col(df_disp, "POSITIVE", "Positive") or "POSITIVE"
+    n_col    = col(df_disp, "ANSCOUNT", "AnsCount", "N")
+
+    # Years (sorted ints)
+    ys = PD.to_numeric(df_disp[year_col], errors="coerce").dropna().astype(int).unique().tolist()
+    ys = sorted(ys)
+    latest = ys[-1] if ys else None
+    baseline = ys[0] if len(ys) >= 2 else (ys[-1] if ys else None)
+
+    groups = []
+    if demo_col in df_disp.columns:
+        for gname, gdf in df_disp.groupby(demo_col, dropna=False):
+            series = []
+            for _, r in gdf.sort_values(year_col).iterrows():
+                yr = int(PD.to_numeric(r[year_col], errors="coerce"))
+                pos = float(PD.to_numeric(r.get(pos_col, None), errors="coerce"))
+                n = None
+                if n_col in gdf.columns:
+                    n_val = PD.to_numeric(r.get(n_col, None), errors="coerce")
+                    n = int(n_val) if PD.notna(n_val) else None
+                series.append({"year": yr, "positive": pos, "n": n})
+            groups.append({"name": (str(gname) if PD.notna(gname) else ""), "series": series})
+    else:
+        # overall-only shape
+        series = []
+        for _, r in df_disp.sort_values(year_col).iterrows():
+            yr = int(PD.to_numeric(r[year_col], errors="coerce"))
+            pos = float(PD.to_numeric(r.get(pos_col, None), errors="coerce"))
+            n = None
+            if n_col and n_col in df_disp.columns:
+                n_val = PD.to_numeric(r.get(n_col, None), errors="coerce")
+                n = int(n_val) if PD.notna(n_val) else None
+            series.append({"year": yr, "positive": pos, "n": n})
+        groups = [{"name": "All respondents", "series": series}]
+
+    return {
+        "question_code": str(question_code),
+        "question_text": str(question_text),
+        "years": ys,
+        "latest_year": latest,
+        "baseline_year": baseline,
+        "groups": groups,
+        "metric": "POSITIVE"
+    }
+
+
+def _ai_narrative_and_storytable(df_disp: pd.DataFrame, question_code: str, question_text: str, temperature: float = 0.2) -> dict:
+    # Lazy import so the app runs even if OpenAI is not installed
+    try:
+        from openai import OpenAI
+    except Exception:
+        st.error("AI summary requires the OpenAI SDK. Please add `openai>=1.40.0` to requirements.txt and set `OPENAI_API_KEY`.")
+        return {"narrative": "", "table": []}
+
+    client = OpenAI()  # uses OPENAI_API_KEY
+    data = _ai_build_payload(df_disp, question_code, question_text)
+
+    schema = {
+        "name": "SurveySummary",
+        "schema": {
+            "type": "object",
+            "additionalProperties": False,
+            "properties": {
+                "narrative": { "type": "string" },
+                "table": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "additionalProperties": False,
+                        "properties": {
+                            "segment": { "type": "string" },
+                            "positive_2024": { "type": ["number", "null"] },
+                            "delta_vs_baseline_pts": { "type": ["number", "null"] },
+                            "note": { "type": ["string", "null"] }
+                        },
+                        "required": ["segment"]
+                    }
+                }
+            },
+            "required": ["narrative", "table"]
+        },
+        "strict": True
+    }
+
+    system = (
+        "You are a survey insights writer. Produce an executive-ready summary for senior management.\n"
+        "Use the POSITIVE metric only. Rules:\n"
+        "• Start with the latest year (prefer 2024) overall point, if available.\n"
+        "• Call out top and bottom subgroup in the latest year, the gap between them, and how that gap changed vs the baseline year (earliest selected).\n"
+        "• Summarize trend concisely (no long lists): typical change range in points, plus biggest increase/decrease; name the subgroup(s).\n"
+        "• Treat |Δ| ≥ 5 pts as notable and ≥ 3 pts as worth mentioning where relevant.\n"
+        "• Use whole percents and 'pts' for deltas. Keep to ~4–6 sentences, plain language.\n"
+        "Also produce a compact 'story table' that mirrors the narrative (overall, top/bottom, gap, standout movers)."
+    )
+    user = (
+        "Here is the results table as JSON. Only use the numbers provided.\n"
+        "Return JSON that matches the schema exactly.\n\n"
+        f"{PD.io.json.dumps(data, ensure_ascii=False)}"
+    )
+
+    try:
+        resp = client.responses.create(
+            model="gpt-4.1-mini",
+            temperature=temperature,
+            input=[{"role": "system", "content": system},
+                   {"role": "user", "content": user}],
+            response_format={ "type": "json_schema", "json_schema": schema }
+        )
+        text = resp.output_text
+        try:
+            out = PD.io.json.loads(text)
+        except Exception:
+            out = {"narrative": text, "table": []}
+        return out
+    except Exception as e:
+        st.error(f"AI summary failed: {e}")
+        return {"narrative": "", "table": []}
+
+
+# ─────────────────────────────
 # UI
 # ─────────────────────────────
 def run_menu1():
@@ -395,7 +533,7 @@ def run_menu1():
                     selected_years.append(yr)
         selected_years = sorted(selected_years)
         if not selected_years:
-            st.warning("⚠️ Please select at least one year.")
+            st.warning(⚠️ Please select at least one year.")
             return
 
         # Demographic category/subgroup
@@ -516,6 +654,37 @@ def run_menu1():
                 scale_pairs=scale_pairs
             )
             st.dataframe(df_disp, use_container_width=True)
+
+            # ✨ Optional AI narrative + story table (no other changes)
+            with st.expander("✨ AI narrative & story table (beta)", expanded=False):
+                st.caption("Uses the POSITIVE metric. 2024-first; highlights gaps and trend shifts. Requires OPENAI_API_KEY.")
+                if st.button("Generate AI summary", key="btn_ai_summary"):
+                    with st.spinner("Generating summary..."):
+                        ai_out = _ai_narrative_and_storytable(
+                            df_disp=df_disp,
+                            question_code=question_code,
+                            question_text=question_text,
+                            temperature=0.2,
+                        )
+                    narrative = (ai_out.get("narrative") or "").strip()
+                    if narrative:
+                        st.markdown("#### AI Narrative")
+                        st.write(narrative)
+                    story_rows = ai_out.get("table", [])
+                    if isinstance(story_rows, list) and story_rows:
+                        st.markdown("#### AI Story Table")
+                        try:
+                            story_df = PD.DataFrame(story_rows)
+                            # Order nice-to-have cols if present
+                            pref = [c for c in ["segment","positive_2024","delta_vs_baseline_pts","note"] if c in story_df.columns]
+                            if pref:
+                                story_df = story_df[pref]
+                            for c in story_df.columns:
+                                if PD.api.types.is_numeric_dtype(story_df[c]):
+                                    story_df[c] = story_df[c].round(0)
+                            st.dataframe(story_df, use_container_width=True, hide_index=True)
+                        except Exception:
+                            st.info("The AI returned a narrative but the story table could not be displayed.")
 
             # Narrative (2024-first, full sentences)
             st.markdown("#### Summary")
