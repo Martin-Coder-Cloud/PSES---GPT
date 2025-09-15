@@ -41,20 +41,32 @@ def _norm_q(x: str) -> str:
     """
     Normalize a question code:
       - uppercase
-      - remove spaces, underscores, dashes, and periods
+      - remove ALL non-alphanumeric characters
       - map known aliases (e.g., D57_1 -> Q57_1)
-    Examples: 'q57_2' -> 'Q572', 'Q57-2' -> 'Q572', ' Q19a ' -> 'Q19A'
+      - generic safeguard: any 'D57...' -> 'Q57...' (covers rare variants)
+    Examples:
+      'q57_2'  -> 'Q572'
+      'Q57-2'  -> 'Q572'
+      ' D57_1' -> 'Q571'
     """
     if x is None:
         return ""
     s = str(x).upper().strip()
-    s = s.replace(" ", "").replace("_", "").replace("-", "").replace(".", "")
-    # Known dataset exception(s): data has D57_1/D57_2 while metadata/UI use Q57_1/Q57_2
+    # strip any non-alphanumeric (covers underscores, dashes, periods, NBSP, etc.)
+    s = re.sub(r'[^A-Z0-9]', '', s)
+
+    # Specific dataset exceptions
     aliases = {
         "D571": "Q571",
         "D572": "Q572",
     }
-    return aliases.get(s, s)
+    s = aliases.get(s, s)
+
+    # Generic guard for the D57 family
+    if s.startswith("D57"):
+        s = "Q" + s[1:]  # D57... -> Q57...
+
+    return s
 
 
 # ─────────────────────────────────────────
@@ -92,9 +104,6 @@ def _try_gdown_download(output_path: str) -> bool:
         url_secret = os.environ.get("RESULTS2024_GDRIVE_URL") or (
             st.secrets.get("RESULTS2024_GDRIVE_URL") if hasattr(st, "secrets") else None
         )
-        if url_secret:
-            file_id = _extract_file_id_from_url(url_secret)
-
     if not file_id:
         return False
 
