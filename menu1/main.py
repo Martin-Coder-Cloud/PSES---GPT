@@ -52,11 +52,35 @@ def load_questions_metadata() -> pd.DataFrame:
     return qdf[["code", "text", "display"]]
 
 
+def _normalize_qcode(s: str) -> str:
+    """Uppercase and strip all non-alphanumeric (so Q19a, q19A, Q19-a, Q19_a -> Q19A; Q51_1, Q51-1 -> Q511)."""
+    s = "" if s is None else str(s)
+    s = s.upper()
+    return "".join(ch for ch in s if ch.isalnum())
+
+
 @st.cache_data(show_spinner=False)
 def load_scales_metadata() -> pd.DataFrame:
-    # Column names lowercased for uniform access (values remain untouched).
-    sdf = pd.read_excel("metadata/Survey Scales.xlsx")
+    # Primary path in repo
+    primary = "metadata/Survey Scales.xlsx"
+    fallback = "/mnt/data/Survey Scales.xlsx"  # helpful during dev/uploads
+    path = primary if os.path.exists(primary) else fallback
+
+    sdf = pd.read_excel(path)
+    # normalize headers to lower + strip
     sdf.columns = sdf.columns.str.strip().str.lower()
+
+    # Build a normalized code column (from either 'code' or 'question')
+    code_col = None
+    for c in ("code", "question"):
+        if c in sdf.columns:
+            code_col = c
+            break
+    if code_col is None:
+        # Catastrophic metadata issue — no usable code column
+        return sdf
+
+    sdf["__code_norm__"] = sdf[code_col].astype(str).map(_normalize_qcode)
     return sdf
 
 
@@ -125,56 +149,37 @@ def resolve_demographic_codes_from_metadata(
     return [None], {None: "All respondents"}, False
 
 
-# ─────────────────────────────
-# STRICT scale lookup (no guessing)
-# ─────────────────────────────
-def _strict_scale_labels(scales_df: pd.DataFrame, question_code: str, required_answer_cols: list[str]) -> list[tuple[str, str]]:
+def get_scale_labels(scales_df: pd.DataFrame, question_code: str):
     """
-    Return a list of (answer_col_lower, label) tuples for answer1..answer7.
-    Enforces:
-      • exact (case-sensitive) equality on code
-      • one and only one row in the metadata
-      • every required 'answerN' present and non-empty on that row
-    Raises ValueError on any violation.
+    STRICT scale matching with normalization (no fallback).
+    - Normalizes both the incoming code and the metadata code.
+    - If there is no exact match -> return None to signal a metadata error.
+    - Returns a list of tuples: [(answer1, label1), (answer2, label2), ...] for only
+      the non-empty answer labels present in metadata (1..7).
     """
     if scales_df is None or scales_df.empty:
-        raise ValueError("Scale metadata is empty.")
+        return None  # metadata not available
 
-    # Identify the column that contains the *code*, not the question text.
-    # Accept only known code-like column names; no guessing beyond this list.
-    code_col_candidates = ["code", "question_code", "qcode", "qid"]
-    code_col = next((c for c in code_col_candidates if c in scales_df.columns), None)
-    if code_col is None:
-        raise ValueError("Scale metadata missing a code column (expected one of: code, question_code, qcode, qid).")
+    qnorm = _normalize_qcode(question_code)
+    if "__code_norm__" not in scales_df.columns:
+        return None
 
-    # Exact match (strip spaces only; preserve case)
-    qc = str(question_code).strip()
-    matched = scales_df[scales_df[code_col].astype(str).str.strip() == qc]
-    if matched.empty:
-        raise ValueError(f"No exact scale match for code '{qc}' in Survey Scales.xlsx.")
-    if len(matched) > 1:
-        raise ValueError(f"Multiple scale rows found for code '{qc}' in Survey Scales.xlsx.")
+    match = scales_df[scales_df["__code_norm__"] == qnorm]
+    if match.empty:
+        return None
 
-    row = matched.iloc[0]
-
-    # Build label pairs strictly for answer1..answer7
-    pairs: list[tuple[str, str]] = []
+    row = match.iloc[0]
+    pairs = []
+    # only take non-empty labels, from answer1..answer7 (lowercase in metadata)
     for i in range(1, 7 + 1):
-        col = f"answer{i}"  # column names in metadata are lowercased in load_scales_metadata()
-        lbl = row[col] if col in matched.columns else None
-        lbl_str = (str(lbl).strip() if pd.notna(lbl) else "")
-        pairs.append((col, lbl_str))
-
-    # Validate that every required answer col has a non-empty label
-    # required_answer_cols may be "ANSWER1" or "answer1" etc.
-    req_norm = {c.lower(): c.lower() for c in required_answer_cols}
-    for i in range(1, 7 + 1):
-        ac = f"answer{i}"
-        if ac in req_norm:
-            # this column is present in the data; it MUST have a non-empty label
-            lab = next((lab for (k, lab) in pairs if k == ac), "")
-            if lab == "":
-                raise ValueError(f"Scale for '{qc}' is missing label for '{ac}' in Survey Scales.xlsx.")
+        col = f"answer{i}"
+        if col in scales_df.columns:
+            val = row[col]
+            if pd.notna(val) and str(val).strip() != "":
+                pairs.append((col, str(val).strip()))
+    # if metadata row has no recognized answer labels, treat as error
+    if not pairs:
+        return None
 
     return pairs
 
@@ -195,6 +200,10 @@ def exclude_999_raw(df: pd.DataFrame) -> pd.DataFrame:
 def format_display_table_raw(
     df: pd.DataFrame, category_in_play: bool, dem_disp_map: dict, scale_pairs
 ) -> pd.DataFrame:
+    """
+    Build the display table using ONLY the scale columns provided by scale_pairs (strict).
+    If a scale column is not present in df, it is simply omitted.
+    """
     if df.empty:
         return df.copy()
 
@@ -207,28 +216,27 @@ def format_display_table_raw(
             if key == "":
                 return "All respondents"
             return dem_disp_map.get(key, str(code))
-
         out["Demographic"] = out["DEMCODE"].apply(to_label)
 
+    # STRICT: use only the columns specified by metadata scale
     dist_cols = []
-    for i in range(1, 7 + 1):
-        lc, uc = f"answer{i}", f"ANSWER{i}"
-        if uc in out.columns:
-            dist_cols.append(uc)
-        elif lc in out.columns:
-            dist_cols.append(lc)
+    if scale_pairs:
+        for k, _ in scale_pairs:
+            ku = k.upper()
+            if ku in out.columns:
+                dist_cols.append(ku)
+            elif k in out.columns:
+                dist_cols.append(k)
 
-    # Build a strict rename map from the validated pairs
+    # Rename to human labels per metadata
     rename_map = {}
-    for k, v in scale_pairs:
-        if not v:
-            continue
-        # accept both lower and upper case column variants
-        ku = k.upper()
-        if ku in out.columns:
-            rename_map[ku] = v
-        if k in out.columns:
-            rename_map[k] = v
+    if scale_pairs:
+        for k, v in scale_pairs:
+            ku = k.upper()
+            if ku in out.columns:
+                rename_map[ku] = v
+            if k in out.columns:
+                rename_map[k] = v
 
     keep_cols = (
         ["Year"]
@@ -243,7 +251,6 @@ def format_display_table_raw(
     sort_asc = [False] + ([True] if category_in_play else [])
     out = out.sort_values(sort_cols, ascending=sort_asc, kind="mergesort").reset_index(drop=True)
 
-    # All values remain text for display
     return out
 
 
@@ -496,7 +503,6 @@ def build_pdf_report(
         flow.append(Spacer(1, 10))
         flow.append(Paragraph("Summary Table", h2))
         data = [df_summary.columns.tolist()] + df_summary.astype(str).values.tolist()
-        from reportlab.platypus import Table
         tbl = Table(data, repeatRows=1)
         tbl.setStyle(
             TableStyle(
@@ -652,8 +658,15 @@ def run_menu1():
         # Run query (single pass, cached big file)
         if st.button("🔎 Run query"):
             with st.spinner("Processing data..."):
-                # Load once here to freeze the metadata used for the run
-                scales_df = load_scales_metadata()
+                # STRICT scale matching — if we cannot find an exact normalized match, stop.
+                scale_pairs = get_scale_labels(load_scales_metadata(), question_code)
+                if scale_pairs is None or len(scale_pairs) == 0:
+                    qnorm = _normalize_qcode(question_code)
+                    st.error(
+                        f"Metadata scale not found for question '{question_code}' (normalized '{qnorm}'). "
+                        "No results are displayed to avoid mislabeling. Please verify 'Survey Scales.xlsx'."
+                    )
+                    return
 
                 # Preferred fast path (new loader signature)
                 try:
@@ -693,25 +706,11 @@ def run_menu1():
                 if "SURVEYR" in df_raw.columns:
                     df_raw = df_raw.sort_values(by="SURVEYR", ascending=False)
 
-                # 🔧 Raw results before formatting when toggle is ON
+                # 🔧 NEW: show raw results before formatting when toggle is ON
                 if show_debug:
                     st.markdown("#### Raw results (debug — pre-formatting)")
                     st.caption(f"Rows: {len(df_raw):,} | Columns: {len(df_raw.columns)}")
                     st.dataframe(df_raw, use_container_width=True)
-
-                # Determine which answer columns are present in the returned data
-                required_answer_cols = []
-                for i in range(1, 7 + 1):
-                    lc, uc = f"answer{i}", f"ANSWER{i}"
-                    if uc in df_raw.columns or lc in df_raw.columns:
-                        required_answer_cols.append(lc)  # store lowercase form for validation
-
-                # STRICT scale retrieval: any failure -> stop and report metadata error
-                try:
-                    scale_pairs = _strict_scale_labels(scales_df, question_code, required_answer_cols)
-                except ValueError as e:
-                    st.error(f"Metadata error: {e} No results are displayed for this selection.")
-                    return
 
                 st.subheader(f"{question_code} — {question_text}")
                 dem_map_clean = {None: "All respondents"}
