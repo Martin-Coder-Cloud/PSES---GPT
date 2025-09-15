@@ -216,12 +216,14 @@ def load_results2024_filtered(
         # If this particular question needs an exact pass-through alias, use it
         alias_exact = _alias_exact_question_value(qcode_raw)
 
+        # Default normalized series (used in both branches)
+        qnorm_series = _trim(chunk["QUESTION"]).map(_norm_q)
+
         if alias_exact is not None:
-            # For Q57_1 / Q57_2, match the dataset's raw value D57_1 / D57_2 exactly
-            qmask = (_trim(chunk["QUESTION"]) == alias_exact)
+            # MINIMAL CHANGE: allow either exact D57_x OR normalized match to succeed
+            qmask = (_trim(chunk["QUESTION"]) == alias_exact) | (qnorm_series == qcode_norm)
         else:
             # Default path: normalized comparison on both sides
-            qnorm_series = _trim(chunk["QUESTION"]).map(_norm_q)
             qmask = (qnorm_series == qcode_norm)
 
         ymask = _trim(chunk["SURVEYR"]).isin(years_set)
