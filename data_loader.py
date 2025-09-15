@@ -42,18 +42,20 @@ def _norm_q(x: str) -> str:
     Normalize a question code:
       - uppercase
       - remove ALL non-alphanumeric characters
-      - map known aliases (e.g., D57_1 -> Q57_1)
-      - generic safeguard: any 'D57...' -> 'Q57...' (covers rare variants)
+      - handle full-width letters
+      - map known aliases; guard D57… -> Q57…
     Examples:
       'q57_2'  -> 'Q572'
       'Q57-2'  -> 'Q572'
-      ' D57_1' -> 'Q571'
+      ' Ｄ57_1' -> 'Q571'
     """
     if x is None:
         return ""
     s = str(x).upper().strip()
-    # strip any non-alphanumeric (covers underscores, dashes, periods, NBSP, etc.)
-    s = re.sub(r'[^A-Z0-9]', '', s)
+    # normalize common full-width variants without extra imports
+    s = s.replace("Ｄ", "D").replace("Ｑ", "Q")
+    # strip any non A–Z/0–9 (underscores, dashes, periods, NBSPs, etc.)
+    s = re.sub(r"[^A-Z0-9]", "", s)
 
     # Specific dataset exceptions
     aliases = {
@@ -62,7 +64,7 @@ def _norm_q(x: str) -> str:
     }
     s = aliases.get(s, s)
 
-    # Generic guard for the D57 family
+    # Generic guard for the D57 family (covers unforeseen variants)
     if s.startswith("D57"):
         s = "Q" + s[1:]  # D57... -> Q57...
 
@@ -104,6 +106,9 @@ def _try_gdown_download(output_path: str) -> bool:
         url_secret = os.environ.get("RESULTS2024_GDRIVE_URL") or (
             st.secrets.get("RESULTS2024_GDRIVE_URL") if hasattr(st, "secrets") else None
         )
+        if url_secret:
+            file_id = _extract_file_id_from_url(url_secret)
+
     if not file_id:
         return False
 
@@ -213,7 +218,11 @@ def load_results2024_filtered(
         if not {"QUESTION", "SURVEYR", "DEMCODE"}.issubset(chunk.columns):
             continue
 
-        # NORMALIZED QUESTION MATCH (single added line concept)
+        # **Pre-recode** known dataset quirk: D57… stored instead of Q57…
+        # (covers ASCII 'D' and full-width 'Ｄ'; allows optional separators before 57)
+        chunk["QUESTION"] = chunk["QUESTION"].str.replace(r"^\s*[DdＤｄ][\s_\-\.]*57", "Q57", regex=True)
+
+        # NORMALIZED QUESTION MATCH
         qnorm_series = _trim(chunk["QUESTION"]).map(_norm_q)
         qmask = qnorm_series == qcode_norm
 
