@@ -6,6 +6,7 @@ from __future__ import annotations
 import io
 import json
 import os
+import re
 from datetime import datetime
 
 import pandas as pd
@@ -21,7 +22,7 @@ from utils.data_loader import (
 os.environ.setdefault("OPENAI_API_KEY", st.secrets.get("OPENAI_API_KEY", ""))
 
 # ── Debug/diagnostic visibility toggle ─────────────────────────────────────────
-SHOW_DEBUG = False  # <- default; user toggle below controls visibility in UI
+SHOW_DEBUG = False  # <- set to True to show parameters preview + diagnostics
 
 # Stable alias to avoid any accidental local-shadowing of `pd` in functions
 PD = pd
@@ -125,13 +126,55 @@ def resolve_demographic_codes_from_metadata(
 
 
 def get_scale_labels(scales_df: pd.DataFrame, question_code: str):
+    """
+    Robustly find scale labels for a question code, including letter-suffixed items (e.g., Q19a).
+    Matching is case-insensitive, ignores non-alphanumerics, and tries both with/without the leading 'Q'.
+    Falls back to the numeric stem (e.g., '19') if exact lettered code isn't found.
+    """
     sdf = scales_df.copy()
+    sdf.columns = sdf.columns.str.strip().str.lower()
+
+    qc = str(question_code).strip()
+
+    def _norm(s: str, drop_q: bool = True) -> str:
+        s = re.sub(r"[^A-Za-z0-9]", "", str(s).strip()).upper()
+        if drop_q and s.startswith("Q"):
+            s = s[1:]
+        return s
+
+    target_noq = _norm(qc, drop_q=True)     # "Q19A" -> "19A"
+    target_withq = _norm(qc, drop_q=False)  # "Q19A" -> "Q19A"
+
     candidates = pd.DataFrame()
-    for key in ["code", "question"]:
+
+    # Pass 1: exact normalized match in 'code' or 'question'
+    for key in ("code", "question"):
         if key in sdf.columns:
-            candidates = sdf[sdf[key].astype(str).str.strip() == str(question_code).strip()]
+            col_noq = f"__{key}_noq__"
+            col_wq = f"__{key}_wq__"
+            if col_noq not in sdf.columns:
+                sdf[col_noq] = sdf[key].astype(str).map(lambda x: _norm(x, drop_q=True))
+            if col_wq not in sdf.columns:
+                sdf[col_wq] = sdf[key].astype(str).map(lambda x: _norm(x, drop_q=False))
+            mask = (sdf[col_noq] == target_noq) | (sdf[col_wq] == target_withq)
+            candidates = sdf[mask]
             if not candidates.empty:
                 break
+
+    # Pass 2: fallback to numeric stem (e.g., "19A" -> "19")
+    if candidates.empty and target_noq:
+        stem = re.sub(r"[A-Z]+$", "", target_noq)
+        if stem:
+            for key in ("code", "question"):
+                if key in sdf.columns:
+                    col_noq = f"__{key}_noq__"
+                    if col_noq not in sdf.columns:
+                        sdf[col_noq] = sdf[key].astype(str).map(lambda x: _norm(x, drop_q=True))
+                    mask = sdf[col_noq] == stem
+                    candidates = sdf[mask]
+                    if not candidates.empty:
+                        break
+
     labels = []
     for i in range(1, 7 + 1):
         col = f"answer{i}"
@@ -172,7 +215,6 @@ def format_display_table_raw(
             if key == "":
                 return "All respondents"
             return dem_disp_map.get(key, str(code))
-
         out["Demographic"] = out["DEMCODE"].apply(to_label)
 
     dist_cols = []
@@ -457,6 +499,7 @@ def build_pdf_report(
         flow.append(Spacer(1, 10))
         flow.append(Paragraph("Summary Table", h2))
         data = [df_summary.columns.tolist()] + df_summary.astype(str).values.tolist()
+        from reportlab.platypus import Table
         tbl = Table(data, repeatRows=1)
         tbl.setStyle(
             TableStyle(
@@ -501,7 +544,7 @@ def run_menu1():
     left, center, right = st.columns([1, 2, 1])
     with center:
         st.markdown(
-            "<img style='width:85%;max-width:940px;height:auto;display:block;margin:0 auto 16px;' "
+            "<img style='width:75%;max-width:740px;height:auto;display:block;margin:0 auto 16px;' "
             "src='https://raw.githubusercontent.com/Martin-Coder-Cloud/PSES---GPT/main/PSES%20Banner%20New.png'>",
             unsafe_allow_html=True,
         )
@@ -512,7 +555,7 @@ def run_menu1():
             unsafe_allow_html=True,
         )
 
-        # Toggle to show/hide technical panels
+        # 🔧 Toggle for tech parameters & diagnostics (persist in session)
         show_debug = st.toggle(
             "🔧 Show technical parameters & diagnostics",
             value=st.session_state.get("show_debug", SHOW_DEBUG),
@@ -559,10 +602,10 @@ def run_menu1():
             )
             sub_items = (
                 demo_df.loc[demo_df[DEMO_CAT_COL] == demo_selection, LABEL_COL]
-                    .dropna()
-                    .astype(str)
-                    .unique()
-                    .tolist()
+                .dropna()
+                .astype(str)
+                .unique()
+                .tolist()
             )
             sub_items = sorted(sub_items)
             sub_selection = st.selectbox(
@@ -583,7 +626,7 @@ def run_menu1():
             demcodes = [None] + demcodes
         dem_display = ["All respondents" if c is None else str(c).strip() for c in demcodes]
 
-        # Parameters preview (toggle)
+        # Parameters preview (shown only when toggled on)
         if show_debug:
             params_df = PD.DataFrame(
                 {
@@ -594,7 +637,7 @@ def run_menu1():
             st.markdown("##### Parameters that will be passed to the database")
             st.dataframe(params_df, use_container_width=True, hide_index=True)
 
-        # Diagnostics (toggle)
+        # Diagnostics (shown only when toggled on)
         if show_debug:
             with st.expander("🛠 Diagnostics: file schema", expanded=False):
                 colA, colB = st.columns(2)
@@ -651,6 +694,12 @@ def run_menu1():
 
                 if "SURVEYR" in df_raw.columns:
                     df_raw = df_raw.sort_values(by="SURVEYR", ascending=False)
+
+                # 🔧 NEW: show raw results before formatting when toggle is ON
+                if show_debug:
+                    st.markdown("#### Raw results (debug — pre-formatting)")
+                    st.caption(f"Rows: {len(df_raw):,} | Columns: {len(df_raw.columns)}")
+                    st.dataframe(df_raw, use_container_width=True)
 
                 st.subheader(f"{question_code} — {question_text}")
                 dem_map_clean = {None: "All respondents"}
