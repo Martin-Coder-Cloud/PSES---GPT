@@ -41,34 +41,29 @@ def _norm_q(x: str) -> str:
     """
     Normalize a question code:
       - uppercase
-      - remove ALL non-alphanumeric characters
-      - handle full-width letters
-      - map known aliases; guard D57… -> Q57…
-    Examples:
-      'q57_2'  -> 'Q572'
-      'Q57-2'  -> 'Q572'
-      ' Ｄ57_1' -> 'Q571'
+      - remove spaces, underscores, dashes, and periods
+      - map known aliases (e.g., D57_1 -> Q57_1)
+    Examples: 'q57_2' -> 'Q572', 'Q57-2' -> 'Q572', ' Q19a ' -> 'Q19A'
     """
     if x is None:
         return ""
     s = str(x).upper().strip()
-    # normalize common full-width variants without extra imports
-    s = s.replace("Ｄ", "D").replace("Ｑ", "Q")
-    # strip any non A–Z/0–9 (underscores, dashes, periods, NBSPs, etc.)
-    s = re.sub(r"[^A-Z0-9]", "", s)
-
-    # Specific dataset exceptions
+    s = s.replace(" ", "").replace("_", "").replace("-", "").replace(".", "")
+    # Known dataset exception(s): data has D57_1/D57_2 while metadata/UI use Q57_1/Q57_2
     aliases = {
         "D571": "Q571",
         "D572": "Q572",
     }
-    s = aliases.get(s, s)
+    return aliases.get(s, s)
 
-    # Generic guard for the D57 family (covers unforeseen variants)
-    if s.startswith("D57"):
-        s = "Q" + s[1:]  # D57... -> Q57...
-
-    return s
+# NEW: for DB-style exact pass-through when needed (Q57_1 -> D57_1, Q57_2 -> D57_2)
+def _alias_exact_question_value(question_code: str) -> Optional[str]:
+    n = _norm_q(question_code)
+    if n == "Q571":
+        return "D57_1"
+    if n == "Q572":
+        return "D57_2"
+    return None
 
 
 # ─────────────────────────────────────────
@@ -218,13 +213,16 @@ def load_results2024_filtered(
         if not {"QUESTION", "SURVEYR", "DEMCODE"}.issubset(chunk.columns):
             continue
 
-        # **Pre-recode** known dataset quirk: D57… stored instead of Q57…
-        # (covers ASCII 'D' and full-width 'Ｄ'; allows optional separators before 57)
-        chunk["QUESTION"] = chunk["QUESTION"].str.replace(r"^\s*[DdＤｄ][\s_\-\.]*57", "Q57", regex=True)
+        # If this particular question needs an exact pass-through alias, use it
+        alias_exact = _alias_exact_question_value(qcode_raw)
 
-        # NORMALIZED QUESTION MATCH
-        qnorm_series = _trim(chunk["QUESTION"]).map(_norm_q)
-        qmask = qnorm_series == qcode_norm
+        if alias_exact is not None:
+            # For Q57_1 / Q57_2, match the dataset's raw value D57_1 / D57_2 exactly
+            qmask = (_trim(chunk["QUESTION"]) == alias_exact)
+        else:
+            # Default path: normalized comparison on both sides
+            qnorm_series = _trim(chunk["QUESTION"]).map(_norm_q)
+            qmask = (qnorm_series == qcode_norm)
 
         ymask = _trim(chunk["SURVEYR"]).isin(years_set)
         gmask = _trim(chunk["DEMCODE"]).isin(dem_set)
