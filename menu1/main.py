@@ -20,6 +20,9 @@ from utils.data_loader import (
 # Ensure OpenAI key is available from Streamlit secrets (no hardcoding)
 os.environ.setdefault("OPENAI_API_KEY", st.secrets.get("OPENAI_API_KEY", ""))
 
+# ── Debug/diagnostic visibility toggle ─────────────────────────────────────────
+SHOW_DEBUG = False  # <- default; user toggle below controls visibility in UI
+
 # Stable alias to avoid any accidental local-shadowing of `pd` in functions
 PD = pd
 
@@ -231,7 +234,6 @@ def _ai_build_payload(
     metric_col: str,
     metric_label: str,
 ) -> dict:
-    # Robust column detection
     def col(df, *cands):
         for c in cands:
             if c in df.columns:
@@ -251,7 +253,7 @@ def _ai_build_payload(
     latest = ys[-1] if ys else None
     baseline = ys[0] if len(ys) >= 2 else (ys[-1] if ys else None)
 
-    # Overall series (from explicit “All respondents” row if present; otherwise from the table itself)
+    # Overall series
     overall_series = []
     overall_label = "All respondents"
     if category_in_play and demo_col in df_disp.columns:
@@ -270,7 +272,7 @@ def _ai_build_payload(
             "n": (int(n) if PD.notna(n) else None) if n is not None else None
         })
 
-    # Group series (exclude overall from comparisons)
+    # Group series (exclude overall)
     groups = []
     has_groups = False
     if category_in_play and demo_col in df_disp.columns:
@@ -289,7 +291,6 @@ def _ai_build_payload(
                 series.append({"year": int(yr), "value": (float(val) if PD.notna(val) else None), "n": (int(n) if PD.notna(n) else None) if n is not None else None})
             groups.append({"name": (str(gname) if PD.notna(gname) else ""), "series": series})
     else:
-        # No groups view — we already put the overall in overall_series
         has_groups = False
 
     return {
@@ -300,12 +301,12 @@ def _ai_build_payload(
         "baseline_year": baseline,
         "overall_label": overall_label,
         "overall_series": overall_series,
-        "groups": groups,               # excludes overall
+        "groups": groups,
         "has_groups": has_groups,
         "metric_column": str(metric_col),
         "metric_label": str(metric_label),
         "context": "Public Service Employee Survey (PSES): workplace/workforce perceptions among federal public servants. Values represent the share selecting a positive option (e.g., Strongly agree/Agree) or 'Yes' where applicable.",
-        "thresholds": {"notable": 2.0, "mention": 1.0}  # pts
+        "thresholds": {"notable": 2.0, "mention": 1.0}
     }
 
 
@@ -318,7 +319,6 @@ def _ai_narrative_and_storytable(
     metric_label: str,
     temperature: float = 0.2,
 ) -> dict:
-    """Calls OpenAI and returns {'narrative': str, 'table': list[dict]]}."""
     try:
         from openai import OpenAI
     except Exception:
@@ -327,38 +327,27 @@ def _ai_narrative_and_storytable(
         )
         return {"narrative": "", "table": []}
 
-    client = OpenAI()  # uses OPENAI_API_KEY from env
+    client = OpenAI()
     data = _ai_build_payload(df_disp, question_code, question_text, category_in_play, metric_col, metric_label)
 
-    # Updated thresholds & required opening statement about overall change
     system = (
         "You are a survey insights writer for the Public Service Employee Survey (PSES). "
         "Write an executive-ready narrative for senior management about workplace/workforce perceptions. "
         "The values are shares of employees selecting a positive option (e.g., Strongly agree/Agree) "
         "or 'Yes' where that scale applies.\n\n"
         "STRICT RULES:\n"
-        "• ALWAYS begin with a one-sentence statement on the overall change for the question since the baseline: "
-        "classify as 'stable' if |Δ| ≤ 1 pt, 'increasing' or 'decreasing' if 1 < |Δ| ≤ 2 pts (mention-worthy), "
-        "and 'notably increasing' or 'notably decreasing' if |Δ| > 2 pts.\n"
-        "• Use the overall_series for this opening; do not confuse it with subgroup results.\n"
+        "• ALWAYS begin with a one-sentence statement on the overall change since baseline using overall_series "
+        "(stable if |Δ| ≤ 1 pt; increasing/decreasing if 1 < |Δ| ≤ 2 pts; notably increasing/decreasing if |Δ| > 2 pts).\n"
         "• If there are NO groups, do not mention any group analysis.\n"
-        "• If groups exist, NEVER use the words 'subgroup' or 'segment'. Refer to each group by its label.\n"
-        "• When groups exist, compare the highest vs lowest group in the latest year (exclude the overall row from this comparison), "
-        "state the gap in points, and how that gap changed vs the baseline if both are present.\n"
-        "• Summarize the trend concisely (no long lists): typical change range in points, plus the largest increase/decrease; name the groups.\n"
-        "• Treat |Δ| > 2 pts as a notable change; 1–2 pts is worth mentioning; ≤1 pt is stable.\n"
-        "• Use whole percents and 'pts' for deltas. Keep to ~5–15 sentences, plain language.\n"
-        "• Do not invent data; only use provided numbers."
+        "• If groups exist, do not use the word 'subgroup'—refer to groups by their labels. "
+        "Compare the top vs bottom group in the latest year (exclude the overall row), give the gap, and how that gap changed vs baseline when available.\n"
+        "• Summarize trends concisely: typical change range and biggest movers. Use whole percents and 'pts'. Do not invent data."
     )
     user = (
         "DATA (JSON):\n"
         + json.dumps(data, ensure_ascii=False)
         + "\n\n"
-        "Instructions:\n"
-        f"- The metric column is '{metric_col}' and represents '{metric_label}'.\n"
-        "- Use overall_series to determine stability/increase/decrease first.\n"
-        "- Exclude the overall row ('All respondents') from top/bottom group comparisons; use it only for context.\n"
-        "- Return JSON with keys: 'narrative' (string) and 'table' (array). The 'table' may be empty."
+        "Return JSON with keys: 'narrative' (string) and 'table' (array)."
     )
 
     try:
@@ -366,10 +355,7 @@ def _ai_narrative_and_storytable(
             model="gpt-4o-mini",
             temperature=temperature,
             response_format={"type": "json_object"},
-            messages=[
-                {"role": "system", "content": system},
-                {"role": "user", "content": user},
-            ],
+            messages=[{"role": "system", "content": system}, {"role": "user", "content": user}],
         )
         content = comp.choices[0].message.content if comp.choices else "{}"
         out = json.loads(content)
@@ -390,7 +376,6 @@ def build_trend_summary_table(df_disp: pd.DataFrame, category_in_play: bool, met
     if df_disp is None or df_disp.empty or "Year" not in df_disp.columns:
         return PD.DataFrame()
 
-    # Case-insensitive metric check
     if metric_col not in df_disp.columns:
         low = {c.lower(): c for c in df_disp.columns}
         if metric_col.lower() in low:
@@ -399,16 +384,13 @@ def build_trend_summary_table(df_disp: pd.DataFrame, category_in_play: bool, met
             return PD.DataFrame()
 
     df = df_disp.copy()
-    # Always ensure a Demographic column for pivot; include overall if present
     if "Demographic" not in df.columns:
         df["Demographic"] = "All respondents"
 
     df["__Y__"] = PD.to_numeric(df["Year"], errors="coerce")
     df = df.sort_values("__Y__")
 
-    pivot = df.pivot_table(
-        index="Demographic", columns="Year", values=metric_col, aggfunc="first"
-    ).copy()
+    pivot = df.pivot_table(index="Demographic", columns="Year", values=metric_col, aggfunc="first").copy()
     pivot.index.name = "Segment"
 
     for c in pivot.columns:
@@ -458,7 +440,6 @@ def build_pdf_report(
     flow.append(Paragraph("(% positive answers)", small))
     flow.append(Spacer(1, 10))
 
-    # Context
     ctx = f"""
     <b>Years:</b> {', '.join(selected_years)}<br/>
     <b>Demographic selection:</b> {', '.join(dem_display)}
@@ -466,14 +447,12 @@ def build_pdf_report(
     flow.append(Paragraph(ctx, body))
     flow.append(Spacer(1, 10))
 
-    # Narrative
     flow.append(Paragraph("Analysis Summary", h2))
     for chunk in narrative.split("\n"):
         if chunk.strip():
             flow.append(Paragraph(chunk.strip(), body))
             flow.append(Spacer(1, 4))
 
-    # Summary table
     if df_summary is not None and not df_summary.empty:
         flow.append(Spacer(1, 10))
         flow.append(Paragraph("Summary Table", h2))
@@ -501,7 +480,6 @@ def build_pdf_report(
 # UI
 # ─────────────────────────────
 def run_menu1():
-    # Clean, centered layout; moderate banner size + small-note styling
     st.markdown(
         """
     <style>
@@ -533,6 +511,13 @@ def run_menu1():
             'This application provides only Public Service-wide results. The output is a result table, a short analysis and a summary table.</div>',
             unsafe_allow_html=True,
         )
+
+        # Toggle to show/hide technical panels
+        show_debug = st.toggle(
+            "🔧 Show technical parameters & diagnostics",
+            value=st.session_state.get("show_debug", SHOW_DEBUG),
+        )
+        st.session_state["show_debug"] = show_debug
 
         # Question
         st.markdown('<div class="field-label">Select a survey question:</div>', unsafe_allow_html=True)
@@ -574,10 +559,10 @@ def run_menu1():
             )
             sub_items = (
                 demo_df.loc[demo_df[DEMO_CAT_COL] == demo_selection, LABEL_COL]
-                .dropna()
-                .astype(str)
-                .unique()
-                .tolist()
+                    .dropna()
+                    .astype(str)
+                    .unique()
+                    .tolist()
             )
             sub_items = sorted(sub_items)
             sub_selection = st.selectbox(
@@ -593,37 +578,36 @@ def run_menu1():
         demcodes, disp_map, category_in_play = resolve_demographic_codes_from_metadata(
             demo_df, demo_selection, sub_selection
         )
-
         # ALWAYS include overall row when a category is in play
         if category_in_play and (None not in demcodes):
             demcodes = [None] + demcodes
-
-        # For preview: show labels (use 'All respondents' for None)
         dem_display = ["All respondents" if c is None else str(c).strip() for c in demcodes]
 
-        # Parameters preview
-        params_df = PD.DataFrame(
-            {
-                "Parameter": ["QUESTION (from metadata)", "SURVEYR (years)", "DEMCODE(s) (from metadata)"],
-                "Value": [question_code, ", ".join(selected_years), ", ".join(dem_display)],
-            }
-        )
-        st.markdown("##### Parameters that will be passed to the database")
-        st.dataframe(params_df, use_container_width=True, hide_index=True)
+        # Parameters preview (toggle)
+        if show_debug:
+            params_df = PD.DataFrame(
+                {
+                    "Parameter": ["QUESTION (from metadata)", "SURVEYR (years)", "DEMCODE(s) (from metadata)"],
+                    "Value": [question_code, ", ".join(selected_years), ", ".join(dem_display)],
+                }
+            )
+            st.markdown("##### Parameters that will be passed to the database")
+            st.dataframe(params_df, use_container_width=True, hide_index=True)
 
-        # Diagnostics (optional)
-        with st.expander("🛠 Diagnostics: file schema", expanded=False):
-            colA, colB = st.columns(2)
-            with colA:
-                if st.button("Show dtypes after loader read (text mode)"):
-                    sch = get_results2024_schema()
-                    st.write("All columns are read as text (object).")
-                    st.dataframe(sch, use_container_width=True, hide_index=True)
-            with colB:
-                if st.button("Show what pandas would infer (preview)"):
-                    sch2 = get_results2024_schema_inferred()
-                    st.write("Preview only — the app forces text on read.")
-                    st.dataframe(sch2, use_container_width=True, hide_index=True)
+        # Diagnostics (toggle)
+        if show_debug:
+            with st.expander("🛠 Diagnostics: file schema", expanded=False):
+                colA, colB = st.columns(2)
+                with colA:
+                    if st.button("Show dtypes after loader read (text mode)"):
+                        sch = get_results2024_schema()
+                        st.write("All columns are read as text (object).")
+                        st.dataframe(sch, use_container_width=True, hide_index=True)
+                with colB:
+                    if st.button("Show what pandas would infer (preview)"):
+                        sch2 = get_results2024_schema_inferred()
+                        st.write("Preview only — the app forces text on read.")
+                        st.dataframe(sch2, use_container_width=True, hide_index=True)
 
         # Run query (single pass, cached big file)
         if st.button("🔎 Run query"):
@@ -635,10 +619,9 @@ def run_menu1():
                     df_raw = load_results2024_filtered(
                         question_code=question_code,
                         years=selected_years,
-                        group_values=demcodes,  # list[str|None] — includes None for overall when category_in_play
+                        group_values=demcodes,  # includes None for overall when category_in_play
                     )
                 except TypeError:
-                    # Back-compat: old loader that only accepts group_value=...
                     parts = []
                     for gv in demcodes:
                         try:
@@ -661,17 +644,14 @@ def run_menu1():
                     st.info("No data found for this selection.")
                     return
 
-                # Exclude 999s for display/narrative only
                 df_raw = exclude_999_raw(df_raw)
                 if df_raw.empty:
                     st.info("Data exists, but all rows are not applicable (999).")
                     return
 
-                # Optional raw rows (skip by default)
                 if "SURVEYR" in df_raw.columns:
                     df_raw = df_raw.sort_values(by="SURVEYR", ascending=False)
 
-                # Title + formatted table
                 st.subheader(f"{question_code} — {question_text}")
                 dem_map_clean = {None: "All respondents"}
                 try:
@@ -687,13 +667,13 @@ def run_menu1():
                     scale_pairs=scale_pairs,
                 )
 
-            # Show the results table (always)
+            # Results table
             st.dataframe(df_disp, use_container_width=True)
 
-            # Decide which metric to use (POSITIVE → AGREE → YES)
+            # Choose metric (POSITIVE → AGREE → YES)
             metric_col, metric_label = _detect_metric_column(df_disp)
 
-            # === AUTO AI narrative ===
+            # AI narrative
             st.markdown("### Analysis Summary")
             st.markdown(
                 f"<div class='q-sub'>{question_code} — {question_text}</div>"
@@ -716,7 +696,7 @@ def run_menu1():
             else:
                 st.info("No AI narrative was produced.")
 
-            # === Trend Summary Table (years as columns) ===
+            # Summary table
             st.markdown("### Summary Table")
             st.markdown(
                 f"<div class='q-sub'>{question_code} — {question_text}</div>"
@@ -729,8 +709,7 @@ def run_menu1():
             else:
                 st.info("No summary table could be generated for the current selection.")
 
-            # === Always-on downloads: Excel (data) & PDF (report) ===
-            # Excel with Results + Summary + Context
+            # Downloads
             with io.BytesIO() as xbuf:
                 with PD.ExcelWriter(xbuf, engine="xlsxwriter") as writer:
                     df_disp.to_excel(writer, sheet_name="Results", index=False)
@@ -754,7 +733,6 @@ def run_menu1():
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
             )
 
-            # PDF report (Analysis Summary + Summary Table)
             pdf_bytes = build_pdf_report(
                 question_code=question_code,
                 question_text=question_text,
