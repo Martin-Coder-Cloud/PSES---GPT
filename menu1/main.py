@@ -6,7 +6,6 @@ from __future__ import annotations
 import io
 import json
 import os
-import re
 from datetime import datetime
 
 import pandas as pd
@@ -55,6 +54,7 @@ def load_questions_metadata() -> pd.DataFrame:
 
 @st.cache_data(show_spinner=False)
 def load_scales_metadata() -> pd.DataFrame:
+    # Column names lowercased for uniform access (values remain untouched).
     sdf = pd.read_excel("metadata/Survey Scales.xlsx")
     sdf.columns = sdf.columns.str.strip().str.lower()
     return sdf
@@ -125,66 +125,58 @@ def resolve_demographic_codes_from_metadata(
     return [None], {None: "All respondents"}, False
 
 
-def get_scale_labels(scales_df: pd.DataFrame, question_code: str):
+# ─────────────────────────────
+# STRICT scale lookup (no guessing)
+# ─────────────────────────────
+def _strict_scale_labels(scales_df: pd.DataFrame, question_code: str, required_answer_cols: list[str]) -> list[tuple[str, str]]:
     """
-    Robustly find scale labels for a question code, including letter-suffixed items (e.g., Q19a).
-    Matching is case-insensitive, ignores non-alphanumerics, and tries both with/without the leading 'Q'.
-    Falls back to the numeric stem (e.g., '19') if exact lettered code isn't found.
+    Return a list of (answer_col_lower, label) tuples for answer1..answer7.
+    Enforces:
+      • exact (case-sensitive) equality on code
+      • one and only one row in the metadata
+      • every required 'answerN' present and non-empty on that row
+    Raises ValueError on any violation.
     """
-    sdf = scales_df.copy()
-    sdf.columns = sdf.columns.str.strip().str.lower()
+    if scales_df is None or scales_df.empty:
+        raise ValueError("Scale metadata is empty.")
 
+    # Identify the column that contains the *code*, not the question text.
+    # Accept only known code-like column names; no guessing beyond this list.
+    code_col_candidates = ["code", "question_code", "qcode", "qid"]
+    code_col = next((c for c in code_col_candidates if c in scales_df.columns), None)
+    if code_col is None:
+        raise ValueError("Scale metadata missing a code column (expected one of: code, question_code, qcode, qid).")
+
+    # Exact match (strip spaces only; preserve case)
     qc = str(question_code).strip()
+    matched = scales_df[scales_df[code_col].astype(str).str.strip() == qc]
+    if matched.empty:
+        raise ValueError(f"No exact scale match for code '{qc}' in Survey Scales.xlsx.")
+    if len(matched) > 1:
+        raise ValueError(f"Multiple scale rows found for code '{qc}' in Survey Scales.xlsx.")
 
-    def _norm(s: str, drop_q: bool = True) -> str:
-        s = re.sub(r"[^A-Za-z0-9]", "", str(s).strip()).upper()
-        if drop_q and s.startswith("Q"):
-            s = s[1:]
-        return s
+    row = matched.iloc[0]
 
-    target_noq = _norm(qc, drop_q=True)     # "Q19A" -> "19A"
-    target_withq = _norm(qc, drop_q=False)  # "Q19A" -> "Q19A"
-
-    candidates = pd.DataFrame()
-
-    # Pass 1: exact normalized match in 'code' or 'question'
-    for key in ("code", "question"):
-        if key in sdf.columns:
-            col_noq = f"__{key}_noq__"
-            col_wq = f"__{key}_wq__"
-            if col_noq not in sdf.columns:
-                sdf[col_noq] = sdf[key].astype(str).map(lambda x: _norm(x, drop_q=True))
-            if col_wq not in sdf.columns:
-                sdf[col_wq] = sdf[key].astype(str).map(lambda x: _norm(x, drop_q=False))
-            mask = (sdf[col_noq] == target_noq) | (sdf[col_wq] == target_withq)
-            candidates = sdf[mask]
-            if not candidates.empty:
-                break
-
-    # Pass 2: fallback to numeric stem (e.g., "19A" -> "19")
-    if candidates.empty and target_noq:
-        stem = re.sub(r"[A-Z]+$", "", target_noq)
-        if stem:
-            for key in ("code", "question"):
-                if key in sdf.columns:
-                    col_noq = f"__{key}_noq__"
-                    if col_noq not in sdf.columns:
-                        sdf[col_noq] = sdf[key].astype(str).map(lambda x: _norm(x, drop_q=True))
-                    mask = sdf[col_noq] == stem
-                    candidates = sdf[mask]
-                    if not candidates.empty:
-                        break
-
-    labels = []
+    # Build label pairs strictly for answer1..answer7
+    pairs: list[tuple[str, str]] = []
     for i in range(1, 7 + 1):
-        col = f"answer{i}"
-        lbl = None
-        if not candidates.empty and col in candidates.columns:
-            vals = candidates[col].dropna().astype(str)
-            if not vals.empty:
-                lbl = vals.iloc[0].strip()
-        labels.append((col, lbl or f"Answer {i}"))
-    return labels
+        col = f"answer{i}"  # column names in metadata are lowercased in load_scales_metadata()
+        lbl = row[col] if col in matched.columns else None
+        lbl_str = (str(lbl).strip() if pd.notna(lbl) else "")
+        pairs.append((col, lbl_str))
+
+    # Validate that every required answer col has a non-empty label
+    # required_answer_cols may be "ANSWER1" or "answer1" etc.
+    req_norm = {c.lower(): c.lower() for c in required_answer_cols}
+    for i in range(1, 7 + 1):
+        ac = f"answer{i}"
+        if ac in req_norm:
+            # this column is present in the data; it MUST have a non-empty label
+            lab = next((lab for (k, lab) in pairs if k == ac), "")
+            if lab == "":
+                raise ValueError(f"Scale for '{qc}' is missing label for '{ac}' in Survey Scales.xlsx.")
+
+    return pairs
 
 
 def exclude_999_raw(df: pd.DataFrame) -> pd.DataFrame:
@@ -215,6 +207,7 @@ def format_display_table_raw(
             if key == "":
                 return "All respondents"
             return dem_disp_map.get(key, str(code))
+
         out["Demographic"] = out["DEMCODE"].apply(to_label)
 
     dist_cols = []
@@ -225,8 +218,12 @@ def format_display_table_raw(
         elif lc in out.columns:
             dist_cols.append(lc)
 
+    # Build a strict rename map from the validated pairs
     rename_map = {}
     for k, v in scale_pairs:
+        if not v:
+            continue
+        # accept both lower and upper case column variants
         ku = k.upper()
         if ku in out.columns:
             rename_map[ku] = v
@@ -655,7 +652,8 @@ def run_menu1():
         # Run query (single pass, cached big file)
         if st.button("🔎 Run query"):
             with st.spinner("Processing data..."):
-                scale_pairs = get_scale_labels(load_scales_metadata(), question_code)
+                # Load once here to freeze the metadata used for the run
+                scales_df = load_scales_metadata()
 
                 # Preferred fast path (new loader signature)
                 try:
@@ -695,11 +693,25 @@ def run_menu1():
                 if "SURVEYR" in df_raw.columns:
                     df_raw = df_raw.sort_values(by="SURVEYR", ascending=False)
 
-                # 🔧 NEW: show raw results before formatting when toggle is ON
+                # 🔧 Raw results before formatting when toggle is ON
                 if show_debug:
                     st.markdown("#### Raw results (debug — pre-formatting)")
                     st.caption(f"Rows: {len(df_raw):,} | Columns: {len(df_raw.columns)}")
                     st.dataframe(df_raw, use_container_width=True)
+
+                # Determine which answer columns are present in the returned data
+                required_answer_cols = []
+                for i in range(1, 7 + 1):
+                    lc, uc = f"answer{i}", f"ANSWER{i}"
+                    if uc in df_raw.columns or lc in df_raw.columns:
+                        required_answer_cols.append(lc)  # store lowercase form for validation
+
+                # STRICT scale retrieval: any failure -> stop and report metadata error
+                try:
+                    scale_pairs = _strict_scale_labels(scales_df, question_code, required_answer_cols)
+                except ValueError as e:
+                    st.error(f"Metadata error: {e} No results are displayed for this selection.")
+                    return
 
                 st.subheader(f"{question_code} — {question_text}")
                 dem_map_clean = {None: "All respondents"}
