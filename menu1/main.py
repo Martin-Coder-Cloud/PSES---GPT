@@ -224,6 +224,8 @@ def format_display_table_raw(
     """
     Build the display table using ONLY the scale columns provided by scale_pairs (strict).
     If a scale column is not present in df, it is simply omitted.
+    Additionally, if any distribution/metric column contains the sentinel '9999'
+    (meaning "not applicable") anywhere, that entire column is omitted.
     """
     if df.empty:
         return df.copy()
@@ -259,11 +261,30 @@ def format_display_table_raw(
             if k in out.columns:
                 rename_map[k] = v
 
+    # Identify any columns that contain the sentinel '9999' anywhere;
+    # hide those columns from the output.
+    candidate_cols = set(dist_cols) | {c for c in ["POSITIVE", "NEUTRAL", "NEGATIVE", "AGREE", "YES"] if c in out.columns}
+    cols_with_9999 = set()
+    for c in list(candidate_cols):
+        try:
+            if (out[c].astype(str).str.strip() == "9999").any():
+                cols_with_9999.add(c)
+        except Exception:
+            # if there's any unexpected dtype issue, leave the column visible
+            pass
+
+    # Drop hidden columns from dist list and rename map
+    dist_cols = [c for c in dist_cols if c not in cols_with_9999]
+    for c in list(rename_map.keys()):
+        if c in cols_with_9999:
+            rename_map.pop(c, None)
+
     keep_cols = (
         ["Year"]
         + (["Demographic"] if category_in_play else [])
         + dist_cols
-        + ["POSITIVE", "NEUTRAL", "NEGATIVE", "ANSCOUNT", "AGREE", "YES"]
+        + [c for c in ["POSITIVE", "NEUTRAL", "NEGATIVE", "ANSCOUNT", "AGREE", "YES"]
+           if c in out.columns and c not in cols_with_9999]
     )
     keep_cols = [c for c in keep_cols if c in out.columns]
     out = out[keep_cols].rename(columns=rename_map).copy()
