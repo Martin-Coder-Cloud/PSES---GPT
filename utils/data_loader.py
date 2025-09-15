@@ -27,7 +27,6 @@ DEFAULT_LOCAL_PATH = os.path.join(DEFAULT_LOCAL_DIR, "Results2024.csv.gz")
 def _trim(s: pd.Series) -> pd.Series:
     return s.astype(str).str.strip()
 
-
 def _extract_file_id_from_url(url: str) -> Optional[str]:
     """
     Accepts a standard Google Drive 'file/d/<id>/view' URL and extracts the file id.
@@ -36,6 +35,19 @@ def _extract_file_id_from_url(url: str) -> Optional[str]:
         return None
     m = re.search(r"/file/d/([a-zA-Z0-9_-]+)/", str(url))
     return m.group(1) if m else None
+
+# NEW: normalize QUESTION codes for robust matching (minimal, surgical)
+def _norm_q(x: str) -> str:
+    """
+    Normalize a question code:
+      - uppercase
+      - remove spaces, underscores, dashes, and periods
+    Examples: 'q57_2' -> 'Q572', 'Q57-2' -> 'Q572', ' Q19a ' -> 'Q19A'
+    """
+    if x is None:
+        return ""
+    s = str(x).upper().strip()
+    return s.replace(" ", "").replace("_", "").replace("-", "").replace(".", "")
 
 
 # ─────────────────────────────────────────
@@ -147,7 +159,7 @@ def load_results2024_filtered(
     Stream the gz CSV in chunks and return only matching rows.
     All columns are kept as TEXT (dtype=str).
     Filters (trimmed string compares):
-      - QUESTION == question_code
+      - QUESTION (normalized) == question_code (normalized)
       - SURVEYR in {years}
       - DEMCODE in {group_values}; None -> "" (All respondents)
       - If LEVEL1ID exists: keep rows where LEVEL1ID in {"", "0"}
@@ -158,7 +170,9 @@ def load_results2024_filtered(
         st.error(str(e))
         return pd.DataFrame()
 
-    qcode = str(question_code).strip()
+    # Normalize inputs once
+    qcode_raw = str(question_code).strip()
+    qcode_norm = _norm_q(qcode_raw)
     years_set = {str(y).strip() for y in years}
 
     if group_values is None:
@@ -183,7 +197,10 @@ def load_results2024_filtered(
         if not {"QUESTION", "SURVEYR", "DEMCODE"}.issubset(chunk.columns):
             continue
 
-        qmask = _trim(chunk["QUESTION"]) == qcode
+        # NORMALIZED QUESTION MATCH (single added line concept)
+        qnorm_series = _trim(chunk["QUESTION"]).map(_norm_q)
+        qmask = qnorm_series == qcode_norm
+
         ymask = _trim(chunk["SURVEYR"]).isin(years_set)
         gmask = _trim(chunk["DEMCODE"]).isin(dem_set)
         m = qmask & ymask & gmask
