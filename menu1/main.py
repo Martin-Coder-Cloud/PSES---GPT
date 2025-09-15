@@ -494,10 +494,13 @@ def build_pdf_report(
     flow.append(Spacer(1, 10))
 
     flow.append(Paragraph("Analysis Summary", h2))
-    for chunk in narrative.split("\n"):
-        if chunk.strip():
-            flow.append(Paragraph(chunk.strip(), body))
-            flow.append(Spacer(1, 4))
+    if (narrative or "").strip():
+        for chunk in narrative.split("\n"):
+            if chunk.strip():
+                flow.append(Paragraph(chunk.strip(), body))
+                flow.append(Spacer(1, 4))
+    else:
+        flow.append(Paragraph("AI analysis was disabled or unavailable for this run.", small))
 
     if df_summary is not None and not df_summary.empty:
         flow.append(Spacer(1, 10))
@@ -564,6 +567,14 @@ def run_menu1():
             value=st.session_state.get("show_debug", SHOW_DEBUG),
         )
         st.session_state["show_debug"] = show_debug
+
+        # 🧠 Toggle for AI (persist in session) — prevents API calls when OFF
+        ai_enabled = st.toggle(
+            "🧠 Enable AI analysis (OpenAI)",
+            value=st.session_state.get("ai_enabled", False),
+            help="Turn OFF while testing to avoid API usage.",
+        )
+        st.session_state["ai_enabled"] = ai_enabled
 
         # Question
         st.markdown('<div class="field-label">Select a survey question:</div>', unsafe_allow_html=True)
@@ -733,28 +744,32 @@ def run_menu1():
             # Choose metric (POSITIVE → AGREE → YES)
             metric_col, metric_label = _detect_metric_column(df_disp)
 
-            # AI narrative
+            # AI narrative (only if toggle is ON)
+            narrative = ""  # default if AI disabled
             st.markdown("### Analysis Summary")
             st.markdown(
                 f"<div class='q-sub'>{question_code} — {question_text}</div>"
                 f"<div class='tiny-note'>(% positive answers)</div>",
                 unsafe_allow_html=True,
             )
-            with st.spinner("Contacting AI…"):
-                ai_out = _ai_narrative_and_storytable(
-                    df_disp=df_disp,
-                    question_code=question_code,
-                    question_text=question_text,
-                    category_in_play=category_in_play,
-                    metric_col=metric_col,
-                    metric_label=metric_label,
-                    temperature=0.2,
-                )
-            narrative = (ai_out.get("narrative") or "").strip()
-            if narrative:
-                st.write(narrative)
+            if ai_enabled:
+                with st.spinner("Contacting AI…"):
+                    ai_out = _ai_narrative_and_storytable(
+                        df_disp=df_disp,
+                        question_code=question_code,
+                        question_text=question_text,
+                        category_in_play=category_in_play,
+                        metric_col=metric_col,
+                        metric_label=metric_label,
+                        temperature=0.2,
+                    )
+                narrative = (ai_out.get("narrative") or "").strip()
+                if narrative:
+                    st.write(narrative)
+                else:
+                    st.info("The AI did not return a narrative.")
             else:
-                st.info("No AI narrative was produced.")
+                st.caption("AI analysis is disabled (toggle above).")
 
             # Summary table
             st.markdown("### Summary Table")
@@ -779,6 +794,7 @@ def run_menu1():
                         "QUESTION": question_code,
                         "SURVEYR (years)": ", ".join(selected_years),
                         "DEMCODE(s)": ", ".join(dem_display),
+                        "AI enabled": "Yes" if ai_enabled else "No",
                         "Generated at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
                     }
                     PD.DataFrame(list(ctx.items()), columns=["Field", "Value"]).to_excel(
@@ -798,7 +814,7 @@ def run_menu1():
                 question_text=question_text,
                 selected_years=selected_years,
                 dem_display=dem_display,
-                narrative=narrative,
+                narrative=narrative,  # empty when AI disabled
                 df_summary=trend_df if trend_df is not None else PD.DataFrame(),
             )
             if pdf_bytes:
