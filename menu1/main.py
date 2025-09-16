@@ -224,8 +224,6 @@ def format_display_table_raw(
     """
     Build the display table using ONLY the scale columns provided by scale_pairs (strict).
     If a scale column is not present in df, it is simply omitted.
-    Additionally, if any distribution/metric column contains the sentinel '9999'
-    (meaning "not applicable") anywhere, that entire column is omitted.
     """
     if df.empty:
         return df.copy()
@@ -261,33 +259,17 @@ def format_display_table_raw(
             if k in out.columns:
                 rename_map[k] = v
 
-    # Identify any columns that contain the sentinel '9999' anywhere;
-    # hide those columns from the output.
-    candidate_cols = set(dist_cols) | {c for c in ["POSITIVE", "NEUTRAL", "NEGATIVE", "AGREE", "YES"] if c in out.columns}
-    cols_with_9999 = set()
-    for c in list(candidate_cols):
-        try:
-            if (out[c].astype(str).str.strip() == "9999").any():
-                cols_with_9999.add(c)
-        except Exception:
-            # if there's any unexpected dtype issue, leave the column visible
-            pass
-
-    # Drop hidden columns from dist list and rename map
-    dist_cols = [c for c in dist_cols if c not in cols_with_9999]
-    for c in list(rename_map.keys()):
-        if c in cols_with_9999:
-            rename_map.pop(c, None)
-
     keep_cols = (
         ["Year"]
         + (["Demographic"] if category_in_play else [])
         + dist_cols
-        + [c for c in ["POSITIVE", "NEUTRAL", "NEGATIVE", "ANSCOUNT", "AGREE", "YES"]
-           if c in out.columns and c not in cols_with_9999]
+        + ["POSITIVE", "NEUTRAL", "NEGATIVE", "ANSCOUNT", "AGREE", "YES"]
     )
     keep_cols = [c for c in keep_cols if c in out.columns]
     out = out[keep_cols].rename(columns=rename_map).copy()
+
+    # NEW: drop any column that contains sentinel "9999" (not applicable)
+    out = _drop_9999_columns(out)
 
     sort_cols = ["Year"] + (["Demographic"] if category_in_play else [])
     sort_asc = [False] + ([True] if category_in_play else [])
@@ -296,13 +278,54 @@ def format_display_table_raw(
     return out
 
 
+# NEW: remove any column that contains at least one "9999" value
+def _drop_9999_columns(df: pd.DataFrame) -> pd.DataFrame:
+    if df is None or df.empty:
+        return df
+    protected = {"Year", "Demographic"}  # never drop these
+    cols_to_drop = []
+    for c in df.columns:
+        if c in protected:
+            continue
+        s = df[c].astype(str).str.strip()
+        if (s == "9999").any():
+            cols_to_drop.append(c)
+    if cols_to_drop:
+        df = df.drop(columns=cols_to_drop)
+    return df
+
+
 # ─────────────────────────────
 # AI helpers (auto-run)
 # ─────────────────────────────
+def _pick_metric(df_disp: pd.DataFrame, scale_pairs) -> tuple[str, str | None, str, list[str]]:
+    """
+    Decide how to summarize:
+      - If POSITIVE exists -> mode='positive', metric='POSITIVE', subtitle='(% positive answers)'
+      - Else if AGREE exists -> mode='agree', metric='AGREE', subtitle='(% agree)'
+      - Else -> mode='full_scale', no single metric, subtitle='(% selecting each option)'
+    Also returns dist_cols (in metadata order) for full-scale mode.
+    """
+    cols = {c.lower(): c for c in df_disp.columns}
+
+    # Build distribution columns in metadata order (post-rename labels)
+    dist_cols = []
+    if scale_pairs:
+        for _, label in scale_pairs:
+            if label in df_disp.columns:
+                dist_cols.append(label)
+
+    if "positive" in cols:
+        return ("positive", cols["positive"], "(% positive answers)", dist_cols)
+    if "agree" in cols:
+        return ("agree", cols["agree"], "(% agree)", dist_cols)
+    # Full-scale mode
+    return ("full_scale", None, "(% selecting each option)", dist_cols)
+
+
 def _detect_metric_column(df: pd.DataFrame) -> tuple[str, str]:
     """
-    Returns (metric_col_name, human_label).
-    Preference: POSITIVE → AGREE → YES (case-insensitive).
+    Legacy (kept for compatibility) – not used anymore by run_menu1.
     """
     cols = {c.lower(): c for c in df.columns}
     if "positive" in cols:
@@ -319,8 +342,10 @@ def _ai_build_payload(
     question_code: str,
     question_text: str,
     category_in_play: bool,
-    metric_col: str,
+    mode: str,
+    metric_col: str | None,
     metric_label: str,
+    dist_cols: list[str] | None = None,
 ) -> dict:
     def col(df, *cands):
         for c in cands:
@@ -341,61 +366,81 @@ def _ai_build_payload(
     latest = ys[-1] if ys else None
     baseline = ys[0] if len(ys) >= 2 else (ys[-1] if ys else None)
 
-    # Overall series
-    overall_series = []
     overall_label = "All respondents"
-    if category_in_play and demo_col in df_disp.columns:
-        base = df_disp[df_disp[demo_col] == overall_label]
-    else:
-        base = df_disp
-    for _, r in base.sort_values(year_col).iterrows():
-        yr = PD.to_numeric(r[year_col], errors="coerce")
-        if PD.isna(yr):
-            continue
-        val = PD.to_numeric(r.get(metric_col, None), errors="coerce")
-        n = PD.to_numeric(r.get(n_col, None), errors="coerce") if n_col in base.columns else None
-        overall_series.append({
-            "year": int(yr),
-            "value": (float(val) if PD.notna(val) else None),
-            "n": (int(n) if PD.notna(n) else None) if n is not None else None
-        })
 
-    # Group series (exclude overall)
-    groups = []
-    has_groups = False
-    if category_in_play and demo_col in df_disp.columns:
-        names = [g for g in df_disp[demo_col].dropna().unique().tolist() if str(g) != overall_label]
-        has_groups = len(names) > 0
-        for gname, gdf in df_disp.groupby(demo_col, dropna=False):
-            if str(gname) == overall_label:
+    def series_for(df_base, value_col):
+        ser = []
+        for _, r in df_base.sort_values(year_col).iterrows():
+            yr = PD.to_numeric(r[year_col], errors="coerce")
+            if PD.isna(yr):
                 continue
-            series = []
-            for _, r in gdf.sort_values(year_col).iterrows():
-                yr = PD.to_numeric(r[year_col], errors="coerce")
-                if PD.isna(yr):
-                    continue
-                val = PD.to_numeric(r.get(metric_col, None), errors="coerce")
-                n = PD.to_numeric(r.get(n_col, None), errors="coerce") if n_col in gdf.columns else None
-                series.append({"year": int(yr), "value": (float(val) if PD.notna(val) else None), "n": (int(n) if PD.notna(n) else None) if n is not None else None})
-            groups.append({"name": (str(gname) if PD.notna(gname) else ""), "series": series})
-    else:
-        has_groups = False
+            val = PD.to_numeric(r.get(value_col, None), errors="coerce")
+            n = PD.to_numeric(r.get(n_col, None), errors="coerce") if n_col in df_base.columns else None
+            ser.append({
+                "year": int(yr),
+                "value": (float(val) if PD.notna(val) else None),
+                "n": (int(n) if PD.notna(n) else None) if n is not None else None
+            })
+        return ser
 
-    return {
+    payload = {
         "question_code": str(question_code),
         "question_text": str(question_text),
         "years": ys,
         "latest_year": latest,
         "baseline_year": baseline,
         "overall_label": overall_label,
-        "overall_series": overall_series,
-        "groups": groups,
-        "has_groups": has_groups,
-        "metric_column": str(metric_col),
-        "metric_label": str(metric_label),
-        "context": "Public Service Employee Survey (PSES): workplace/workforce perceptions among federal public servants. Values represent the share selecting a positive option (e.g., Strongly agree/Agree) or 'Yes' where applicable.",
-        "thresholds": {"notable": 2.0, "mention": 1.0}
+        "has_groups": bool(category_in_play and (demo_col in df_disp.columns)),
+        "metric_mode": mode,
+        "metric_label": metric_label,
+        "thresholds": {"notable": 2.0, "mention": 1.0},
+        "context": "Public Service Employee Survey (PSES): workplace/workforce perceptions among federal public servants.",
     }
+
+    if mode in ("positive", "agree"):
+        # Overall series
+        if category_in_play and demo_col in df_disp.columns:
+            base_overall = df_disp[df_disp[demo_col] == overall_label]
+        else:
+            base_overall = df_disp
+        payload["overall_series"] = series_for(base_overall, metric_col)
+
+        # Group series
+        groups = []
+        if category_in_play and demo_col in df_disp.columns:
+            for gname, gdf in df_disp.groupby(demo_col, dropna=False):
+                if str(gname) == overall_label:
+                    continue
+                groups.append({"name": (str(gname) if PD.notna(gname) else ""),
+                               "series": series_for(gdf, metric_col)})
+        payload["groups"] = groups
+    else:
+        # Full-scale: send distribution by label
+        if dist_cols is None:
+            dist_cols = [c for c in df_disp.columns if c not in ("Year", "Demographic", "ANSCOUNT", "POSITIVE", "AGREE", "YES", "NEUTRAL", "NEGATIVE")]
+        # Overall
+        if category_in_play and demo_col in df_disp.columns:
+            base_overall = df_disp[df_disp[demo_col] == overall_label]
+        else:
+            base_overall = df_disp
+
+        overall = {}
+        for lab in dist_cols:
+            overall[lab] = series_for(base_overall, lab)
+
+        groups = []
+        if category_in_play and demo_col in df_disp.columns:
+            for gname, gdf in df_disp.groupby(demo_col, dropna=False):
+                if str(gname) == overall_label:
+                    continue
+                ser_by_label = {}
+                for lab in dist_cols:
+                    ser_by_label[lab] = series_for(gdf, lab)
+                groups.append({"name": (str(gname) if PD.notna(gname) else ""),
+                               "series_by_label": ser_by_label})
+        payload["full_scale"] = {"overall": overall, "groups": groups}
+
+    return payload
 
 
 def _ai_narrative_and_storytable(
@@ -403,8 +448,10 @@ def _ai_narrative_and_storytable(
     question_code: str,
     question_text: str,
     category_in_play: bool,
-    metric_col: str,
+    mode: str,
+    metric_col: str | None,
     metric_label: str,
+    dist_cols: list[str] | None,
     temperature: float = 0.2,
 ) -> dict:
     try:
@@ -416,20 +463,42 @@ def _ai_narrative_and_storytable(
         return {"narrative": "", "table": []}
 
     client = OpenAI()
-    data = _ai_build_payload(df_disp, question_code, question_text, category_in_play, metric_col, metric_label)
+    data = _ai_build_payload(
+        df_disp=df_disp,
+        question_code=question_code,
+        question_text=question_text,
+        category_in_play=category_in_play,
+        mode=mode,
+        metric_col=metric_col,
+        metric_label=metric_label,
+        dist_cols=dist_cols,
+    )
+
+    # System prompt adapts to mode
+    if mode == "positive":
+        metric_phrase = "% positive answers"
+        extra_rules = "Use the phrase '% positive answers'; never refer to 'agree' here."
+    elif mode == "agree":
+        metric_phrase = "% agree"
+        extra_rules = "Use the phrase '% agree'; do NOT call it 'positive' because wording may be negative."
+    else:
+        metric_phrase = "the distribution across answer options"
+        extra_rules = (
+            "Do not use 'positive' or 'agree'. Analyze which options are most/least selected, how the distribution "
+            "shifted over time, and the gap between top vs. bottom groups for the most selected option in the latest year."
+        )
 
     system = (
         "You are a survey insights writer for the Public Service Employee Survey (PSES). "
-        "Write an executive-ready narrative for senior management about workplace/workforce perceptions. "
-        "The values are shares of employees selecting a positive option (e.g., Strongly agree/Agree) "
-        "or 'Yes' where that scale applies.\n\n"
+        f"Write an executive-ready narrative for senior management using {metric_phrase}.\n\n"
         "STRICT RULES:\n"
-        "• ALWAYS begin with a one-sentence statement on the overall change since baseline using overall_series "
+        "• ALWAYS begin with a one-sentence statement on the overall change since baseline using the provided series "
         "(stable if |Δ| ≤ 1 pt; increasing/decreasing if 1 < |Δ| ≤ 2 pts; notably increasing/decreasing if |Δ| > 2 pts).\n"
-        "• If there are NO groups, do not mention any group analysis.\n"
-        "• If groups exist, do not use the word 'subgroup'—refer to groups by their labels. "
-        "Compare the top vs bottom group in the latest year (exclude the overall row), give the gap, and how that gap changed vs baseline when available.\n"
-        "• Summarize trends concisely: typical change range and biggest movers. Use whole percents and 'pts'. Do not invent data."
+        "• If there are NO groups, do not mention group analysis.\n"
+        "• If groups exist, compare the top vs bottom group in the latest year (exclude the overall row), give the gap, "
+        "and how that gap changed vs baseline when available.\n"
+        "• Summarize trends concisely: typical change range and biggest movers. Use whole percents and 'pts'. Do not invent data.\n"
+        f"• {extra_rules}"
     )
     user = (
         "DATA (JSON):\n"
@@ -458,7 +527,7 @@ def _ai_narrative_and_storytable(
 
 
 # ─────────────────────────────
-# Summary trend table builder (years as columns)
+# Summary trend table builders
 # ─────────────────────────────
 def build_trend_summary_table(df_disp: pd.DataFrame, category_in_play: bool, metric_col: str) -> pd.DataFrame:
     if df_disp is None or df_disp.empty or "Year" not in df_disp.columns:
@@ -494,6 +563,45 @@ def build_trend_summary_table(df_disp: pd.DataFrame, category_in_play: bool, met
     return pivot
 
 
+# NEW: full-scale summary table (Segment × Label, years as columns)
+def build_trend_summary_table_full(df_disp: pd.DataFrame, category_in_play: bool, dist_cols: list[str]) -> pd.DataFrame:
+    if df_disp is None or df_disp.empty or "Year" not in df_disp.columns:
+        return PD.DataFrame()
+
+    if not dist_cols:
+        return PD.DataFrame()
+
+    df = df_disp.copy()
+    if "Demographic" not in df.columns:
+        df["Demographic"] = "All respondents"
+
+    long = df.melt(
+        id_vars=["Year", "Demographic"],
+        value_vars=[c for c in dist_cols if c in df.columns],
+        var_name="Label",
+        value_name="Value",
+    )
+
+    long["__Y__"] = PD.to_numeric(long["Year"], errors="coerce")
+    long = long.sort_values(["Demographic", "Label", "__Y__"])
+
+    pivot = long.pivot_table(index=["Demographic", "Label"], columns="Year", values="Value", aggfunc="first").copy()
+    pivot.index = pivot.index.set_names(["Segment", "Label"])
+
+    # Format percentages
+    for c in pivot.columns:
+        vals = PD.to_numeric(pivot[c], errors="coerce").round(0)
+        mask = vals.notna()
+        out = PD.Series("n/a", index=pivot.index, dtype="object")
+        out.loc[mask] = vals.loc[mask].astype(int).astype(str) + "%"
+        pivot[c] = out
+
+    pivot = pivot.reset_index()
+    year_cols = sorted([col for col in pivot.columns if col not in ("Segment", "Label")], key=lambda x: int(x))
+    pivot = pivot[["Segment", "Label"] + year_cols]
+    return pivot
+
+
 # ─────────────────────────────
 # Report (PDF) builder
 # ─────────────────────────────
@@ -525,7 +633,8 @@ def build_pdf_report(
     flow = []
     flow.append(Paragraph("PSES Analysis Report", title))
     flow.append(Paragraph(f"{question_code} — {question_text}", body))
-    flow.append(Paragraph("(% positive answers)", small))
+    # Subtitle for PDF is set by caller via narrative context; left generic here
+    flow.append(Paragraph("(Metric varies by item: see on-screen view for metric label.)", small))
     flow.append(Spacer(1, 10))
 
     ctx = f"""
@@ -751,6 +860,7 @@ def run_menu1():
                     st.info("No data found for this selection.")
                     return
 
+                # Remove rows carrying 999 (legacy sentinel)
                 df_raw = exclude_999_raw(df_raw)
                 if df_raw.empty:
                     st.info("Data exists, but all rows are not applicable (999).")
@@ -780,29 +890,40 @@ def run_menu1():
                     scale_pairs=scale_pairs,
                 )
 
+            # If nothing left after 9999-columns dropped
+            if df_disp is None or df_disp.empty or (len([c for c in df_disp.columns if c not in ("Year", "Demographic")]) == 0):
+                st.info("No reportable columns for this selection (all were not applicable).")
+                return
+
+            # Decide metric mode and label
+            mode, metric_col, subtitle_text, dist_cols = _pick_metric(df_disp, scale_pairs)
+
             # Results table
             st.dataframe(df_disp, use_container_width=True)
-
-            # Choose metric (POSITIVE → AGREE → YES)
-            metric_col, metric_label = _detect_metric_column(df_disp)
 
             # AI narrative (only if toggle is ON)
             narrative = ""  # default if AI disabled
             st.markdown("### Analysis Summary")
             st.markdown(
                 f"<div class='q-sub'>{question_code} — {question_text}</div>"
-                f"<div class='tiny-note'>(% positive answers)</div>",
+                f"<div class='tiny-note'>{subtitle_text}</div>",
                 unsafe_allow_html=True,
             )
             if ai_enabled:
                 with st.spinner("Contacting AI…"):
+                    metric_label = (
+                        "positive answer" if mode == "positive"
+                        else ("agree" if mode == "agree" else "full_scale")
+                    )
                     ai_out = _ai_narrative_and_storytable(
                         df_disp=df_disp,
                         question_code=question_code,
                         question_text=question_text,
                         category_in_play=category_in_play,
+                        mode=mode,
                         metric_col=metric_col,
                         metric_label=metric_label,
+                        dist_cols=dist_cols,
                         temperature=0.2,
                     )
                 narrative = (ai_out.get("narrative") or "").strip()
@@ -817,10 +938,14 @@ def run_menu1():
             st.markdown("### Summary Table")
             st.markdown(
                 f"<div class='q-sub'>{question_code} — {question_text}</div>"
-                f"<div class='tiny-note'>(% positive answers)</div>",
+                f"<div class='tiny-note'>{subtitle_text}</div>",
                 unsafe_allow_html=True,
             )
-            trend_df = build_trend_summary_table(df_disp, category_in_play, metric_col)
+            if mode in ("positive", "agree") and metric_col:
+                trend_df = build_trend_summary_table(df_disp, category_in_play, metric_col)
+            else:
+                trend_df = build_trend_summary_table_full(df_disp, category_in_play, dist_cols)
+
             if trend_df is not None and not trend_df.empty:
                 st.dataframe(trend_df, use_container_width=True, hide_index=True)
             else:
@@ -836,6 +961,8 @@ def run_menu1():
                         "QUESTION": question_code,
                         "SURVEYR (years)": ", ".join(selected_years),
                         "DEMCODE(s)": ", ".join(dem_display),
+                        "Metric mode": mode,
+                        "Metric column": metric_col or "full_scale",
                         "AI enabled": "Yes" if ai_enabled else "No",
                         "Generated at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
                     }
