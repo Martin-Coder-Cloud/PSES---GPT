@@ -1,6 +1,5 @@
 # menu1/main.py — PSES AI Explorer (Menu 1: Search by Question)
-# Cached big-file, one-pass DEMCODE filtering, always-on Excel & PDF downloads.
-# All data as TEXT; trims only filter columns in the loader.
+# PS-wide only. Big-file single-pass loader. All data read as TEXT. 999/9999 suppressed.
 from __future__ import annotations
 
 import io
@@ -58,7 +57,7 @@ def _normalize_qcode(s: str) -> str:
     s = s.upper()
     return "".join(ch for ch in s if ch.isalnum())
 
-# NEW: normalize QUESTION codes for robust matching (with alias for D57_1/2)
+
 def _norm_q(x: str) -> str:
     """
     Normalize a question code:
@@ -70,35 +69,25 @@ def _norm_q(x: str) -> str:
         return ""
     s = str(x).upper().strip()
     s = s.replace(" ", "").replace("_", "").replace("-", "").replace(".", "")
-
-    # Known dataset exception(s)
-    # e.g., data has D57_1/D57_2 while metadata/UI use Q57_1/Q57_2
-    aliases = {
-        "D571": "Q571",
-        "D572": "Q572",
-    }
+    aliases = {"D571": "Q571", "D572": "Q572"}
     return aliases.get(s, s)
 
 
 @st.cache_data(show_spinner=False)
 def load_scales_metadata() -> pd.DataFrame:
-    # Primary path in repo
     primary = "metadata/Survey Scales.xlsx"
-    fallback = "/mnt/data/Survey Scales.xlsx"  # helpful during dev/uploads
+    fallback = "/mnt/data/Survey Scales.xlsx"
     path = primary if os.path.exists(primary) else fallback
 
     sdf = pd.read_excel(path)
-    # normalize headers to lower + strip
     sdf.columns = sdf.columns.str.strip().str.lower()
 
-    # Build a normalized code column (from either 'code' or 'question')
     code_col = None
     for c in ("code", "question"):
         if c in sdf.columns:
             code_col = c
             break
     if code_col is None:
-        # Catastrophic metadata issue — no usable code column
         return sdf
 
     sdf["__code_norm__"] = sdf[code_col].astype(str).map(_normalize_qcode)
@@ -172,14 +161,11 @@ def resolve_demographic_codes_from_metadata(
 
 def get_scale_labels(scales_df: pd.DataFrame, question_code: str):
     """
-    STRICT scale matching with normalization (no fallback).
-    - Normalizes both the incoming code and the metadata code.
-    - If there is no exact match -> return None to signal a metadata error.
-    - Returns a list of tuples: [(answer1, label1), (answer2, label2), ...] for only
-      the non-empty answer labels present in metadata (1..7).
+    STRICT scale matching with normalization.
+    Returns list of tuples: [(answer1, label1), (answer2, label2), ...] for non-empty labels in metadata.
     """
     if scales_df is None or scales_df.empty:
-        return None  # metadata not available
+        return None
 
     qnorm = _normalize_qcode(question_code)
     if "__code_norm__" not in scales_df.columns:
@@ -191,22 +177,17 @@ def get_scale_labels(scales_df: pd.DataFrame, question_code: str):
 
     row = match.iloc[0]
     pairs = []
-    # only take non-empty labels, from answer1..answer7 (lowercase in metadata)
     for i in range(1, 7 + 1):
         col = f"answer{i}"
         if col in scales_df.columns:
             val = row[col]
             if pd.notna(val) and str(val).strip() != "":
                 pairs.append((col, str(val).strip()))
-    # if metadata row has no recognized answer labels, treat as error
-    if not pairs:
-        return None
-
-    return pairs
+    return pairs if pairs else None
 
 
 def exclude_999_raw(df: pd.DataFrame) -> pd.DataFrame:
-    cols = [f"answer{i}" for i in range(1, 7 + 1)] + ["POSITIVE", "NEUTRAL", "NEGATIVE", "ANSCOUNT"]
+    cols = [f"answer{i}" for i in range(1, 7 + 1)] + ["POSITIVE", "NEUTRAL", "NEGATIVE", "ANSCOUNT", "AGREE", "YES"]
     present = [c for c in cols if c in df.columns]
     if not present:
         return df
@@ -214,7 +195,7 @@ def exclude_999_raw(df: pd.DataFrame) -> pd.DataFrame:
     keep = PD.Series(True, index=out.index)
     for c in present:
         s = out[c].astype(str).str.strip()
-        keep &= (s != "999")
+        keep &= (s != "999") & (s != "9999")
     return out.loc[keep].copy()
 
 
@@ -222,8 +203,9 @@ def format_display_table_raw(
     df: pd.DataFrame, category_in_play: bool, dem_disp_map: dict, scale_pairs
 ) -> pd.DataFrame:
     """
-    Build the display table using ONLY the scale columns provided by scale_pairs (strict).
-    If a scale column is not present in df, it is simply omitted.
+    Build the display table using ONLY the scale columns provided by scale_pairs (strict),
+    plus commonly used summary columns if present.
+    Human labels from metadata are applied to the answer columns.
     """
     if df.empty:
         return df.copy()
@@ -239,31 +221,24 @@ def format_display_table_raw(
             return dem_disp_map.get(key, str(code))
         out["Demographic"] = out["DEMCODE"].apply(to_label)
 
-    # STRICT: use only the columns specified by metadata scale
-    dist_cols = []
-    if scale_pairs:
-        for k, _ in scale_pairs:
-            ku = k.upper()
-            if ku in out.columns:
-                dist_cols.append(ku)
-            elif k in out.columns:
-                dist_cols.append(k)
-
-    # Rename to human labels per metadata
+    # STRICT: only the answer columns specified by metadata scale
+    dist_cols_raw = []
     rename_map = {}
     if scale_pairs:
         for k, v in scale_pairs:
             ku = k.upper()
             if ku in out.columns:
+                dist_cols_raw.append(ku)
                 rename_map[ku] = v
-            if k in out.columns:
+            elif k in out.columns:
+                dist_cols_raw.append(k)
                 rename_map[k] = v
 
     keep_cols = (
         ["Year"]
         + (["Demographic"] if category_in_play else [])
-        + dist_cols
-        + ["POSITIVE", "NEUTRAL", "NEGATIVE", "ANSCOUNT", "AGREE", "YES"]
+        + dist_cols_raw
+        + ["POSITIVE", "NEUTRAL", "NEGATIVE", "ANSCOUNT", "AGREE"]
     )
     keep_cols = [c for c in keep_cols if c in out.columns]
     out = out[keep_cols].rename(columns=rename_map).copy()
@@ -276,30 +251,87 @@ def format_display_table_raw(
 
 
 # ─────────────────────────────
+# Metric decision (FINAL rule)
+# ─────────────────────────────
+def detect_metric_mode(df_disp: pd.DataFrame, scale_pairs) -> dict:
+    """
+    FINAL rule:
+      1) POSITIVE if usable
+      2) else AGREE if usable
+      3) else Answer1 (human label from scale metadata)
+    Returns:
+      {
+        "mode": "positive" | "agree" | "answer1",
+        "metric_col": str,         # column present in df_disp
+        "ui_label": str,           # string to display under title and summary table
+        "metric_label": str,       # human phrasing to pass to AI (“% positive” | “% agree” | “% <Answer1 label>”)
+        "answer1_label": str | None
+      }
+    """
+    cols_l = {c.lower(): c for c in df_disp.columns}
+
+    # 1) POSITIVE
+    if "positive" in cols_l:
+        col = cols_l["positive"]
+        if PD.to_numeric(df_disp[col], errors="coerce").notna().any():
+            return {
+                "mode": "positive",
+                "metric_col": col,
+                "ui_label": "(% positive answers)",
+                "metric_label": "% positive",
+                "answer1_label": None,
+            }
+
+    # 2) AGREE
+    if "agree" in cols_l:
+        col = cols_l["agree"]
+        if PD.to_numeric(df_disp[col], errors="coerce").notna().any():
+            return {
+                "mode": "agree",
+                "metric_col": col,
+                "ui_label": "(% agree)",
+                "metric_label": "% agree",
+                "answer1_label": None,
+            }
+
+    # 3) Answer1 (fallback)
+    answer1_label = None
+    if scale_pairs:
+        for k, v in scale_pairs:
+            if k.lower() == "answer1":
+                answer1_label = v
+                break
+    # Use the human-labeled column in df_disp that matches answer1_label
+    if answer1_label and answer1_label in df_disp.columns:
+        if PD.to_numeric(df_disp[answer1_label], errors="coerce").notna().any():
+            return {
+                "mode": "answer1",
+                "metric_col": answer1_label,  # human-labeled column
+                "ui_label": f"(% {answer1_label})",
+                "metric_label": f"% {answer1_label}",
+                "answer1_label": answer1_label,
+            }
+
+    # If we somehow get here, default to POSITIVE (even if missing) so the UI can show something,
+    # but downstream logic will handle empty summary table gracefully.
+    return {
+        "mode": "positive",
+        "metric_col": cols_l.get("positive", "POSITIVE"),
+        "ui_label": "(% positive answers)",
+        "metric_label": "% positive",
+        "answer1_label": None,
+    }
+
+
+# ─────────────────────────────
 # AI helpers (auto-run)
 # ─────────────────────────────
-def _detect_metric_column(df: pd.DataFrame) -> tuple[str, str]:
-    """
-    Returns (metric_col_name, human_label).
-    Preference: POSITIVE → AGREE → YES (case-insensitive).
-    """
-    cols = {c.lower(): c for c in df.columns}
-    if "positive" in cols:
-        return (cols["positive"], "positive answer")
-    if "agree" in cols:
-        return (cols["agree"], "positive answer")
-    if "yes" in cols:
-        return (cols["yes"], "Yes answer")
-    return ("POSITIVE", "positive answer")
-
-
-def _ai_build_payload(
+def _ai_build_payload_single_metric(
     df_disp: pd.DataFrame,
     question_code: str,
     question_text: str,
     category_in_play: bool,
     metric_col: str,
-    metric_label: str,
 ) -> dict:
     def col(df, *cands):
         for c in cands:
@@ -318,15 +350,17 @@ def _ai_build_payload(
     ys = PD.to_numeric(df_disp[year_col], errors="coerce").dropna().astype(int).unique().tolist()
     ys = sorted(ys)
     latest = ys[-1] if ys else None
-    baseline = ys[0] if len(ys) >= 2 else (ys[-1] if ys else None)
+    baseline = ys[0] if ys else None
 
-    # Overall series
-    overall_series = []
     overall_label = "All respondents"
+
+    # Overall series (All respondents)
     if category_in_play and demo_col in df_disp.columns:
-        base = df_disp[df_disp[demo_col] == overall_label]
+        base = df_disp[df_disp[demo_col] == overall_label].copy()
     else:
-        base = df_disp
+        base = df_disp.copy()
+
+    overall_series = []
     for _, r in base.sort_values(year_col).iterrows():
         yr = PD.to_numeric(r[year_col], errors="coerce")
         if PD.isna(yr):
@@ -341,10 +375,7 @@ def _ai_build_payload(
 
     # Group series (exclude overall)
     groups = []
-    has_groups = False
     if category_in_play and demo_col in df_disp.columns:
-        names = [g for g in df_disp[demo_col].dropna().unique().tolist() if str(g) != overall_label]
-        has_groups = len(names) > 0
         for gname, gdf in df_disp.groupby(demo_col, dropna=False):
             if str(gname) == overall_label:
                 continue
@@ -355,10 +386,12 @@ def _ai_build_payload(
                     continue
                 val = PD.to_numeric(r.get(metric_col, None), errors="coerce")
                 n = PD.to_numeric(r.get(n_col, None), errors="coerce") if n_col in gdf.columns else None
-                series.append({"year": int(yr), "value": (float(val) if PD.notna(val) else None), "n": (int(n) if PD.notna(n) else None) if n is not None else None})
+                series.append({
+                    "year": int(yr),
+                    "value": (float(val) if PD.notna(val) else None),
+                    "n": (int(n) if PD.notna(n) else None) if n is not None else None
+                })
             groups.append({"name": (str(gname) if PD.notna(gname) else ""), "series": series})
-    else:
-        has_groups = False
 
     return {
         "question_code": str(question_code),
@@ -369,11 +402,7 @@ def _ai_build_payload(
         "overall_label": overall_label,
         "overall_series": overall_series,
         "groups": groups,
-        "has_groups": has_groups,
-        "metric_column": str(metric_col),
-        "metric_label": str(metric_label),
-        "context": "Public Service Employee Survey (PSES): workplace/workforce perceptions among federal public servants. Values represent the share selecting a positive option (e.g., Strongly agree/Agree) or 'Yes' where applicable.",
-        "thresholds": {"notable": 2.0, "mention": 1.0}
+        "has_groups": bool(groups),
     }
 
 
@@ -386,6 +415,14 @@ def _ai_narrative_and_storytable(
     metric_label: str,
     temperature: float = 0.2,
 ) -> dict:
+    """
+    Generates the AI narrative with your approved context and rules.
+    - Uses ONLY the values present in df_disp (the displayed tabulation).
+    - Always starts with 2024 All respondents (if present).
+    - Trend classification thresholds: stable ≤1, modest >1–2, notable >2.
+    - Gap qualification: ≤2 normal; >2–5 notable; >5 important.
+    - No comment on missing/N/A. No word limit.
+    """
     try:
         from openai import OpenAI
     except Exception:
@@ -395,26 +432,43 @@ def _ai_narrative_and_storytable(
         return {"narrative": "", "table": []}
 
     client = OpenAI()
-    data = _ai_build_payload(df_disp, question_code, question_text, category_in_play, metric_col, metric_label)
+    data = _ai_build_payload_single_metric(df_disp, question_code, question_text, category_in_play, metric_col)
 
+    # ----- System prompt with fixed project context + strict rules -----
     system = (
-        "You are a survey insights writer for the Public Service Employee Survey (PSES). "
-        "Write an executive-ready narrative for senior management about workplace/workforce perceptions. "
-        "The values are shares of employees selecting a positive option (e.g., Strongly agree/Agree) "
-        "or 'Yes' where that scale applies.\n\n"
-        "STRICT RULES:\n"
-        "• ALWAYS begin with a one-sentence statement on the overall change since baseline using overall_series "
-        "(stable if |Δ| ≤ 1 pt; increasing/decreasing if 1 < |Δ| ≤ 2 pts; notably increasing/decreasing if |Δ| > 2 pts).\n"
-        "• If there are NO groups, do not mention any group analysis.\n"
-        "• If groups exist, do not use the word 'subgroup'—refer to groups by their labels. "
-        "Compare the top vs bottom group in the latest year (exclude the overall row), give the gap, and how that gap changed vs baseline when available.\n"
-        "• Summarize trends concisely: typical change range and biggest movers. Use whole percents and 'pts'. Do not invent data."
+        "You are writing insights for the Government of Canada’s Public Service Employee Survey (PSES).\n"
+        "Reference site (for information only): "
+        "https://www.canada.ca/en/treasury-board-secretariat/services/innovation/public-service-employee-survey.html\n"
+        "Scope: Public Service–wide results only (PS-wide).\n"
+        "In 2024, 186,635 employees across 93 federal departments and agencies responded to the PSES (50.5% response rate).\n"
+        "This tool provides PS-wide results via a query system augmented with AI for analysis.\n\n"
+
+        "ANALYSIS RULES (STRICT):\n"
+        "• Use only the values present in the provided JSON payload (they come directly from the displayed tabulation).\n"
+        "• Do not guess, infer, average or impute values. Do not comment on missing or 'n/a' values.\n"
+        "• Metric wording: use the provided metric_label exactly (e.g., '% positive', '% agree', '% Always').\n"
+        "  If metric_label is '% agree', treat it as agreement with the literal wording (AGREE ≠ POSITIVE for negative items).\n"
+        "• Structure your summary in this order:\n"
+        "  1) 2024 'All respondents' value for the metric (if 2024 is present).\n"
+        "  2) Trend vs baseline (earliest selected year): classify as 'stable' if |Δ| ≤ 1, 'increasing/decreasing' if >1–2, 'notable' if >2.\n"
+        "  3) If groups exist: compare each group's latest-year value to the overall; highlight the largest gap and qualify it:\n"
+        "     gap ≤ 2 pts: normal; >2–5 pts: notable; >5 pts: important. Where possible, state if the gap widened/narrowed vs baseline.\n"
+        "• Use whole percents and 'pts' for differences. Include N for the latest year when present. Keep an executive tone.\n"
+        "• No limit on length; be as long as needed, but concise and fact-based.\n"
     )
-    user = (
-        "DATA (JSON):\n"
-        + json.dumps(data, ensure_ascii=False)
-        + "\n\n"
-        "Return JSON with keys: 'narrative' (string) and 'table' (array)."
+
+    # ----- User message with data + explicit metric -----
+    user = json.dumps(
+        {
+            "metric_label": metric_label,
+            "payload": data,
+            "notes": {
+                "explain": "All values come from the displayed tabulation (df_disp). Years are those present in the table.",
+                "trend_thresholds": {"stable": 1.0, "modest": (1.0, 2.0), "notable": 2.0},
+                "gap_qualification": {"normal": 2.0, "notable": (2.0, 5.0), "important": 5.0},
+            },
+        },
+        ensure_ascii=False,
     )
 
     try:
@@ -437,9 +491,18 @@ def _ai_narrative_and_storytable(
 
 
 # ─────────────────────────────
-# Summary trend table builder (years as columns)
+# Summary trend table builder (Years as columns)
 # ─────────────────────────────
-def build_trend_summary_table(df_disp: pd.DataFrame, category_in_play: bool, metric_col: str) -> pd.DataFrame:
+def build_trend_summary_table(
+    df_disp: pd.DataFrame,
+    category_in_play: bool,
+    metric_col: str,
+    selected_years: list[str] | None = None,
+) -> pd.DataFrame:
+    """
+    Always build a single-metric table with Demographics as rows and Years as columns.
+    Values are whole % strings ('n/a' for missing).
+    """
     if df_disp is None or df_disp.empty or "Year" not in df_disp.columns:
         return PD.DataFrame()
 
@@ -454,22 +517,31 @@ def build_trend_summary_table(df_disp: pd.DataFrame, category_in_play: bool, met
     if "Demographic" not in df.columns:
         df["Demographic"] = "All respondents"
 
-    df["__Y__"] = PD.to_numeric(df["Year"], errors="coerce")
-    df = df.sort_values("__Y__")
+    # Column order: years ascending (either as provided or from table)
+    if selected_years:
+        years = sorted([str(y) for y in selected_years], key=lambda x: int(x))
+    else:
+        years = sorted(df["Year"].astype(str).unique().tolist(), key=lambda x: int(x))
 
+    # Pivot to Segment x Year for the single metric
     pivot = df.pivot_table(index="Demographic", columns="Year", values=metric_col, aggfunc="first").copy()
     pivot.index.name = "Segment"
 
+    # Ensure all years exist as columns (even if missing)
+    for y in years:
+        if y not in pivot.columns:
+            pivot[y] = PD.NA
+
+    # Format as whole % or 'n/a'
     for c in pivot.columns:
         vals = PD.to_numeric(pivot[c], errors="coerce").round(0)
-        mask = vals.notna()
         out = PD.Series("n/a", index=pivot.index, dtype="object")
+        mask = vals.notna()
         out.loc[mask] = vals.loc[mask].astype(int).astype(str) + "%"
         pivot[c] = out
 
     pivot = pivot.reset_index()
-    year_cols = sorted([col for col in pivot.columns if col != "Segment"], key=lambda x: int(x))
-    pivot = pivot[["Segment"] + year_cols]
+    pivot = pivot[["Segment"] + years]
     return pivot
 
 
@@ -483,6 +555,7 @@ def build_pdf_report(
     dem_display: list[str],
     narrative: str,
     df_summary: pd.DataFrame,
+    ui_label: str,   # reflects chosen metric
 ) -> bytes | None:
     try:
         from reportlab.lib import colors
@@ -504,7 +577,7 @@ def build_pdf_report(
     flow = []
     flow.append(Paragraph("PSES Analysis Report", title))
     flow.append(Paragraph(f"{question_code} — {question_text}", body))
-    flow.append(Paragraph("(% positive answers)", small))
+    flow.append(Paragraph(ui_label, small))
     flow.append(Spacer(1, 10))
 
     ctx = f"""
@@ -521,7 +594,7 @@ def build_pdf_report(
                 flow.append(Paragraph(chunk.strip(), body))
                 flow.append(Spacer(1, 4))
     else:
-        flow.append(Paragraph("AI analysis was disabled or unavailable for this run.", small))
+        flow.append(Paragraph("AI analysis was unavailable for this run.", small))
 
     if df_summary is not None and not df_summary.empty:
         flow.append(Spacer(1, 10))
@@ -589,7 +662,7 @@ def run_menu1():
         )
         st.session_state["show_debug"] = show_debug
 
-        # 🧠 Toggle for AI (persist in session) — prevents API calls when OFF
+        # 🧠 Toggle for AI (persist in session)
         ai_enabled = st.toggle(
             "🧠 Enable AI analysis (OpenAI)",
             value=st.session_state.get("ai_enabled", False),
@@ -738,7 +811,7 @@ def run_menu1():
                             st.dataframe(by_year, use_container_width=True, hide_index=True)
 
                         st.markdown("**Sample rows (first 30)**")
-                        st.dataframe(quick_df.head(30), use_container_width=True, hide_index=True)
+                        st.dataframe(quick_df.head(30), use_container_width=True)
 
         # Run query (single pass, cached big file)
         if st.button("🔎 Run query"):
@@ -785,7 +858,7 @@ def run_menu1():
 
                 df_raw = exclude_999_raw(df_raw)
                 if df_raw.empty:
-                    st.info("Data exists, but all rows are not applicable (999).")
+                    st.info("Data exists, but all rows are not applicable (999/9999).")
                     return
 
                 if "SURVEYR" in df_raw.columns:
@@ -815,17 +888,24 @@ def run_menu1():
             # Results table
             st.dataframe(df_disp, use_container_width=True)
 
-            # Choose metric (POSITIVE → AGREE → YES)
-            metric_col, metric_label = _detect_metric_column(df_disp)
+            # Decide metric per FINAL rule
+            decision = detect_metric_mode(df_disp, scale_pairs)
+            mode = decision["mode"]
+            metric_col = decision["metric_col"]
+            ui_label = decision["ui_label"]
+            metric_label = decision["metric_label"]
+            answer1_label = decision["answer1_label"]
 
-            # AI narrative (only if toggle is ON)
-            narrative = ""  # default if AI disabled
+            # === Analysis Summary (AI) ===
             st.markdown("### Analysis Summary")
             st.markdown(
                 f"<div class='q-sub'>{question_code} — {question_text}</div>"
-                f"<div class='tiny-note'>(% positive answers)</div>",
+                f"<div class='tiny-note'>{ui_label}</div>",
                 unsafe_allow_html=True,
             )
+
+            narrative = ""
+            ai_cols_used_note = ""
             if ai_enabled:
                 with st.spinner("Contacting AI…"):
                     ai_out = _ai_narrative_and_storytable(
@@ -842,17 +922,29 @@ def run_menu1():
                     st.write(narrative)
                 else:
                     st.info("The AI did not return a narrative.")
+
+                # Explicitly state which metric/column was passed to AI
+                if mode in ("positive", "agree"):
+                    ai_cols_used_note = f"AI was passed: {metric_label} (column: {metric_col})."
+                else:
+                    ai_cols_used_note = f"AI was passed: % {answer1_label} (column: {metric_col})."
+                st.caption(ai_cols_used_note)
             else:
                 st.caption("AI analysis is disabled (toggle above).")
 
-            # Summary table
+            # === Summary Table ===
             st.markdown("### Summary Table")
             st.markdown(
                 f"<div class='q-sub'>{question_code} — {question_text}</div>"
-                f"<div class='tiny-note'>(% positive answers)</div>",
+                f"<div class='tiny-note'>{ui_label}</div>",
                 unsafe_allow_html=True,
             )
-            trend_df = build_trend_summary_table(df_disp, category_in_play, metric_col)
+            trend_df = build_trend_summary_table(
+                df_disp=df_disp,
+                category_in_play=category_in_play,
+                metric_col=metric_col,
+                selected_years=selected_years,
+            )
             if trend_df is not None and not trend_df.empty:
                 st.dataframe(trend_df, use_container_width=True, hide_index=True)
             else:
@@ -868,6 +960,7 @@ def run_menu1():
                         "QUESTION": question_code,
                         "SURVEYR (years)": ", ".join(selected_years),
                         "DEMCODE(s)": ", ".join(dem_display),
+                        "Metric used": metric_label,
                         "AI enabled": "Yes" if ai_enabled else "No",
                         "Generated at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
                     }
@@ -888,8 +981,9 @@ def run_menu1():
                 question_text=question_text,
                 selected_years=selected_years,
                 dem_display=dem_display,
-                narrative=narrative,  # empty when AI disabled
+                narrative=narrative,  # empty when AI disabled or failed
                 df_summary=trend_df if trend_df is not None else PD.DataFrame(),
+                ui_label=ui_label,
             )
             if pdf_bytes:
                 st.download_button(
