@@ -312,8 +312,7 @@ def detect_metric_mode(df_disp: pd.DataFrame, scale_pairs) -> dict:
                 "answer1_label": answer1_label,
             }
 
-    # If we somehow get here, default to POSITIVE (even if missing) so the UI can show something,
-    # but downstream logic will handle empty summary table gracefully.
+    # Fallback (UI can still render gracefully)
     return {
         "mode": "positive",
         "metric_col": cols_l.get("positive", "POSITIVE"),
@@ -419,75 +418,101 @@ def _ai_narrative_and_storytable(
     Generates the AI narrative with your approved context and rules.
     - Uses ONLY the values present in df_disp (the displayed tabulation).
     - Always starts with 2024 All respondents (if present).
-    - Trend classification thresholds: stable ≤1, modest >1–2, notable >2.
+    - Trend classification thresholds: stable ≤1, slight >1–2, notable >2.
+    - Demographic comparisons are pairwise (group-to-group) only.
     - Gap qualification: ≤2 normal; >2–5 notable; >5 important.
-    - No comment on missing/N/A. No word limit.
+    - Skip missing/N/A. No word limit.
+    - Returns JSON with only 'narrative'.
     """
     try:
         from openai import OpenAI
+        from openai._base_client import FinalRequestOptions
     except Exception:
         st.error(
             "AI summary requires the OpenAI SDK. Add `openai>=1.40.0` to requirements.txt and set `OPENAI_API_KEY` in Streamlit secrets."
         )
-        return {"narrative": "", "table": []}
+        return {"narrative": ""}
+
+    # Preflight checks
+    if not os.environ.get("OPENAI_API_KEY", "").strip():
+        st.info("AI disabled: missing OpenAI API key in Streamlit secrets.")
+        return {"narrative": ""}
 
     client = OpenAI()
+
     data = _ai_build_payload_single_metric(df_disp, question_code, question_text, category_in_play, metric_col)
 
-    # ----- System prompt with fixed project context + strict rules -----
+    # ----- System prompt with fixed project context + refined rules (no hyperlink) -----
     system = (
-        "You are writing insights for the Government of Canada’s Public Service Employee Survey (PSES).\n"
-        "Reference site (for information only): "
-        "https://www.canada.ca/en/treasury-board-secretariat/services/innovation/public-service-employee-survey.html\n"
-        "Scope: Public Service–wide results only (PS-wide).\n"
-        "In 2024, 186,635 employees across 93 federal departments and agencies responded to the PSES (50.5% response rate).\n"
-        "This tool provides PS-wide results via a query system augmented with AI for analysis.\n\n"
-
-        "ANALYSIS RULES (STRICT):\n"
-        "• Use only the values present in the provided JSON payload (they come directly from the displayed tabulation).\n"
-        "• Do not guess, infer, average or impute values. Do not comment on missing or 'n/a' values.\n"
-        "• Metric wording: use the provided metric_label exactly (e.g., '% positive', '% agree', '% Always').\n"
-        "  If metric_label is '% agree', treat it as agreement with the literal wording (AGREE ≠ POSITIVE for negative items).\n"
-        "• Structure your summary in this order:\n"
-        "  1) 2024 'All respondents' value for the metric (if 2024 is present).\n"
-        "  2) Trend vs baseline (earliest selected year): classify as 'stable' if |Δ| ≤ 1, 'increasing/decreasing' if >1–2, 'notable' if >2.\n"
-        "  3) If groups exist: compare each group's latest-year value to the overall; highlight the largest gap and qualify it:\n"
-        "     gap ≤ 2 pts: normal; >2–5 pts: notable; >5 pts: important. Where possible, state if the gap widened/narrowed vs baseline.\n"
-        "• Use whole percents and 'pts' for differences. Include N for the latest year when present. Keep an executive tone.\n"
-        "• No limit on length; be as long as needed, but concise and fact-based.\n"
+        "You are preparing insights for the Government of Canada’s Public Service Employee Survey (PSES).\n"
+        "Scope: Public Service–wide results only (no departmental results).\n"
+        "The survey measures federal public servants’ opinions on engagement, leadership, workforce, workplace, "
+        "workplace well-being, and compensation.\n"
+        "In 2024, 186,635 employees across 93 departments and agencies responded (50.5% response rate).\n"
+        "\n"
+        "DATA PROVENANCE (STRICT):\n"
+        "All statistics, trends, and comparisons must be derived strictly from the values in the provided JSON payload "
+        "(which mirrors the displayed tabulation). Do not guess, infer, average, impute, or otherwise estimate any number. "
+        "If a required value is not present, omit that statement as out of scope. Do not mention missing or 'n/a'.\n"
+        "\n"
+        "NARRATIVE RULES (REFINED):\n"
+        "• Start with the 2024 All respondents value for the chosen metric (context only).\n"
+        "• Trend over time (if ≥2 years): compare latest to baseline. Classify as Stable (|Δ| ≤ 1 pt), "
+        "Slight increase/decrease (>1–2 pts), or Notable increase/decrease (>2 pts). Use whole percents and say 'points'. "
+        "You may use natural synonyms (e.g., 'remained steady', 'saw a slight rise').\n"
+        "• Demographics (if present): focus on the latest year. Compute pairwise gaps between groups with data. "
+        "Highlight the largest pairwise gap (name both groups, state values, and the gap in points). "
+        "Qualify gaps: ≤2 pts normal; >2–5 pts notable; >5 pts important. "
+        "If baseline exists for both groups in that pair, indicate whether the gap widened or narrowed since baseline and by how many points. "
+        "Optionally mention one or two other notable/important pairwise gaps. Do NOT compare any group to 'All respondents'.\n"
+        "• Metric phrasing is exact: use the provided metric_label (e.g., '% positive', '% agree', '% Always'). "
+        "If metric_label is '% agree', it reflects agreement with the literal wording (AGREE ≠ POSITIVE for negatively-worded items).\n"
+        "• Executive and fact-based tone. No speculation about causes. No word limit.\n"
+        "\n"
+        "OUTPUT FORMAT:\n"
+        "Return a JSON object with ONLY one key: 'narrative'.\n"
     )
 
-    # ----- User message with data + explicit metric -----
     user = json.dumps(
         {
             "metric_label": metric_label,
             "payload": data,
             "notes": {
-                "explain": "All values come from the displayed tabulation (df_disp). Years are those present in the table.",
-                "trend_thresholds": {"stable": 1.0, "modest": (1.0, 2.0), "notable": 2.0},
+                "trend_thresholds": {"stable": 1.0, "slight": (1.0, 2.0), "notable": 2.0},
                 "gap_qualification": {"normal": 2.0, "notable": (2.0, 5.0), "important": 5.0},
             },
         },
         ensure_ascii=False,
     )
 
+    # Perform request with a hard timeout and safe JSON parse
     try:
+        # Set a hard timeout (~15s)
+        req_opts = FinalRequestOptions(timeout=15.0)
         comp = client.chat.completions.create(
             model="gpt-4o-mini",
             temperature=temperature,
             response_format={"type": "json_object"},
             messages=[{"role": "system", "content": system}, {"role": "user", "content": user}],
+            extra_headers=None,
+            extra_query=None,
+            extra_body=None,
+            request_options=req_opts,
         )
         content = comp.choices[0].message.content if comp.choices else "{}"
-        out = json.loads(content)
+        try:
+            out = json.loads(content)
+        except Exception:
+            # Graceful fail: no narrative
+            return {"narrative": ""}
         if not isinstance(out, dict):
-            out = {"narrative": "", "table": []}
+            return {"narrative": ""}
         out.setdefault("narrative", "")
-        out.setdefault("table", [])
-        return out
-    except Exception as e:
-        st.error(f"AI summary failed: {e}")
-        return {"narrative": "", "table": []}
+        # Ensure only 'narrative' is returned to the caller
+        return {"narrative": out.get("narrative", "")}
+    except Exception:
+        # Timeout or API error → silent, UI will show a friendly note
+        return {"narrative": ""}
 
 
 # ─────────────────────────────
@@ -517,7 +542,7 @@ def build_trend_summary_table(
     if "Demographic" not in df.columns:
         df["Demographic"] = "All respondents"
 
-    # Column order: years ascending (either as provided or from table)
+    # Column order: years ascending
     if selected_years:
         years = sorted([str(y) for y in selected_years], key=lambda x: int(x))
     else:
@@ -527,7 +552,7 @@ def build_trend_summary_table(
     pivot = df.pivot_table(index="Demographic", columns="Year", values=metric_col, aggfunc="first").copy()
     pivot.index.name = "Segment"
 
-    # Ensure all years exist as columns (even if missing)
+    # Ensure all years exist as columns
     for y in years:
         if y not in pivot.columns:
             pivot[y] = PD.NA
@@ -907,7 +932,7 @@ def run_menu1():
             narrative = ""
             ai_cols_used_note = ""
             if ai_enabled:
-                with st.spinner("Contacting AI…"):
+                with st.spinner("Contacting AI (timeout 15s)…"):
                     ai_out = _ai_narrative_and_storytable(
                         df_disp=df_disp,
                         question_code=question_code,
@@ -921,7 +946,7 @@ def run_menu1():
                 if narrative:
                     st.write(narrative)
                 else:
-                    st.info("The AI did not return a narrative.")
+                    st.info("AI unavailable right now. Tables remain available.")
 
                 # Explicitly state which metric/column was passed to AI
                 if mode in ("positive", "agree"):
