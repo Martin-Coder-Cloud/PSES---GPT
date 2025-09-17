@@ -405,6 +405,34 @@ def _ai_build_payload_single_metric(
     }
 
 
+def _call_openai_with_retry(client, **kwargs) -> tuple[str, str]:
+    """
+    Calls OpenAI with a 60s timeout and retries once on any exception.
+    Returns (content, error_hint) where:
+      - content: the returned message content (or "")
+      - error_hint: a short human-friendly hint if it failed
+    """
+    error_hint = ""
+    try:
+        comp = client.chat.completions.create(request_timeout=60.0, **kwargs)
+        content = comp.choices[0].message.content if comp.choices else ""
+        if content:
+            return content, ""
+        return "", "empty response"
+    except Exception as e:
+        error_hint = f"{type(e).__name__}"
+        # Retry once
+        try:
+            comp = client.chat.completions.create(request_timeout=60.0, **kwargs)
+            content = comp.choices[0].message.content if comp.choices else ""
+            if content:
+                return content, ""
+            return "", "empty response"
+        except Exception as e2:
+            # Keep the last error class name as a short hint
+            return "", f"{type(e2).__name__}"
+
+
 def _ai_narrative_and_storytable(
     df_disp: pd.DataFrame,
     question_code: str,
@@ -417,26 +445,26 @@ def _ai_narrative_and_storytable(
     """
     Generates the AI narrative with your approved context and rules.
     - Uses ONLY the values present in df_disp (the displayed tabulation).
-    - Always starts with 2024 All respondents (if present).
+    - Always starts with 2024 All respondents (if present) as context.
     - Trend classification thresholds: stable ≤1, slight >1–2, notable >2.
     - Demographic comparisons are pairwise (group-to-group) only.
     - Gap qualification: ≤2 normal; >2–5 notable; >5 important.
     - Skip missing/N/A. No word limit.
     - Returns JSON with only 'narrative'.
+    - 60s timeout + one retry; safe parse; friendly hint on failure.
     """
     try:
         from openai import OpenAI
-        from openai._base_client import FinalRequestOptions
     except Exception:
         st.error(
             "AI summary requires the OpenAI SDK. Add `openai>=1.40.0` to requirements.txt and set `OPENAI_API_KEY` in Streamlit secrets."
         )
-        return {"narrative": ""}
+        return {"narrative": "", "hint": "missing_sdk"}
 
     # Preflight checks
     if not os.environ.get("OPENAI_API_KEY", "").strip():
         st.info("AI disabled: missing OpenAI API key in Streamlit secrets.")
-        return {"narrative": ""}
+        return {"narrative": "", "hint": "missing_api_key"}
 
     client = OpenAI()
 
@@ -485,34 +513,26 @@ def _ai_narrative_and_storytable(
         ensure_ascii=False,
     )
 
-    # Perform request with a hard timeout and safe JSON parse
+    # Perform request with a 60s timeout and one retry; safe JSON parse; return hint on failure
+    kwargs = dict(
+        model="gpt-4o-mini",
+        temperature=temperature,
+        response_format={"type": "json_object"},
+        messages=[{"role": "system", "content": system}, {"role": "user", "content": user}],
+    )
+    content, hint = _call_openai_with_retry(client, **kwargs)
+    if not content:
+        return {"narrative": "", "hint": hint or "no_content"}
+
     try:
-        # Set a hard timeout (~15s)
-        req_opts = FinalRequestOptions(timeout=15.0)
-        comp = client.chat.completions.create(
-            model="gpt-4o-mini",
-            temperature=temperature,
-            response_format={"type": "json_object"},
-            messages=[{"role": "system", "content": system}, {"role": "user", "content": user}],
-            extra_headers=None,
-            extra_query=None,
-            extra_body=None,
-            request_options=req_opts,
-        )
-        content = comp.choices[0].message.content if comp.choices else "{}"
-        try:
-            out = json.loads(content)
-        except Exception:
-            # Graceful fail: no narrative
-            return {"narrative": ""}
-        if not isinstance(out, dict):
-            return {"narrative": ""}
-        out.setdefault("narrative", "")
-        # Ensure only 'narrative' is returned to the caller
-        return {"narrative": out.get("narrative", "")}
+        out = json.loads(content)
     except Exception:
-        # Timeout or API error → silent, UI will show a friendly note
-        return {"narrative": ""}
+        return {"narrative": "", "hint": "json_decode_error"}
+
+    if not isinstance(out, dict):
+        return {"narrative": "", "hint": "non_dict_json"}
+
+    return {"narrative": out.get("narrative", "").strip(), "hint": ""}
 
 
 # ─────────────────────────────
@@ -932,7 +952,7 @@ def run_menu1():
             narrative = ""
             ai_cols_used_note = ""
             if ai_enabled:
-                with st.spinner("Contacting AI (timeout 15s)…"):
+                with st.spinner("Contacting AI (timeout 60s, 1 retry)…"):
                     ai_out = _ai_narrative_and_storytable(
                         df_disp=df_disp,
                         question_code=question_code,
@@ -943,10 +963,14 @@ def run_menu1():
                         temperature=0.2,
                     )
                 narrative = (ai_out.get("narrative") or "").strip()
+                hint = (ai_out.get("hint") or "").strip()
                 if narrative:
                     st.write(narrative)
                 else:
-                    st.info("AI unavailable right now. Tables remain available.")
+                    if hint:
+                        st.info(f"AI unavailable right now ({hint}). Tables remain available.")
+                    else:
+                        st.info("AI unavailable right now. Tables remain available.")
 
                 # Explicitly state which metric/column was passed to AI
                 if mode in ("positive", "agree"):
