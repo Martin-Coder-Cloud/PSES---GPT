@@ -924,6 +924,7 @@ def run_menu1():
 
         # Run query (single pass, cached big file)
         if st.button("🔎 Run query"):
+            t0 = time.perf_counter()  # ⏱ start baseline timer
             with st.spinner("Processing data..."):
                 # STRICT scale matching — if we cannot find an exact normalized match, stop.
                 scale_pairs = get_scale_labels(load_scales_metadata(), question_code)
@@ -993,6 +994,10 @@ def run_menu1():
                     dem_disp_map=dem_map_clean,
                     scale_pairs=scale_pairs,
                 )
+
+            # ⏱ stop timer + report elapsed seconds (baseline)
+            elapsed = time.perf_counter() - t0
+            st.caption(f"⏱ Query completed in {elapsed:.2f} seconds")
 
             # Results table
             st.dataframe(df_disp, use_container_width=True)
