@@ -740,7 +740,7 @@ def run_menu1():
         """
     <style>
       .custom-header{ font-size: 26px; font-weight: 700; margin-bottom: 8px; }
-      .custom-instruction{ font-size: 15px; line-height: 1.4; margin-bottom: 8px; color: #333; }
+      .custom-instruction{ font size: 15px; line-height: 1.4; margin-bottom: 8px; color: #333; }
       .field-label{ font-size: 16px; font-weight: 600; margin: 10px 0 2px; color: #222; }
       .big-button button{ font-size: 16px; padding: 0.6em 1.6em; margin-top: 16px; }
       .tiny-note{ font-size: 12px; color: #666; margin-top: -4px; margin-bottom: 10px; }
@@ -859,13 +859,12 @@ def run_menu1():
             st.dataframe(params_df, use_container_width=True, hide_index=True)
 
         # ──────────────────────────────────────────────────────────────────────
-        # Diagnostics (reconfigured)
+        # Diagnostics (question-aware quick check + global schema)
         # ──────────────────────────────────────────────────────────────────────
         if show_debug:
             with st.expander("🛠 Diagnostics", expanded=False):
-                st.caption("Run checks independently as needed.")
+                st.caption("Global schema tools are not question-specific. Use the quick check below to validate the chosen question.")
 
-                # 1) File schema preview check (two independent buttons)
                 colA, colB, colC = st.columns(3)
                 with colA:
                     if st.button("Show global file schema (text-mode dtypes)"):
@@ -882,10 +881,9 @@ def run_menu1():
                         run_ai_health_check()
 
                 st.divider()
-
-                # 2) Question-specific quick check (no sample rows preview)
                 st.markdown("#### Question-specific quick check")
-                st.caption("Validates matching and presence for the selected question and years (All respondents only).")
+                st.caption("Runs a real mini-query for the selected question and years (All respondents only) to validate matching and presence.")
+
                 if st.button("Check selected question data (quick)"):
                     with st.spinner("Scanning…"):
                         try:
@@ -928,13 +926,12 @@ def run_menu1():
                             st.markdown("**Rows by Year (All respondents)**")
                             st.dataframe(by_year, use_container_width=True, hide_index=True)
 
+                        st.markdown("**Sample rows (first 30)**")
+                        st.dataframe(quick_df.head(30), use_container_width=True)
+
                 st.divider()
 
-                # 3) OpenAI quick check button already handled above as "AI health check"
-
-                # ─────────────────────────────────────────────────────────────
                 # More checks (optional, safe)
-                # ─────────────────────────────────────────────────────────────
                 st.markdown("#### More checks")
                 colM1, colM2, colM3 = st.columns(3)
 
@@ -945,32 +942,27 @@ def run_menu1():
                             try:
                                 # Build df_disp with the same path used for the real run
                                 scale_pairs = get_scale_labels(load_scales_metadata(), question_code)
+
+                                # FIX #1: simpler/valid group_values construction
+                                group_vals = demcodes
+                                if category_in_play and None not in group_vals:
+                                    group_vals = [None] + group_vals
+
                                 parts_df = load_results2024_filtered(
                                     question_code=question_code,
                                     years=selected_years,
-                                    group_values=( [None] + demcodes if (category_in_play and None not in demcodes) else demcodes ),
+                                    group_values=group_vals,
                                 )
                                 if parts_df is None or parts_df.empty:
                                     st.info("No data found for this selection.")
                                 else:
                                     parts_df = exclude_999_raw(parts_df)
-                                    dem_map_clean = {None: "All respondents"}
-                                    try:
-                                        for k, v in ( ( {**{None: "All respondents"}, **( { (None if k is None else str(k).strip()): v for k,v in ( {} if not category_in_play else {}).items() } ) } ) ):
-                                            pass  # placeholder to keep structure identical; no-op
-                                    except Exception:
-                                        pass
-                                    # Use clean dem map from resolve step
-                                    dem_map_clean = {None: "All respondents"}
-                                    try:
-                                        for k, v in ( ( {} if not category_in_play else { (None if k is None else str(k).strip()): v for k, v in ( {**dispm for dispm in [{}] } ).items() } ) ):
-                                            pass
-                                    except Exception:
-                                        pass
+
+                                    # FIX #2: simple dem_map_clean construction
                                     dem_map_clean = {None: "All respondents"}
                                     if isinstance(disp_map, dict):
                                         for k, v in disp_map.items():
-                                            dem_map_clean[(None if k is None else str(k).strip())] = v
+                                            dem_map_clean[None if k is None else str(k).strip()] = v
 
                                     df_disp_tmp = format_display_table_raw(
                                         df=parts_df,
@@ -1261,7 +1253,7 @@ def run_menu1():
                 st.download_button(
                     label="⬇️ Download summary report (PDF)",
                     data=pdf_bytes,
-                    file_name=f"PSES_{question_code}_{'- '.join(selected_years)}.pdf",
+                    file_name=f"PSES_{question_code}_{'-'.join(selected_years)}.pdf",
                     mime="application/pdf",
                 )
             else:
