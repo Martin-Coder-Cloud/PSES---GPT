@@ -263,9 +263,9 @@ def detect_metric_mode(df_disp: pd.DataFrame, scale_pairs) -> dict:
     Returns:
       {
         "mode": "positive" | "agree" | "answer1",
-        "metric_col": str,         # column present in df_disp
-        "ui_label": str,           # string to display under title and summary table
-        "metric_label": str,       # human phrasing to pass to AI (“% positive” | “% agree” | “% <Answer1 label>”)
+        "metric_col": str,
+        "ui_label": str,
+        "metric_label": str,
         "answer1_label": str | None
       }
     """
@@ -302,7 +302,6 @@ def detect_metric_mode(df_disp: pd.DataFrame, scale_pairs) -> dict:
             if k.lower() == "answer1":
                 answer1_label = v
                 break
-    # Use the human-labeled column in df_disp that matches answer1_label
     if answer1_label and answer1_label in df_disp.columns:
         if PD.to_numeric(df_disp[answer1_label], errors="coerce").notna().any():
             return {
@@ -326,11 +325,6 @@ def detect_metric_mode(df_disp: pd.DataFrame, scale_pairs) -> dict:
 # ─────────────────────────────
 # AI helpers (auto-run)
 # ─────────────────────────────
-def _effective_model_name() -> str:
-    # use OPENAI_MODEL from secrets if set; default to gpt-4o-mini
-    return (st.secrets.get("OPENAI_MODEL", "") or "gpt-4o-mini").strip()
-
-
 def _ai_build_payload_single_metric(
     df_disp: pd.DataFrame,
     question_code: str,
@@ -483,14 +477,17 @@ def _ai_narrative_and_storytable(
         )
         return {"narrative": "", "hint": "missing_sdk"}
 
+    # Preflight checks
     if not os.environ.get("OPENAI_API_KEY", "").strip():
         st.info("AI disabled: missing OpenAI API key in Streamlit secrets.")
         return {"narrative": "", "hint": "missing_api_key"}
 
     client = OpenAI()
-    model_name = _effective_model_name()
 
     data = _ai_build_payload_single_metric(df_disp, question_code, question_text, category_in_play, metric_col)
+
+    # Determine model (diagnostics + spinner text)
+    model_name = (st.secrets.get("OPENAI_MODEL") or "gpt-4o-mini").strip()
 
     # ----- System prompt with fixed project context + refined rules (no hyperlink) -----
     system = (
@@ -523,24 +520,20 @@ def _ai_narrative_and_storytable(
         "Return a JSON object with ONLY one key: 'narrative'.\n"
     )
 
-    user = json.dumps(
-        {
-            "metric_label": metric_label,
-            "payload": data,
-            "notes": {
-                "trend_thresholds": {"stable": 1.0, "slight": (1.0, 2.0), "notable": 2.0},
-                "gap_qualification": {"normal": 2.0, "notable": (2.0, 5.0), "important": 5.0},
-            },
+    user_payload = {
+        "metric_label": metric_label,
+        "payload": data,
+        "notes": {
+            "trend_thresholds": {"stable": 1.0, "slight": (1.0, 2.0), "notable": 2.0},
+            "gap_qualification": {"normal": 2.0, "notable": (2.0, 5.0), "important": 5.0},
         },
-        ensure_ascii=False,
-    )
-
-    # Save the exact request for Diagnostics → AI prompt visibility
-    st.session_state["ai_request_debug"] = {
-        "model": model_name,
-        "system": system,
-        "user": user,
     }
+    user = json.dumps(user_payload, ensure_ascii=False)
+
+    # Record prompts & model for Diagnostics → AI prompt visibility
+    st.session_state["last_ai_model"] = model_name
+    st.session_state["last_ai_system"] = system
+    st.session_state["last_ai_user"] = user
 
     # Perform request with a 60s timeout and one retry; safe JSON parse; return hint on failure
     kwargs = dict(
@@ -565,7 +558,7 @@ def _ai_narrative_and_storytable(
 
 
 # ─────────────────────────────
-# 🔎 AI Health Check (now used inside Diagnostics → AI prompt visibility)
+# 🔎 AI Health Check (used in Diagnostics)
 # ─────────────────────────────
 def run_ai_health_check():
     """Small, non-data test call to verify key + connectivity + model reachability."""
@@ -580,8 +573,9 @@ def run_ai_health_check():
         st.warning("OPENAI_API_KEY not set in Streamlit secrets.")
         return
 
+    model_name = (st.secrets.get("OPENAI_MODEL") or "gpt-4o-mini").strip()
+
     client = OpenAI()
-    model_name = _effective_model_name()
     system = "You are a minimal health check. Reply with exactly: OK."
     user = "Say OK."
 
@@ -750,11 +744,12 @@ def run_menu1():
         """
     <style>
       .custom-header{ font-size: 26px; font-weight: 700; margin-bottom: 8px; }
-      .custom-instruction{ font size: 15px; line-height: 1.4; margin-bottom: 8px; color: #333; }
+      .custom-instruction{ font-size: 15px; line-height: 1.4; margin-bottom: 8px; color: #333; }
       .field-label{ font-size: 16px; font-weight: 600; margin: 10px 0 2px; color: #222; }
       .big-button button{ font-size: 16px; padding: 0.6em 1.6em; margin-top: 16px; }
       .tiny-note{ font-size: 12px; color: #666; margin-top: -4px; margin-bottom: 10px; }
       .q-sub{ font-size: 14px; color: #333; margin-top: -4px; margin-bottom: 2px; }
+      .codebox { font-family: monospace; white-space: pre-wrap; border: 1px solid #ddd; padding: 8px; border-radius: 6px; background: #fafafa; }
     </style>
     """,
         unsafe_allow_html=True,
@@ -858,12 +853,18 @@ def run_menu1():
         dem_display = ["All respondents" if c is None else str(c).strip() for c in demcodes]
 
         # ──────────────────────────────────────────────────────────────────────
-        # Diagnostics panel (exactly three sections)
+        # Diagnostics (single expander with 3 tabs — NO nested expanders)
         # ──────────────────────────────────────────────────────────────────────
         if show_debug:
             with st.expander("🛠 Diagnostics", expanded=False):
-                # 1) Parameters sent to the database
-                with st.expander("1) Parameters sent to the database", expanded=True):
+                tabs = st.tabs([
+                    "1) Parameters sent to the database",
+                    "2) Environment diagnostics",
+                    "3) AI prompt visibility",
+                ])
+
+                # 1) Parameters
+                with tabs[0]:
                     params_df = PD.DataFrame(
                         {
                             "Parameter": ["QUESTION (from metadata)", "SURVEYR (years)", "DEMCODE(s) (from metadata)"],
@@ -873,64 +874,53 @@ def run_menu1():
                     st.dataframe(params_df, use_container_width=True, hide_index=True)
 
                 # 2) Environment diagnostics (automatic)
-                with st.expander("2) Environment diagnostics", expanded=False):
+                with tabs[1]:
+                    info = {}
+                    info["OPENAI_API_KEY_present"] = bool(os.environ.get("OPENAI_API_KEY", "").strip())
+                    info["OPENAI_MODEL_secret_present"] = bool(st.secrets.get("OPENAI_MODEL", ""))
+                    # library versions
                     try:
-                        info = {}
-                        info["OPENAI_API_KEY_present"] = bool(os.environ.get("OPENAI_API_KEY", "").strip())
-                        info["OPENAI_MODEL_effective"] = _effective_model_name()
+                        import openai  # type: ignore
+                        info["openai_version"] = getattr(openai, "__version__", "unknown")
+                    except Exception:
+                        info["openai_version"] = "not installed"
+                    info["pandas_version"] = pd.__version__
+                    info["streamlit_version"] = st.__version__
+                    # metadata files
+                    files = {
+                        "metadata/Survey Scales.xlsx": os.path.exists("metadata/Survey Scales.xlsx"),
+                        "metadata/Survey Questions.xlsx": os.path.exists("metadata/Survey Questions.xlsx"),
+                        "metadata/Demographics.xlsx": os.path.exists("metadata/Demographics.xlsx"),
+                    }
+                    info["metadata_files_exist"] = files
+                    st.write(info)
 
-                        try:
-                            import openai  # type: ignore
-                            info["openai_version"] = getattr(openai, "__version__", "unknown")
-                        except Exception:
-                            info["openai_version"] = "not installed"
-
-                        info["pandas_version"] = pd.__version__
-                        info["streamlit_version"] = st.__version__
-
-                        files = {
-                            "metadata/Survey Scales.xlsx": os.path.exists("metadata/Survey Scales.xlsx"),
-                            "metadata/Survey Questions.xlsx": os.path.exists("metadata/Survey Questions.xlsx"),
-                            "metadata/Demographics.xlsx": os.path.exists("metadata/Demographics.xlsx"),
-                        }
-                        info["metadata_files_exist"] = files
-
-                        st.write(info)
-                    except Exception as e:
-                        st.error(f"Environment diagnostics failed: {e}")
-
-                # 3) AI prompt visibility (includes Health Check first)
-                with st.expander("3) AI prompt visibility", expanded=False):
-                    # Health check button at top
-                    if st.button("Run AI health check", key="btn_ai_healthcheck"):
+                # 3) AI prompt visibility (includes health check button first)
+                with tabs[2]:
+                    if st.button("Run AI health check"):
                         run_ai_health_check()
 
-                    # Show last request (if any)
-                    dbg = st.session_state.get("ai_request_debug") or {}
-                    model_used = dbg.get("model", "(no request this session)")
-                    system_prompt = dbg.get("system", "")
-                    user_json = dbg.get("user", "")
+                    model_used = (st.session_state.get("last_ai_model")
+                                  or st.secrets.get("OPENAI_MODEL")
+                                  or "gpt-4o-mini")
+                    st.caption(f"Last AI model used: {model_used}")
 
-                    st.markdown(f"**Model used (last request):** `{model_used}`")
+                    sys_txt = st.session_state.get("last_ai_system", "")
+                    usr_txt = st.session_state.get("last_ai_user", "")
 
-                    st.markdown("**System prompt (last request):**")
-                    if system_prompt:
-                        st.code(system_prompt)
+                    if not sys_txt and not usr_txt:
+                        st.info("No AI prompt available yet. Run a query with AI enabled to populate this view.")
                     else:
-                        st.caption("No AI request has been made yet in this session.")
+                        st.markdown("**System prompt (exact):**")
+                        with st.expander("Show / hide system prompt", expanded=False):
+                            st.code(sys_txt, language="markdown")
 
-                    st.markdown("**User payload JSON (last request):**")
-                    if user_json:
-                        # Truncate preview with a toggle
-                        MAX_PREVIEW = 12000
-                        if len(user_json) > MAX_PREVIEW:
-                            st.code(user_json[:MAX_PREVIEW] + "\n… (truncated)")
-                            if st.toggle("Show full payload JSON"):
-                                st.code(user_json)
-                        else:
-                            st.code(user_json)
-                    else:
-                        st.caption("No AI request has been made yet in this session.")
+                        st.markdown("**User payload (JSON sent to the model):**")
+                        # Show size + a toggle to show full payload to avoid huge rendering by default
+                        kb = len(usr_txt.encode("utf-8")) / 1024.0
+                        st.caption(f"Approx size: ~{kb:.1f} KB")
+                        with st.expander("Show / hide full JSON payload", expanded=False):
+                            st.code(usr_txt, language="json")
 
         # Run query (single pass, cached big file)
         if st.button("🔎 Run query"):
@@ -983,7 +973,7 @@ def run_menu1():
                 if "SURVEYR" in df_raw.columns:
                     df_raw = df_raw.sort_values(by="SURVEYR", ascending=False)
 
-                # 🔧 show raw results before formatting when toggle is ON
+                # Raw results preview if diagnostics on
                 if show_debug:
                     st.markdown("#### Raw results (debug — pre-formatting)")
                     st.caption(f"Rows: {len(df_raw):,} | Columns: {len(df_raw.columns)}")
@@ -1026,9 +1016,8 @@ def run_menu1():
             narrative = ""
             ai_cols_used_note = ""
             if ai_enabled:
-                # Show which model we're using right on the spinner
-                model_name = _effective_model_name()
-                with st.spinner(f"Contacting AI (model: {model_name})…"):
+                model_used = (st.secrets.get("OPENAI_MODEL") or "gpt-4o-mini").strip()
+                with st.spinner(f"Contacting AI (model: {model_used}) — timeout 60s, 1 retry…"):
                     ai_out = _ai_narrative_and_storytable(
                         df_disp=df_disp,
                         question_code=question_code,
