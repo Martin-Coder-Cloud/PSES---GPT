@@ -11,10 +11,14 @@ from datetime import datetime
 import pandas as pd
 import streamlit as st
 
+# NEW: also import the module to probe optional backend flags safely
+import utils.data_loader as _dl
+
 from utils.data_loader import (
     load_results2024_filtered,
     get_results2024_schema,
     get_results2024_schema_inferred,
+    _resolve_results_path,   # <— used to show actual data path
 )
 
 # Ensure OpenAI key is available from Streamlit secrets (no hardcoding)
@@ -263,9 +267,9 @@ def detect_metric_mode(df_disp: pd.DataFrame, scale_pairs) -> dict:
     Returns:
       {
         "mode": "positive" | "agree" | "answer1",
-        "metric_col": str,
-        "ui_label": str,
-        "metric_label": str,
+        "metric_col": str,         # column present in df_disp
+        "ui_label": str,           # string to display under title and summary table
+        "metric_label": str,       # human phrasing to pass to AI (“% positive” | “% agree” | “% <Answer1 label>”)
         "answer1_label": str | None
       }
     """
@@ -302,6 +306,7 @@ def detect_metric_mode(df_disp: pd.DataFrame, scale_pairs) -> dict:
             if k.lower() == "answer1":
                 answer1_label = v
                 break
+    # Use the human-labeled column in df_disp that matches answer1_label
     if answer1_label and answer1_label in df_disp.columns:
         if PD.to_numeric(df_disp[answer1_label], errors="coerce").notna().any():
             return {
@@ -737,6 +742,33 @@ def build_pdf_report(
 
 
 # ─────────────────────────────
+# Small helper to detect backend + path (non-fatal if unavailable)
+# ─────────────────────────────
+def _detect_backend_and_path():
+    # Path: use loader helper when available
+    path = None
+    try:
+        path = _resolve_results_path()
+    except Exception:
+        pass
+
+    # Backend: try several optional attributes/functions from the loader module
+    backend = None
+    try:
+        # common patterns we might expose from utils.data_loader
+        if hasattr(_dl, "LAST_BACKEND"):
+            backend = getattr(_dl, "LAST_BACKEND")
+        elif hasattr(_dl, "get_last_backend") and callable(_dl.get_last_backend):
+            backend = _dl.get_last_backend()
+        elif hasattr(_dl, "BACKEND_IN_USE"):
+            backend = getattr(_dl, "BACKEND_IN_USE")
+    except Exception:
+        backend = None
+
+    return path, backend
+
+
+# ─────────────────────────────
 # UI
 # ─────────────────────────────
 def run_menu1():
@@ -893,9 +925,20 @@ def run_menu1():
                         "metadata/Demographics.xlsx": os.path.exists("metadata/Demographics.xlsx"),
                     }
                     info["metadata_files_exist"] = files
+                    # results path (plus stash for later)
+                    try:
+                        results_path = _resolve_results_path()
+                        info["results_file_path"] = results_path
+                        st.session_state["results_file_path"] = results_path
+                    except Exception as e:
+                        info["results_file_path_error"] = str(e)
+                    # backend hint if the loader exposes it
+                    path_hint, backend_hint = _detect_backend_and_path()
+                    if backend_hint:
+                        info["data_backend_hint"] = backend_hint
                     st.write(info)
 
-                # 3) AI prompt visibility (includes health check button first)
+                # 3) AI prompt visibility (with health check button)
                 with tabs[2]:
                     if st.button("Run AI health check"):
                         run_ai_health_check()
@@ -916,7 +959,6 @@ def run_menu1():
                             st.code(sys_txt, language="markdown")
 
                         st.markdown("**User payload (JSON sent to the model):**")
-                        # Show size + a toggle to show full payload to avoid huge rendering by default
                         kb = len(usr_txt.encode("utf-8")) / 1024.0
                         st.caption(f"Approx size: ~{kb:.1f} KB")
                         with st.expander("Show / hide full JSON payload", expanded=False):
@@ -924,8 +966,21 @@ def run_menu1():
 
         # Run query (single pass, cached big file)
         if st.button("🔎 Run query"):
-            t0 = time.perf_counter()  # ⏱ start baseline timer
-            with st.spinner("Processing data..."):
+            # Live status line that we can update while spinner is showing
+            live = st.empty()
+
+            # Initial hint before we start: show source path if we can resolve it up-front
+            pre_path, pre_backend = _detect_backend_and_path()
+            if not pre_path:
+                try:
+                    pre_path = st.session_state.get("results_file_path") or _resolve_results_path()
+                except Exception:
+                    pre_path = None
+
+            live.caption(f"Processing data… source: {pre_path or 'detecting…'} • engine: {pre_backend or 'detecting…'}")
+
+            t0 = time.perf_counter()
+            with st.spinner("Processing data…"):
                 # STRICT scale matching — if we cannot find an exact normalized match, stop.
                 scale_pairs = get_scale_labels(load_scales_metadata(), question_code)
                 if scale_pairs is None or len(scale_pairs) == 0:
@@ -963,18 +1018,20 @@ def run_menu1():
                     )
 
                 if df_raw is None or df_raw.empty:
+                    live.caption("Processing data… done • no rows returned")
                     st.info("No data found for this selection.")
                     return
 
                 df_raw = exclude_999_raw(df_raw)
                 if df_raw.empty:
+                    live.caption("Processing data… done • all rows were suppressed (999/9999)")
                     st.info("Data exists, but all rows are not applicable (999/9999).")
                     return
 
                 if "SURVEYR" in df_raw.columns:
                     df_raw = df_raw.sort_values(by="SURVEYR", ascending=False)
 
-                # Raw results preview if diagnostics on
+                # 🔧 show raw results before formatting when toggle is ON
                 if show_debug:
                     st.markdown("#### Raw results (debug — pre-formatting)")
                     st.caption(f"Rows: {len(df_raw):,} | Columns: {len(df_raw.columns)}")
@@ -995,11 +1052,21 @@ def run_menu1():
                     scale_pairs=scale_pairs,
                 )
 
-            # ⏱ stop timer + report elapsed seconds (baseline)
-            elapsed = time.perf_counter() - t0
-            st.caption(f"⏱ Query completed in {elapsed:.2f} seconds")
+            elapsed = (time.perf_counter() - t0)
+            # Now that loading is done, update backend + path definitively
+            post_path, post_backend = _detect_backend_and_path()
+            if not post_path:
+                post_path = pre_path
+            live.caption(
+                f"Processing complete in {elapsed:.1f}s • source: {post_path or 'unknown'} • engine: {post_backend or 'unknown'}"
+            )
 
-            # Results table
+            # Results table (with source caption again for visibility)
+            if post_path:
+                st.caption(f"Data source: {post_path}")
+            if post_backend:
+                st.caption(f"Backend engine: {post_backend}")
+
             st.dataframe(df_disp, use_container_width=True)
 
             # Decide metric per FINAL rule
