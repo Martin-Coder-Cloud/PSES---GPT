@@ -5,6 +5,7 @@ from __future__ import annotations
 import io
 import json
 import os
+import time
 from datetime import datetime
 
 import pandas as pd
@@ -405,32 +406,51 @@ def _ai_build_payload_single_metric(
     }
 
 
+def _class_name(e: Exception) -> str:
+    return type(e).__name__
+
+
 def _call_openai_with_retry(client, **kwargs) -> tuple[str, str]:
     """
-    Calls OpenAI with a 60s timeout and retries once on any exception.
+    Calls OpenAI with a 60s timeout and retries once on failure.
     Returns (content, error_hint) where:
       - content: the returned message content (or "")
-      - error_hint: a short human-friendly hint if it failed
+      - error_hint: short human-friendly hint if it failed
     """
-    error_hint = ""
+    # First attempt (JSON mode)
     try:
-        comp = client.chat.completions.create(request_timeout=60.0, **kwargs)
+        comp = client.chat.completions.create(timeout=60.0, **kwargs)
         content = comp.choices[0].message.content if comp.choices else ""
         if content:
             return content, ""
         return "", "empty response"
     except Exception as e:
-        error_hint = f"{type(e).__name__}"
-        # Retry once
+        name = _class_name(e)
+
+        # If the SDK/env doesn't like response_format, retry without it
         try:
-            comp = client.chat.completions.create(request_timeout=60.0, **kwargs)
+            kwargs2 = {k: v for k, v in kwargs.items() if k != "response_format"}
+            comp = client.chat.completions.create(timeout=60.0, **kwargs2)
             content = comp.choices[0].message.content if comp.choices else ""
             if content:
                 return content, ""
             return "", "empty response"
         except Exception as e2:
-            # Keep the last error class name as a short hint
-            return "", f"{type(e2).__name__}"
+            # Map a friendlier hint
+            name2 = _class_name(e2).lower()
+            if "authentication" in name2 or "auth" in name2:
+                return "", "invalid_api_key"
+            if "timeout" in name2 or "timedout" in name2:
+                return "", "timeout"
+            if "rate" in name2 and "limit" in name2:
+                return "", "rate_limit"
+            if "connection" in name2 or "network" in name2:
+                return "", "network_error"
+            if "badrequest" in name2 or "invalidrequest" in name2:
+                return "", "invalid_request"
+            if "typeerror" in name2:
+                return "", "type_error"
+            return "", name2 or "unknown_error"
 
 
 def _ai_narrative_and_storytable(
@@ -515,7 +535,7 @@ def _ai_narrative_and_storytable(
 
     # Perform request with a 60s timeout and one retry; safe JSON parse; return hint on failure
     kwargs = dict(
-        model="gpt-4o-mini",
+        model="gpt-5",
         temperature=temperature,
         response_format={"type": "json_object"},
         messages=[{"role": "system", "content": system}, {"role": "user", "content": user}],
@@ -533,6 +553,54 @@ def _ai_narrative_and_storytable(
         return {"narrative": "", "hint": "non_dict_json"}
 
     return {"narrative": out.get("narrative", "").strip(), "hint": ""}
+
+
+# ─────────────────────────────
+# 🔎 AI Health Check (new)
+# ─────────────────────────────
+def run_ai_health_check():
+    """Small, non-data test call to verify key + connectivity + model reachability."""
+    try:
+        from openai import OpenAI
+    except Exception:
+        st.error("Health check requires the OpenAI SDK. Add `openai>=1.40.0` to requirements.txt.")
+        return
+
+    key = os.environ.get("OPENAI_API_KEY", "").strip()
+    if not key:
+        st.warning("OPENAI_API_KEY not set in Streamlit secrets.")
+        return
+
+    client = OpenAI()
+    system = "You are a minimal health check. Reply with exactly: OK."
+    user = "Say OK."
+
+    t0 = time.perf_counter()
+    try:
+        comp = client.chat.completions.create(
+            model="gpt-5",
+            messages=[{"role": "system", "content": system}, {"role": "user", "content": user}],
+            temperature=0,
+            timeout=10.0,
+        )
+        content = comp.choices[0].message.content.strip() if comp.choices else ""
+        dt = (time.perf_counter() - t0) * 1000
+        if content.upper().startswith("OK"):
+            st.success(f"AI health check passed (model=gpt-5, ~{dt:.0f} ms).")
+        else:
+            st.info(f"AI reachable but unexpected reply (~{dt:.0f} ms): {content[:60]}")
+    except Exception as e:
+        name = type(e).__name__.lower()
+        if "authentication" in name or "auth" in name:
+            st.error("AI health check failed: invalid/missing API key.")
+        elif "timeout" in name or "timedout" in name:
+            st.error("AI health check timed out (10s).")
+        elif "rate" in name and "limit" in name:
+            st.error("AI health check hit rate limit.")
+        elif "connection" in name or "network" in name:
+            st.error("AI health check failed: network/connectivity issue.")
+        else:
+            st.error(f"AI health check error: {type(e).__name__}")
 
 
 # ─────────────────────────────
@@ -693,357 +761,4 @@ def run_menu1():
             "src='https://raw.githubusercontent.com/Martin-Coder-Cloud/PSES---GPT/main/PSES%20Banner%20New.png'>",
             unsafe_allow_html=True,
         )
-        st.markdown('<div class="custom-header">🔍 Search by Survey Question</div>', unsafe_allow_html=True)
-        st.markdown(
-            '<div class="custom-instruction">Please select a question you are interested in, the survey year and, optionally, a demographic breakdown.<br>'
-            'This application provides only Public Service-wide results. The output is a result table, a short analysis and a summary table.</div>',
-            unsafe_allow_html=True,
-        )
-
-        # 🔧 Toggle for tech parameters & diagnostics (persist in session)
-        show_debug = st.toggle(
-            "🔧 Show technical parameters & diagnostics",
-            value=st.session_state.get("show_debug", SHOW_DEBUG),
-        )
-        st.session_state["show_debug"] = show_debug
-
-        # 🧠 Toggle for AI (persist in session)
-        ai_enabled = st.toggle(
-            "🧠 Enable AI analysis (OpenAI)",
-            value=st.session_state.get("ai_enabled", False),
-            help="Turn OFF while testing to avoid API usage.",
-        )
-        st.session_state["ai_enabled"] = ai_enabled
-
-        # Question
-        st.markdown('<div class="field-label">Select a survey question:</div>', unsafe_allow_html=True)
-        question_options = qdf["display"].tolist()
-        selected_label = st.selectbox("Question", question_options, key="question_dropdown", label_visibility="collapsed")
-        question_code = qdf.loc[qdf["display"] == selected_label, "code"].values[0]
-        question_text = qdf.loc[qdf["display"] == selected_label, "text"].values[0]
-
-        # Years (strings)
-        st.markdown('<div class="field-label">Select survey year(s):</div>', unsafe_allow_html=True)
-        all_years = ["2024", "2022", "2020", "2019"]
-        select_all = st.checkbox("All years", value=True, key="select_all_years")
-        selected_years: list[str] = []
-        year_cols = st.columns(len(all_years))
-        for idx, yr in enumerate(all_years):
-            with year_cols[idx]:
-                checked = True if select_all else False
-                if st.checkbox(yr, value=checked, key=f"year_{yr}"):
-                    selected_years.append(yr)
-        selected_years = sorted(selected_years)
-        if not selected_years:
-            st.warning("⚠️ Please select at least one year.")
-            return
-
-        # Demographic category/subgroup
-        DEMO_CAT_COL = "DEMCODE Category"
-        LABEL_COL = "DESCRIP_E"
-        st.markdown('<div class="field-label">Select a demographic category (or All respondents):</div>', unsafe_allow_html=True)
-        demo_categories = ["All respondents"] + sorted(
-            demo_df[DEMO_CAT_COL].dropna().astype(str).unique().tolist()
-        )
-        demo_selection = st.selectbox("Demographic category", demo_categories, key="demo_main", label_visibility="collapsed")
-
-        sub_selection = None
-        if demo_selection != "All respondents":
-            st.markdown(
-                f'<div class="field-label">Subgroup ({demo_selection}) (optional):</div>',
-                unsafe_allow_html=True,
-            )
-            sub_items = (
-                demo_df.loc[demo_df[DEMO_CAT_COL] == demo_selection, LABEL_COL]
-                .dropna()
-                .astype(str)
-                .unique()
-                .tolist()
-            )
-            sub_items = sorted(sub_items)
-            sub_selection = st.selectbox(
-                "(leave blank to include all subgroups in this category)",
-                [""] + sub_items,
-                key=f"sub_{demo_selection.replace(' ', '_')}",
-                label_visibility="collapsed",
-            )
-            if sub_selection == "":
-                sub_selection = None
-
-        # Resolve DEMCODEs once (as text)
-        demcodes, disp_map, category_in_play = resolve_demographic_codes_from_metadata(
-            demo_df, demo_selection, sub_selection
-        )
-        # ALWAYS include overall row when a category is in play
-        if category_in_play and (None not in demcodes):
-            demcodes = [None] + demcodes
-        dem_display = ["All respondents" if c is None else str(c).strip() for c in demcodes]
-
-        # Parameters preview (shown only when toggled on)
-        if show_debug:
-            params_df = PD.DataFrame(
-                {
-                    "Parameter": ["QUESTION (from metadata)", "SURVEYR (years)", "DEMCODE(s) (from metadata)"],
-                    "Value": [question_code, ", ".join(selected_years), ", ".join(dem_display)],
-                }
-            )
-            st.markdown("##### Parameters that will be passed to the database")
-            st.dataframe(params_df, use_container_width=True, hide_index=True)
-
-        # ──────────────────────────────────────────────────────────────────────
-        # Diagnostics (question-aware quick check + global schema)
-        # ──────────────────────────────────────────────────────────────────────
-        if show_debug:
-            with st.expander("🛠 Diagnostics", expanded=False):
-                st.caption("Global schema tools are not question-specific. Use the quick check below to validate the chosen question.")
-
-                colA, colB = st.columns(2)
-                with colA:
-                    if st.button("Show global file schema (text-mode dtypes)"):
-                        sch = get_results2024_schema()
-                        st.write("All columns are read as text (object).")
-                        st.dataframe(sch, use_container_width=True, hide_index=True)
-                with colB:
-                    if st.button("Show global file preview (pandas-inferred)"):
-                        sch2 = get_results2024_schema_inferred()
-                        st.write("Preview only — the app forces text on read.")
-                        st.dataframe(sch2, use_container_width=True, hide_index=True)
-
-                st.divider()
-                st.markdown("#### Question-specific quick check")
-                st.caption("Runs a real mini-query for the selected question and years (All respondents only) to validate matching and presence.")
-
-                if st.button("Check selected question data (quick)"):
-                    with st.spinner("Scanning…"):
-                        try:
-                            quick_df = load_results2024_filtered(
-                                question_code=question_code,
-                                years=selected_years,
-                                group_values=[None],  # PS-wide only for speed
-                            )
-                        except Exception as e:
-                            st.error(f"Quick check failed: {e}")
-                            quick_df = PD.DataFrame()
-
-                    if quick_df is None or quick_df.empty:
-                        st.warning("No rows found for this quick check (All respondents).")
-                        st.info(f"Selected question: {question_code} | Years: {', '.join(selected_years)}")
-                    else:
-                        try:
-                            distinct_q = (
-                                quick_df["QUESTION"].astype(str).str.strip().value_counts().reset_index()
-                                .rename(columns={"index": "QUESTION (raw)", "count": "rows"})
-                            )
-                        except Exception:
-                            distinct_q = PD.DataFrame(columns=["QUESTION (raw)", "rows"])
-
-                        try:
-                            by_year = (
-                                quick_df.assign(SURVEYR=quick_df["SURVEYR"].astype(str).str.strip())
-                                .groupby("SURVEYR", as_index=False).size()
-                                .rename(columns={"SURVEYR": "Year", "size": "rows"})
-                                .sort_values("Year")
-                            )
-                        except Exception:
-                            by_year = PD.DataFrame(columns=["Year", "rows"])
-
-                        cols1, cols2 = st.columns(2)
-                        with cols1:
-                            st.markdown("**Distinct QUESTION values found**")
-                            st.dataframe(distinct_q, use_container_width=True, hide_index=True)
-                        with cols2:
-                            st.markdown("**Rows by Year (All respondents)**")
-                            st.dataframe(by_year, use_container_width=True, hide_index=True)
-
-                        st.markdown("**Sample rows (first 30)**")
-                        st.dataframe(quick_df.head(30), use_container_width=True)
-
-        # Run query (single pass, cached big file)
-        if st.button("🔎 Run query"):
-            with st.spinner("Processing data..."):
-                # STRICT scale matching — if we cannot find an exact normalized match, stop.
-                scale_pairs = get_scale_labels(load_scales_metadata(), question_code)
-                if scale_pairs is None or len(scale_pairs) == 0:
-                    qnorm = _normalize_qcode(question_code)
-                    st.error(
-                        f"Metadata scale not found for question '{question_code}' (normalized '{qnorm}'). "
-                        "No results are displayed to avoid mislabeling. Please verify 'Survey Scales.xlsx'."
-                    )
-                    return
-
-                # Preferred fast path (new loader signature)
-                try:
-                    df_raw = load_results2024_filtered(
-                        question_code=question_code,
-                        years=selected_years,
-                        group_values=demcodes,  # includes None for overall when category_in_play
-                    )
-                except TypeError:
-                    parts = []
-                    for gv in demcodes:
-                        try:
-                            parts.append(
-                                load_results2024_filtered(
-                                    question_code=question_code,
-                                    years=selected_years,
-                                    group_value=(None if gv is None else str(gv).strip()),
-                                )
-                            )
-                        except TypeError:
-                            continue
-                    df_raw = (
-                        PD.concat([p for p in parts if p is not None and not p.empty], ignore_index=True)
-                        if parts
-                        else PD.DataFrame()
-                    )
-
-                if df_raw is None or df_raw.empty:
-                    st.info("No data found for this selection.")
-                    return
-
-                df_raw = exclude_999_raw(df_raw)
-                if df_raw.empty:
-                    st.info("Data exists, but all rows are not applicable (999/9999).")
-                    return
-
-                if "SURVEYR" in df_raw.columns:
-                    df_raw = df_raw.sort_values(by="SURVEYR", ascending=False)
-
-                # 🔧 show raw results before formatting when toggle is ON
-                if show_debug:
-                    st.markdown("#### Raw results (debug — pre-formatting)")
-                    st.caption(f"Rows: {len(df_raw):,} | Columns: {len(df_raw.columns)}")
-                    st.dataframe(df_raw, use_container_width=True)
-
-                st.subheader(f"{question_code} — {question_text}")
-                dem_map_clean = {None: "All respondents"}
-                try:
-                    for k, v in (disp_map or {}).items():
-                        dem_map_clean[(None if k is None else str(k).strip())] = v
-                except Exception:
-                    pass
-
-                df_disp = format_display_table_raw(
-                    df=df_raw,
-                    category_in_play=category_in_play,
-                    dem_disp_map=dem_map_clean,
-                    scale_pairs=scale_pairs,
-                )
-
-            # Results table
-            st.dataframe(df_disp, use_container_width=True)
-
-            # Decide metric per FINAL rule
-            decision = detect_metric_mode(df_disp, scale_pairs)
-            mode = decision["mode"]
-            metric_col = decision["metric_col"]
-            ui_label = decision["ui_label"]
-            metric_label = decision["metric_label"]
-            answer1_label = decision["answer1_label"]
-
-            # === Analysis Summary (AI) ===
-            st.markdown("### Analysis Summary")
-            st.markdown(
-                f"<div class='q-sub'>{question_code} — {question_text}</div>"
-                f"<div class='tiny-note'>{ui_label}</div>",
-                unsafe_allow_html=True,
-            )
-
-            narrative = ""
-            ai_cols_used_note = ""
-            if ai_enabled:
-                with st.spinner("Contacting AI (timeout 60s, 1 retry)…"):
-                    ai_out = _ai_narrative_and_storytable(
-                        df_disp=df_disp,
-                        question_code=question_code,
-                        question_text=question_text,
-                        category_in_play=category_in_play,
-                        metric_col=metric_col,
-                        metric_label=metric_label,
-                        temperature=0.2,
-                    )
-                narrative = (ai_out.get("narrative") or "").strip()
-                hint = (ai_out.get("hint") or "").strip()
-                if narrative:
-                    st.write(narrative)
-                else:
-                    if hint:
-                        st.info(f"AI unavailable right now ({hint}). Tables remain available.")
-                    else:
-                        st.info("AI unavailable right now. Tables remain available.")
-
-                # Explicitly state which metric/column was passed to AI
-                if mode in ("positive", "agree"):
-                    ai_cols_used_note = f"AI was passed: {metric_label} (column: {metric_col})."
-                else:
-                    ai_cols_used_note = f"AI was passed: % {answer1_label} (column: {metric_col})."
-                st.caption(ai_cols_used_note)
-            else:
-                st.caption("AI analysis is disabled (toggle above).")
-
-            # === Summary Table ===
-            st.markdown("### Summary Table")
-            st.markdown(
-                f"<div class='q-sub'>{question_code} — {question_text}</div>"
-                f"<div class='tiny-note'>{ui_label}</div>",
-                unsafe_allow_html=True,
-            )
-            trend_df = build_trend_summary_table(
-                df_disp=df_disp,
-                category_in_play=category_in_play,
-                metric_col=metric_col,
-                selected_years=selected_years,
-            )
-            if trend_df is not None and not trend_df.empty:
-                st.dataframe(trend_df, use_container_width=True, hide_index=True)
-            else:
-                st.info("No summary table could be generated for the current selection.")
-
-            # Downloads
-            with io.BytesIO() as xbuf:
-                with PD.ExcelWriter(xbuf, engine="xlsxwriter") as writer:
-                    df_disp.to_excel(writer, sheet_name="Results", index=False)
-                    if trend_df is not None and not trend_df.empty:
-                        trend_df.to_excel(writer, sheet_name="Summary Table", index=False)
-                    ctx = {
-                        "QUESTION": question_code,
-                        "SURVEYR (years)": ", ".join(selected_years),
-                        "DEMCODE(s)": ", ".join(dem_display),
-                        "Metric used": metric_label,
-                        "AI enabled": "Yes" if ai_enabled else "No",
-                        "Generated at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                    }
-                    PD.DataFrame(list(ctx.items()), columns=["Field", "Value"]).to_excel(
-                        writer, sheet_name="Context", index=False
-                    )
-                xdata = xbuf.getvalue()
-
-            st.download_button(
-                label="⬇️ Download data (Excel)",
-                data=xdata,
-                file_name=f"PSES_{question_code}_{'-'.join(selected_years)}.xlsx",
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-            )
-
-            pdf_bytes = build_pdf_report(
-                question_code=question_code,
-                question_text=question_text,
-                selected_years=selected_years,
-                dem_display=dem_display,
-                narrative=narrative,  # empty when AI disabled or failed
-                df_summary=trend_df if trend_df is not None else PD.DataFrame(),
-                ui_label=ui_label,
-            )
-            if pdf_bytes:
-                st.download_button(
-                    label="⬇️ Download summary report (PDF)",
-                    data=pdf_bytes,
-                    file_name=f"PSES_{question_code}_{'-'.join(selected_years)}.pdf",
-                    mime="application/pdf",
-                )
-            else:
-                st.caption("PDF export unavailable (install `reportlab` in requirements to enable).")
-
-
-if __name__ == "__main__":
-    run_menu1()
+        st.markdown('<div class="custom-header">🔍 Search
