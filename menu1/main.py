@@ -859,12 +859,13 @@ def run_menu1():
             st.dataframe(params_df, use_container_width=True, hide_index=True)
 
         # ──────────────────────────────────────────────────────────────────────
-        # Diagnostics (question-aware quick check + global schema)
+        # Diagnostics (reconfigured)
         # ──────────────────────────────────────────────────────────────────────
         if show_debug:
             with st.expander("🛠 Diagnostics", expanded=False):
-                st.caption("Global schema tools are not question-specific. Use the quick check below to validate the chosen question.")
+                st.caption("Run checks independently as needed.")
 
+                # 1) File schema preview check (two independent buttons)
                 colA, colB, colC = st.columns(3)
                 with colA:
                     if st.button("Show global file schema (text-mode dtypes)"):
@@ -881,9 +882,10 @@ def run_menu1():
                         run_ai_health_check()
 
                 st.divider()
-                st.markdown("#### Question-specific quick check")
-                st.caption("Runs a real mini-query for the selected question and years (All respondents only) to validate matching and presence.")
 
+                # 2) Question-specific quick check (no sample rows preview)
+                st.markdown("#### Question-specific quick check")
+                st.caption("Validates matching and presence for the selected question and years (All respondents only).")
                 if st.button("Check selected question data (quick)"):
                     with st.spinner("Scanning…"):
                         try:
@@ -926,8 +928,150 @@ def run_menu1():
                             st.markdown("**Rows by Year (All respondents)**")
                             st.dataframe(by_year, use_container_width=True, hide_index=True)
 
-                        st.markdown("**Sample rows (first 30)**")
-                        st.dataframe(quick_df.head(30), use_container_width=True)
+                st.divider()
+
+                # 3) OpenAI quick check button already handled above as "AI health check"
+
+                # ─────────────────────────────────────────────────────────────
+                # More checks (optional, safe)
+                # ─────────────────────────────────────────────────────────────
+                st.markdown("#### More checks")
+                colM1, colM2, colM3 = st.columns(3)
+
+                # 4) AI input audit (no API call)
+                with colM1:
+                    if st.button("Preview AI payload summary"):
+                        with st.spinner("Building summary…"):
+                            try:
+                                # Build df_disp with the same path used for the real run
+                                scale_pairs = get_scale_labels(load_scales_metadata(), question_code)
+                                parts_df = load_results2024_filtered(
+                                    question_code=question_code,
+                                    years=selected_years,
+                                    group_values=( [None] + demcodes if (category_in_play and None not in demcodes) else demcodes ),
+                                )
+                                if parts_df is None or parts_df.empty:
+                                    st.info("No data found for this selection.")
+                                else:
+                                    parts_df = exclude_999_raw(parts_df)
+                                    dem_map_clean = {None: "All respondents"}
+                                    try:
+                                        for k, v in ( ( {**{None: "All respondents"}, **( { (None if k is None else str(k).strip()): v for k,v in ( {} if not category_in_play else {}).items() } ) } ) ):
+                                            pass  # placeholder to keep structure identical; no-op
+                                    except Exception:
+                                        pass
+                                    # Use clean dem map from resolve step
+                                    dem_map_clean = {None: "All respondents"}
+                                    try:
+                                        for k, v in ( ( {} if not category_in_play else { (None if k is None else str(k).strip()): v for k, v in ( {**dispm for dispm in [{}] } ).items() } ) ):
+                                            pass
+                                    except Exception:
+                                        pass
+                                    dem_map_clean = {None: "All respondents"}
+                                    if isinstance(disp_map, dict):
+                                        for k, v in disp_map.items():
+                                            dem_map_clean[(None if k is None else str(k).strip())] = v
+
+                                    df_disp_tmp = format_display_table_raw(
+                                        df=parts_df,
+                                        category_in_play=category_in_play,
+                                        dem_disp_map=dem_map_clean,
+                                        scale_pairs=scale_pairs,
+                                    )
+
+                                    decision = detect_metric_mode(df_disp_tmp, scale_pairs)
+                                    metric_col = decision["metric_col"]
+                                    metric_label = decision["metric_label"]
+
+                                    # Build small payload for inspection
+                                    payload = _ai_build_payload_single_metric(
+                                        df_disp=df_disp_tmp,
+                                        question_code=question_code,
+                                        question_text=question_text,
+                                        category_in_play=category_in_play,
+                                        metric_col=metric_col,
+                                    )
+                                    # Compute quick stats
+                                    years = payload.get("years", [])
+                                    latest = payload.get("latest_year", None)
+                                    baseline = payload.get("baseline_year", None)
+                                    groups = payload.get("groups", [])
+                                    group_labels = [g.get("name", "") for g in groups if str(g.get("name","")).strip()]
+
+                                    s = json.dumps({"metric_label": metric_label, "payload": payload}, ensure_ascii=False)
+                                    kb = len(s.encode("utf-8")) / 1024.0
+
+                                    st.markdown("**AI payload summary (no API call)**")
+                                    st.write({
+                                        "metric_label": metric_label,
+                                        "years": years,
+                                        "baseline_year": baseline,
+                                        "latest_year": latest,
+                                        "num_groups": len(group_labels),
+                                        "group_labels": group_labels,
+                                        "approx_payload_size_kb": round(kb, 1),
+                                    })
+                            except Exception as e:
+                                st.error(f"Payload summary failed: {e}")
+
+                # 5) Not-applicable filter summary
+                with colM2:
+                    if st.button("Not-applicable filter summary"):
+                        with st.spinner("Checking 999/9999 suppression…"):
+                            try:
+                                raw = load_results2024_filtered(
+                                    question_code=question_code,
+                                    years=selected_years,
+                                    group_values=( [None] + demcodes if (category_in_play and None not in demcodes) else demcodes ),
+                                )
+                                total_before = 0 if raw is None else len(raw)
+                                after = exclude_999_raw(raw) if raw is not None else PD.DataFrame()
+                                total_after = len(after)
+                                removed = total_before - total_after
+                                st.write({
+                                    "rows_before": total_before,
+                                    "rows_after": total_after,
+                                    "rows_suppressed_999_9999": max(0, removed),
+                                })
+
+                                # Quick metric availability note
+                                metric_note = {}
+                                for c in ["POSITIVE", "AGREE", "YES"] + [f"answer{i}".upper() for i in range(1,8)]:
+                                    if after is not None and c in (after.columns if not after.empty else []):
+                                        metric_note[c] = int(PD.to_numeric(after[c], errors="coerce").notna().sum())
+                                if metric_note:
+                                    st.caption("Non-null counts for common metric columns (post-suppression):")
+                                    st.write(metric_note)
+                            except Exception as e:
+                                st.error(f"Suppression check failed: {e}")
+
+                # 6) Environment check
+                with colM3:
+                    if st.button("Environment check"):
+                        try:
+                            info = {}
+                            info["OPENAI_API_KEY_present"] = bool(os.environ.get("OPENAI_API_KEY", "").strip())
+                            info["OPENAI_MODEL_secret_present"] = bool(st.secrets.get("OPENAI_MODEL", ""))
+
+                            try:
+                                import openai  # type: ignore
+                                info["openai_version"] = getattr(openai, "__version__", "unknown")
+                            except Exception:
+                                info["openai_version"] = "not installed"
+
+                            info["pandas_version"] = pd.__version__
+                            info["streamlit_version"] = st.__version__
+
+                            files = {
+                                "metadata/Survey Scales.xlsx": os.path.exists("metadata/Survey Scales.xlsx"),
+                                "metadata/Survey Questions.xlsx": os.path.exists("metadata/Survey Questions.xlsx"),
+                                "metadata/Demographics.xlsx": os.path.exists("metadata/Demographics.xlsx"),
+                            }
+                            info["metadata_files_exist"] = files
+
+                            st.write(info)
+                        except Exception as e:
+                            st.error(f"Environment check failed: {e}")
 
         # Run query (single pass, cached big file)
         if st.button("🔎 Run query"):
@@ -1117,7 +1261,7 @@ def run_menu1():
                 st.download_button(
                     label="⬇️ Download summary report (PDF)",
                     data=pdf_bytes,
-                    file_name=f"PSES_{question_code}_{'-'.join(selected_years)}.pdf",
+                    file_name=f"PSES_{question_code}_{'- '.join(selected_years)}.pdf",
                     mime="application/pdf",
                 )
             else:
