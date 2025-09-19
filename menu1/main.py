@@ -6,8 +6,8 @@ import io
 import json
 import os
 import time
-import threading
 from datetime import datetime
+from contextlib import contextmanager
 
 import pandas as pd
 import streamlit as st
@@ -19,7 +19,7 @@ from utils.data_loader import (
     load_results2024_filtered,
     get_results2024_schema,
     get_results2024_schema_inferred,
-    _resolve_results_path,   # used to show actual data path (in diagnostics only)
+    _resolve_results_path,   # <— used to show actual data path (diagnostics only)
 )
 
 # Ensure OpenAI key is available from Streamlit secrets (no hardcoding)
@@ -268,9 +268,9 @@ def detect_metric_mode(df_disp: pd.DataFrame, scale_pairs) -> dict:
     Returns:
       {
         "mode": "positive" | "agree" | "answer1",
-        "metric_col": str,         # column present in df_disp
-        "ui_label": str,           # string to display under title and summary table
-        "metric_label": str,       # human phrasing to pass to AI (“% positive” | “% agree” | “% <Answer1 label>”)
+        "metric_col": str,
+        "ui_label": str,
+        "metric_label": str,
         "answer1_label": str | None
       }
     """
@@ -307,7 +307,6 @@ def detect_metric_mode(df_disp: pd.DataFrame, scale_pairs) -> dict:
             if k.lower() == "answer1":
                 answer1_label = v
                 break
-    # Use the human-labeled column in df_disp that matches answer1_label
     if answer1_label and answer1_label in df_disp.columns:
         if PD.to_numeric(df_disp[answer1_label], errors="coerce").notna().any():
             return {
@@ -466,6 +465,14 @@ def _ai_narrative_and_storytable(
 ) -> dict:
     """
     Generates the AI narrative with your approved context and rules.
+    - Uses ONLY the values present in df_disp (the displayed tabulation).
+    - Always starts with 2024 All respondents (if present) as context.
+    - Trend classification thresholds: stable ≤1, slight >1–2, notable >2.
+    - Demographic comparisons are pairwise (group-to-group) only.
+    - Gap qualification: ≤2 normal; >2–5 notable; >5 important.
+    - Skip missing/N/A. No word limit.
+    - Returns JSON with only 'narrative'.
+    - 60s timeout + one retry; safe parse; friendly hint on failure.
     """
     try:
         from openai import OpenAI
@@ -484,10 +491,10 @@ def _ai_narrative_and_storytable(
 
     data = _ai_build_payload_single_metric(df_disp, question_code, question_text, category_in_play, metric_col)
 
-    # Determine model (diagnostics storage)
+    # Determine model (diagnostics text, footer tag)
     model_name = (st.secrets.get("OPENAI_MODEL") or "gpt-4o-mini").strip()
 
-    # ----- System prompt with fixed project context + refined rules -----
+    # ----- System prompt -----
     system = (
         "You are preparing insights for the Government of Canada’s Public Service Employee Survey (PSES).\n"
         "Scope: Public Service–wide results only (no departmental results).\n"
@@ -533,7 +540,7 @@ def _ai_narrative_and_storytable(
     st.session_state["last_ai_system"] = system
     st.session_state["last_ai_user"] = user
 
-    # Perform request with a 60s timeout and one retry; safe JSON parse; return hint on failure
+    # Perform request
     kwargs = dict(
         model=model_name,
         temperature=temperature,
@@ -556,23 +563,20 @@ def _ai_narrative_and_storytable(
 
 
 # ─────────────────────────────
-# 🔎 AI Health Check (used in Diagnostics)
+# 🔎 AI Health Check (auto, no button)
 # ─────────────────────────────
 def run_ai_health_check():
     """Small, non-data test call to verify key + connectivity + model reachability."""
     try:
         from openai import OpenAI
     except Exception:
-        st.error("Health check requires the OpenAI SDK. Add `openai>=1.40.0` to requirements.txt.")
-        return
+        return {"status": "error", "detail": "missing_sdk"}
 
     key = os.environ.get("OPENAI_API_KEY", "").strip()
     if not key:
-        st.warning("OPENAI_API_KEY not set in Streamlit secrets.")
-        return
+        return {"status": "warn", "detail": "missing_api_key"}
 
     model_name = (st.secrets.get("OPENAI_MODEL") or "gpt-4o-mini").strip()
-
     client = OpenAI()
     system = "You are a minimal health check. Reply with exactly: OK."
     user = "Say OK."
@@ -586,23 +590,21 @@ def run_ai_health_check():
             timeout=10.0,
         )
         content = comp.choices[0].message.content.strip() if comp.choices else ""
-        dt = (time.perf_counter() - t0) * 1000
+        dt_ms = int((time.perf_counter() - t0) * 1000)
         if content.upper().startswith("OK"):
-            st.success(f"AI health check passed (model={model_name}, ~{dt:.0f} ms).")
-        else:
-            st.info(f"AI reachable but unexpected reply (~{dt:.0f} ms): {content[:60]}")
+            return {"status": "ok", "detail": f"model={model_name}, ~{dt_ms} ms"}
+        return {"status": "info", "detail": f"unexpected reply (~{dt_ms} ms): {content[:60]}"}
     except Exception as e:
         name = type(e).__name__.lower()
         if "authentication" in name or "auth" in name:
-            st.error("AI health check failed: invalid/missing API key.")
-        elif "timeout" in name or "timedout" in name:
-            st.error("AI health check timed out (10s).")
-        elif "rate" in name and "limit" in name:
-            st.error("AI health check hit rate limit.")
-        elif "connection" in name or "network" in name:
-            st.error("AI health check failed: network/connectivity issue.")
-        else:
-            st.error(f"AI health check error: {type(e).__name__}")
+            return {"status": "error", "detail": "invalid_api_key"}
+        if "timeout" in name or "timedout" in name:
+            return {"status": "error", "detail": "timeout"}
+        if "rate" in name and "limit" in name:
+            return {"status": "error", "detail": "rate_limit"}
+        if "connection" in name or "network" in name:
+            return {"status": "error", "detail": "network_error"}
+        return {"status": "error", "detail": name or "unknown_error"}
 
 
 # ─────────────────────────────
@@ -735,47 +737,39 @@ def build_pdf_report(
 
 
 # ─────────────────────────────
-# Small helper to detect backend + path (diagnostics only)
+# Small helper to detect backend (non-fatal if unavailable)
 # ─────────────────────────────
-def _detect_backend_and_path():
-    # Path: use loader helper when available
-    path = None
-    try:
-        path = _resolve_results_path()
-    except Exception:
-        pass
-
-    # Backend: try several optional attributes/functions from the loader module
-    backend = None
+def _detect_backend():
+    # Prefer a signal exposed by the loader, fall back to env flag
     try:
         if hasattr(_dl, "LAST_BACKEND"):
-            backend = getattr(_dl, "LAST_BACKEND")
-        elif hasattr(_dl, "get_last_backend") and callable(_dl.get_last_backend):
-            backend = _dl.get_last_backend()
-        elif hasattr(_dl, "BACKEND_IN_USE"):
-            backend = getattr(_dl, "BACKEND_IN_USE")
+            return getattr(_dl, "LAST_BACKEND")
+        if hasattr(_dl, "get_last_backend") and callable(_dl.get_last_backend):
+            return _dl.get_last_backend()
+        if hasattr(_dl, "BACKEND_IN_USE"):
+            return getattr(_dl, "BACKEND_IN_USE")
     except Exception:
-        backend = None
-
-    return path, backend
+        pass
+    return "DuckDB" if os.environ.get("USE_DUCKDB", "1") == "1" else "pandas"
 
 
 # ─────────────────────────────
-# A tiny live timer helper for the spinner line
+# Lightweight profiler for step timing
 # ─────────────────────────────
-def _start_live_timer(live_container, engine_label="engine"):
-    stop_event = threading.Event()
+class Profiler:
+    def __init__(self):
+        self.steps: list[tuple[str, float]] = []
 
-    def _ticker():
+    @contextmanager
+    def step(self, name: str, live=None, engine: str = "", t0_global: float | None = None):
         t0 = time.perf_counter()
-        while not stop_event.is_set():
-            elapsed = time.perf_counter() - t0
-            live_container.caption(f"Processing with {engine_label}… {elapsed:.1f}s")
-            time.sleep(0.2)
-
-    th = threading.Thread(target=_ticker, daemon=True)
-    th.start()
-    return stop_event
+        if live is not None and t0_global is not None:
+            live.caption(f"Processing… {name} • engine: {engine} • {time.perf_counter() - t0_global:.1f}s")
+        try:
+            yield
+        finally:
+            dt = time.perf_counter() - t0
+            self.steps.append((name, dt))
 
 
 # ─────────────────────────────
@@ -800,6 +794,11 @@ def run_menu1():
     demo_df = load_demographics_metadata()
     qdf = load_questions_metadata()
     sdf = load_scales_metadata()
+
+    # Auto-run AI health check once per session (no button)
+    if st.session_state.get("ai_health_checked") is None:
+        st.session_state["ai_health_result"] = run_ai_health_check()
+        st.session_state["ai_health_checked"] = True
 
     left, center, right = st.columns([1, 2, 1])
     with center:
@@ -920,7 +919,6 @@ def run_menu1():
                     info = {}
                     info["OPENAI_API_KEY_present"] = bool(os.environ.get("OPENAI_API_KEY", "").strip())
                     info["OPENAI_MODEL_secret_present"] = bool(st.secrets.get("OPENAI_MODEL", ""))
-                    # library versions
                     try:
                         import openai  # type: ignore
                         info["openai_version"] = getattr(openai, "__version__", "unknown")
@@ -928,30 +926,29 @@ def run_menu1():
                         info["openai_version"] = "not installed"
                     info["pandas_version"] = pd.__version__
                     info["streamlit_version"] = st.__version__
-                    # metadata files
                     files = {
                         "metadata/Survey Scales.xlsx": os.path.exists("metadata/Survey Scales.xlsx"),
                         "metadata/Survey Questions.xlsx": os.path.exists("metadata/Survey Questions.xlsx"),
                         "metadata/Demographics.xlsx": os.path.exists("metadata/Demographics.xlsx"),
                     }
                     info["metadata_files_exist"] = files
-                    # results path (diagnostics only)
-                    try:
-                        results_path = _resolve_results_path()
-                        info["results_file_path"] = results_path
-                        st.session_state["results_file_path"] = results_path
-                    except Exception as e:
-                        info["results_file_path_error"] = str(e)
-                    # backend hint if the loader exposes it
-                    path_hint, backend_hint = _detect_backend_and_path()
-                    if backend_hint:
-                        info["data_backend_hint"] = backend_hint
+                    # (Optional) show physical path if needed in the future:
+                    # try: info["results_file_path"] = _resolve_results_path() except: pass
                     st.write(info)
 
-                # 3) AI prompt visibility (auto health check; no nested expanders)
+                # 3) AI prompt visibility (no button; show last health check & prompts)
                 with tabs[2]:
-                    # Auto-run the health check (no button)
-                    run_ai_health_check()
+                    hc = st.session_state.get("ai_health_result") or {}
+                    status = hc.get("status", "info")
+                    detail = hc.get("detail", "")
+                    if status == "ok":
+                        st.success(f"AI health check passed ({detail}).")
+                    elif status == "warn":
+                        st.warning(f"AI health check: {detail}.")
+                    elif status == "error":
+                        st.error(f"AI health check error: {detail}.")
+                    else:
+                        st.info(f"AI health check: {detail or 'no details'}")
 
                     model_used = (st.session_state.get("last_ai_model")
                                   or st.secrets.get("OPENAI_MODEL")
@@ -964,109 +961,106 @@ def run_menu1():
                     if not sys_txt and not usr_txt:
                         st.info("No AI prompt available yet. Run a query with AI enabled to populate this view.")
                     else:
-                        show_sys = st.toggle("Show system prompt", value=False, key="show_sys_prompt")
-                        if show_sys:
-                            st.code(sys_txt, language="markdown")
+                        st.markdown("**System prompt (exact):**")
+                        st.code(sys_txt, language="markdown")
 
-                        show_user = st.toggle("Show user JSON payload", value=False, key="show_user_payload")
-                        if show_user:
-                            kb = len(usr_txt.encode("utf-8")) / 1024.0
-                            st.caption(f"Approx size: ~{kb:.1f} KB")
-                            st.code(usr_txt, language="json")
+                        st.markdown("**User payload (JSON sent to the model):**")
+                        kb = len(usr_txt.encode("utf-8")) / 1024.0
+                        st.caption(f"Approx size: ~{kb:.1f} KB")
+                        st.code(usr_txt, language="json")
 
         # Run query (single pass, cached big file)
         if st.button("🔎 Run query"):
-            # decide engine label *before* starting
-            backend_hint = (
-                getattr(_dl, "LAST_BACKEND", None)
-                or ( "DuckDB" if os.environ.get("USE_DUCKDB", "1") == "1" else "pandas" )
-            )
+            engine_used = _detect_backend()
+            status_line = st.empty()  # live line for engine + elapsed seconds
 
-            # live line next to spinner (shows engine + ticking time)
-            live = st.empty()
-            timer_stop = _start_live_timer(live, engine_label=backend_hint)
+            prof = Profiler()
+            t0_global = time.perf_counter()
 
-            t0 = time.perf_counter()
             with st.spinner("Processing data…"):
-                # STRICT scale matching — if we cannot find an exact normalized match, stop.
-                scale_pairs = get_scale_labels(load_scales_metadata(), question_code)
-                if scale_pairs is None or len(scale_pairs) == 0:
-                    timer_stop.set()
-                    qnorm = _normalize_qcode(question_code)
-                    st.error(
-                        f"Metadata scale not found for question '{question_code}' (normalized '{qnorm}'). "
-                        "No results are displayed to avoid mislabeling. Please verify 'Survey Scales.xlsx'."
-                    )
+                # 0) Brief live hint
+                status_line.caption(f"Processing… engine: {engine_used} • 0.0s")
+
+                # 1) Match scales
+                with prof.step("Match scales", live=status_line, engine=engine_used, t0_global=t0_global):
+                    scale_pairs = get_scale_labels(load_scales_metadata(), question_code)
+                    if scale_pairs is None or len(scale_pairs) == 0:
+                        qnorm = _normalize_qcode(question_code)
+                        st.error(
+                            f"Metadata scale not found for question '{question_code}' (normalized '{qnorm}'). "
+                            "No results are displayed to avoid mislabeling. Please verify 'Survey Scales.xlsx'."
+                        )
+                        return
+
+                # 2) Load data via loader
+                with prof.step("Load data", live=status_line, engine=engine_used, t0_global=t0_global):
+                    try:
+                        df_raw = load_results2024_filtered(
+                            question_code=question_code,
+                            years=selected_years,
+                            group_values=demcodes,  # includes None for overall when category_in_play
+                        )
+                    except TypeError:
+                        parts = []
+                        for gv in demcodes:
+                            try:
+                                parts.append(
+                                    load_results2024_filtered(
+                                        question_code=question_code,
+                                        years=selected_years,
+                                        group_value=(None if gv is None else str(gv).strip()),
+                                    )
+                                )
+                            except TypeError:
+                                continue
+                        df_raw = (
+                            PD.concat([p for p in parts if p is not None and not p.empty], ignore_index=True)
+                            if parts else PD.DataFrame()
+                        )
+
+                if df_raw is None or df_raw.empty:
+                    status_line.caption(f"Processing complete • engine: {engine_used} • {time.perf_counter()-t0_global:.1f}s")
+                    st.info("No data found for this selection.")
                     return
 
-                # Preferred fast path (new loader signature)
-                try:
-                    df_raw = load_results2024_filtered(
-                        question_code=question_code,
-                        years=selected_years,
-                        group_values=demcodes,  # includes None for overall when category_in_play
+                # 3) Suppression
+                with prof.step("Suppress 999/9999", live=status_line, engine=engine_used, t0_global=t0_global):
+                    df_raw = exclude_999_raw(df_raw)
+                    if df_raw.empty:
+                        status_line.caption(f"Processing complete • engine: {engine_used} • {time.perf_counter()-t0_global:.1f}s")
+                        st.info("Data exists, but all rows are not applicable (999/9999).")
+                        return
+
+                # 4) Sort & format
+                with prof.step("Sort & format table", live=status_line, engine=engine_used, t0_global=t0_global):
+                    if "SURVEYR" in df_raw.columns:
+                        df_raw = df_raw.sort_values(by="SURVEYR", ascending=False)
+
+                    dem_map_clean = {None: "All respondents"}
+                    try:
+                        for k, v in (disp_map or {}).items():
+                            dem_map_clean[(None if k is None else str(k).strip())] = v
+                    except Exception:
+                        pass
+
+                    df_disp = format_display_table_raw(
+                        df=df_raw,
+                        category_in_play=category_in_play,
+                        dem_disp_map=dem_map_clean,
+                        scale_pairs=scale_pairs,
                     )
-                except TypeError:
-                    parts = []
-                    for gv in demcodes:
-                        try:
-                            parts.append(
-                                load_results2024_filtered(
-                                    question_code=question_code,
-                                    years=selected_years,
-                                    group_value=(None if gv is None else str(gv).strip()),
-                                )
-                            )
-                        except TypeError:
-                            continue
-                    df_raw = (
-                        PD.concat([p for p in parts if p is not None and not p.empty], ignore_index=True)
-                        if parts
-                        else PD.DataFrame()
-                    )
 
-            # stop the live timer and show completion time
-            timer_stop.set()
-            elapsed = (time.perf_counter() - t0)
-            live.caption(f"Processing complete in {elapsed:.1f}s")
-
-            if df_raw is None or df_raw.empty:
-                st.info("No data found for this selection.")
-                return
-
-            df_raw = exclude_999_raw(df_raw)
-            if df_raw.empty:
-                st.info("Data exists, but all rows are not applicable (999/9999).")
-                return
-
-            if "SURVEYR" in df_raw.columns:
-                df_raw = df_raw.sort_values(by="SURVEYR", ascending=False)
-
-            # 🔧 show raw results before formatting when toggle is ON
-            if show_debug:
-                st.markdown("#### Raw results (debug — pre-formatting)")
-                st.caption(f"Rows: {len(df_raw):,} | Columns: {len(df_raw.columns)}")
-                st.dataframe(df_raw, use_container_width=True)
-
-            st.subheader(f"{question_code} — {question_text}")
-            dem_map_clean = {None: "All respondents"}
-            try:
-                for k, v in (disp_map or {}).items():
-                    dem_map_clean[(None if k is None else str(k).strip())] = v
-            except Exception:
-                pass
-
-            df_disp = format_display_table_raw(
-                df=df_raw,
-                category_in_play=category_in_play,
-                dem_disp_map=dem_map_clean,
-                scale_pairs=scale_pairs,
-            )
+            # Finalize status line
+            total_s = time.perf_counter() - t0_global
+            status_line.caption(f"Processing complete • engine: {engine_used} • {total_s:.1f}s")
 
             # Results table
+            st.subheader(f"{question_code} — {question_text}")
             st.dataframe(df_disp, use_container_width=True)
-            # Official data source (URL only, no local path)
+
+            # Required data source caption (under table, not in spinner)
             st.caption("Data source: https://open.canada.ca/data/en/dataset/7f625e97-9d02-4c12-a756-1ddebb50e69f")
+            st.caption(f"Backend engine: {engine_used}")
 
             # Decide metric per FINAL rule
             decision = detect_metric_mode(df_disp, scale_pairs)
@@ -1074,7 +1068,6 @@ def run_menu1():
             metric_col = decision["metric_col"]
             ui_label = decision["ui_label"]
             metric_label = decision["metric_label"]
-            answer1_label = decision["answer1_label"]
 
             # === Analysis Summary (AI) ===
             st.markdown("### Analysis Summary")
@@ -1085,27 +1078,25 @@ def run_menu1():
             )
 
             narrative = ""
-            ai_cols_used_note = ""
             if ai_enabled:
-                model_used = (st.secrets.get("OPENAI_MODEL") or "gpt-4o-mini").strip()
-                # model name no longer shown in spinner
-                with st.spinner("Generating analysis…"):
-                    ai_out = _ai_narrative_and_storytable(
-                        df_disp=df_disp,
-                        question_code=question_code,
-                        question_text=question_text,
-                        category_in_play=category_in_play,
-                        metric_col=metric_col,
-                        metric_label=metric_label,
-                        temperature=0.2,
-                    )
+                ai_t0 = time.perf_counter()
+                ai_out = _ai_narrative_and_storytable(
+                    df_disp=df_disp,
+                    question_code=question_code,
+                    question_text=question_text,
+                    category_in_play=category_in_play,
+                    metric_col=metric_col,
+                    metric_label=metric_label,
+                    temperature=0.2,
+                )
                 narrative = (ai_out.get("narrative") or "").strip()
                 hint = (ai_out.get("hint") or "").strip()
                 if narrative:
+                    # Append the requested footer tag (no spinner text)
+                    model_used = (st.secrets.get("OPENAI_MODEL") or "gpt-4o-mini").strip()
+                    narrative += f"\n\n_Powered by OpenAI model {model_used}_"
                     st.write(narrative)
-                    st.caption(f"Powered by OpenAI · model: {model_used}")
                 else:
-                    # Friendlier hints for common cases
                     hint_map = {
                         "invalid_api_key": "Invalid or missing API key.",
                         "timeout": "AI request timed out (took longer than 60s).",
@@ -1117,13 +1108,8 @@ def run_menu1():
                     }
                     msg = hint_map.get(hint, "AI unavailable right now.")
                     st.info(f"{msg} Tables remain available.")
-
-                # Explicitly state which metric/column was passed to AI
-                if mode in ("positive", "agree"):
-                    ai_cols_used_note = f"AI was passed: {metric_label} (column: {metric_col})."
-                else:
-                    ai_cols_used_note = f"AI was passed: % {answer1_label} (column: {metric_col})."
-                st.caption(ai_cols_used_note)
+                # Record AI time in the profile
+                prof.steps.append(("AI summary", time.perf_counter() - ai_t0))
             else:
                 st.caption("AI analysis is disabled (toggle above).")
 
@@ -1134,16 +1120,30 @@ def run_menu1():
                 f"<div class='tiny-note'>{ui_label}</div>",
                 unsafe_allow_html=True,
             )
+            trend_t0 = time.perf_counter()
             trend_df = build_trend_summary_table(
                 df_disp=df_disp,
                 category_in_play=category_in_play,
                 metric_col=metric_col,
                 selected_years=selected_years,
             )
+            prof.steps.append(("Build summary table", time.perf_counter() - trend_t0))
+
             if trend_df is not None and not trend_df.empty:
                 st.dataframe(trend_df, use_container_width=True, hide_index=True)
             else:
                 st.info("No summary table could be generated for the current selection.")
+
+            # === Processing profile (step timings) ===
+            if prof.steps:
+                st.markdown("#### Processing profile")
+                prof_df = PD.DataFrame(
+                    [(name, f"{dt*1000:.0f} ms") for name, dt in prof.steps],
+                    columns=["Step", "Duration"]
+                )
+                total_ms = int(sum(dt for _, dt in prof.steps) * 1000)
+                st.caption(f"Total (profiled): ~{total_ms} ms")
+                st.dataframe(prof_df, use_container_width=True, hide_index=True)
 
             # Downloads
             with io.BytesIO() as xbuf:
