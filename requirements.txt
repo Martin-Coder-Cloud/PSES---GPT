@@ -6,4 +6,7 @@ XlsxWriter
 openai>=1.40.0
 reportlab==3.6.13
 duckdb>=1.1.0
+pyarrow>=16.0.0
+duckdb>=1.0.0   # optional but makes the one-time CSV→Parquet conversion much faster
+
 
