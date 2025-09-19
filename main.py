@@ -1,5 +1,12 @@
 import streamlit as st
 
+# ⬇️ NEW: prewarm imports (safe if utils not available yet)
+try:
+    from utils.data_loader import prewarm_fastpath, get_backend_info
+except Exception:
+    prewarm_fastpath = None
+    get_backend_info = None
+
 st.set_page_config(layout="wide")
 
 def show_return_then_run(run_func):
@@ -14,6 +21,17 @@ def main():
     if "run_menu" not in st.session_state:
         st.session_state.run_menu = None
 
+    # ⬇️ NEW: prewarm Parquet/CSV backend on home page before any menu loads
+    if prewarm_fastpath is not None and st.session_state.run_menu is None:
+        with st.spinner("Preparing data backend (one-time)…"):
+            backend = prewarm_fastpath()
+        if get_backend_info is not None:
+            info = get_backend_info()
+            if backend == "csv":
+                st.caption(f"⚠️ Using CSV fallback. Parquet unavailable. (CSV: {info.get('csv_path')})")
+            else:
+                st.caption(f"✅ Parquet ready at: {info.get('parquet_dir')}")
+
     if st.session_state.run_menu == "1":
         from menu1.main import run_menu1
         show_return_then_run(run_menu1)
@@ -22,10 +40,7 @@ def main():
         from menu2.main import run_menu2
         show_return_then_run(run_menu2)
         return
-    elif st.session_state.run_menu == "3":
-        from menu3.main import run_menu3
-        show_return_then_run(run_menu3)
-        return
+    # ❌ REMOVED: Menu 3 route
     elif st.session_state.run_menu == "4":
         from menu4.main import run_menu4
         show_return_then_run(run_menu4)
@@ -98,23 +113,24 @@ def main():
     """, unsafe_allow_html=True)
 
     st.markdown("<div class='main-section'>", unsafe_allow_html=True)
-    st.markdown("<div class='main-title'>Welcome to the AI Explorer of the Public Service Employee Survey (PSES)</div>", unsafe_allow_html=True)
-    st.markdown("<div class='subtitle'>This AI app provides Public Service-wide survey results and analysis</div>", unsafe_allow_html=True)
+    # ⬇️ UPDATED: Title & subtitle
+    st.markdown("<div class='main-title'>Welcome to the AI-powered Explorer of the Public Service Employee Survey (PSES)</div>", unsafe_allow_html=True)
+    st.markdown("<div class='subtitle'>This AI-powered app provides Public Service-wide survey results and analysis</div>", unsafe_allow_html=True)
     st.markdown("<div class='survey-years'>(2019, 2020, 2022, and 2024)</div>", unsafe_allow_html=True)
 
     st.markdown("<div class='menu-grid'>", unsafe_allow_html=True)
 
-    if st.button("🔍 Search by Question", key="menu1_button"):
+    # ⬇️ RENAMED: Menu 1
+    if st.button("🔍 Search by Survey Question", key="menu1_button"):
         st.session_state.run_menu = "1"
         st.experimental_rerun()
 
-    if st.button("🧩 Search by Theme", key="menu2_button"):
+    # ⬇️ RENAMED: Menu 2
+    if st.button("🧩 Search by keywords or theme", key="menu2_button"):
         st.session_state.run_menu = "2"
         st.experimental_rerun()
 
-    if st.button("📊 Analyze Data", key="menu3_button"):
-        st.session_state.run_menu = "3"
-        st.experimental_rerun()
+    # ❌ REMOVED: Menu 3 button
 
     if st.button("📋 View Questionnaire", key="menu4_button"):
         st.session_state.run_menu = "4"
