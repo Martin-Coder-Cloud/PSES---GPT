@@ -1,6 +1,6 @@
 import streamlit as st
 
-# NEW: prewarm imports (safe if utils not available yet)
+# Keep prewarm imports
 try:
     from utils.data_loader import prewarm_fastpath, get_backend_info
 except Exception:
@@ -15,13 +15,13 @@ def show_return_then_run(run_func):
     if st.button("🔙 Return to Main Menu"):
         st.session_state.run_menu = None
         st.experimental_set_query_params()
-        st.experimental_rerun()
+        st.rerun()
 
 def main():
     if "run_menu" not in st.session_state:
         st.session_state.run_menu = None
 
-    # NEW: prewarm Parquet/CSV backend on home page before any menu loads
+    # ✅ Prewarm backend only on home page
     if prewarm_fastpath is not None and st.session_state.run_menu is None:
         with st.spinner("Preparing data backend (one-time)…"):
             backend = prewarm_fastpath()
@@ -32,7 +32,7 @@ def main():
             else:
                 st.caption(f"✅ Parquet ready at: {info.get('parquet_dir')}")
 
-    # ===== Routing (Menu 3 removed) =====
+    # ===== Routing =====
     if st.session_state.run_menu == "1":
         from menu1.main import run_menu1
         show_return_then_run(run_menu1)
@@ -46,6 +46,7 @@ def main():
         show_return_then_run(run_menu4)
         return
 
+    # ===== Homepage styling =====
     st.markdown("""
         <style>
             .block-container {
@@ -56,90 +57,49 @@ def main():
                 background-repeat: no-repeat;
                 background-size: cover;
                 background-position: center top;
-                background-attachment: scroll;
                 color: white;
             }
-            .main-section {
-                margin-left: 200px;
-                max-width: 700px;
-            }
-            .main-title {
-                font-size: 42px;
-                font-weight: bold;
-                margin-bottom: 20px;
-                color: white;
-                line-height: 1.2;
-            }
-            .subtitle {
-                font-size: 24px;
-                margin-bottom: 0px;
-                color: white;
-            }
-            .survey-years {
-                font-size: 20px;
-                margin-bottom: 40px;
-                color: white;
-            }
+            .main-section { margin-left: 200px; max-width: 700px; }
+            .main-title { font-size: 42px; font-weight: bold; margin-bottom: 20px; }
+            .subtitle { font-size: 24px; margin-bottom: 0px; }
+            .survey-years { font-size: 20px; margin-bottom: 40px; }
             div.stButton > button {
                 background-color: transparent !important;
                 color: white !important;
                 border: 2px solid rgba(255, 255, 255, 0.3) !important;
-                font-size: 32px !important;
-                font-weight: 600 !important;
+                font-size: 32px !important; font-weight: 600 !important;
                 padding: 28px 36px !important;
-                width: 420px !important;
-                min-height: 90px !important;
-                line-height: 1.2 !important;
+                width: 420px !important; min-height: 90px !important;
                 border-radius: 12px !important;
-                transition: 0.3s ease-in-out;
                 text-align: left !important;
-                overflow: visible !important;
-                height: auto !important;
-                display: block !important;
             }
             div.stButton > button:hover {
                 border-color: white !important;
                 background-color: rgba(255, 255, 255, 0.1) !important;
             }
-            .menu-grid {
-                display: flex;
-                flex-direction: column;
-                gap: 20px;
-            }
+            .menu-grid { display: flex; flex-direction: column; gap: 20px; }
         </style>
     """, unsafe_allow_html=True)
 
     st.markdown("<div class='main-section'>", unsafe_allow_html=True)
-
-    # UPDATED: Title & subtitle
-    st.markdown(
-        "<div class='main-title'>Welcome to the AI-powered Explorer of the Public Service Employee Survey (PSES)</div>",
-        unsafe_allow_html=True
-    )
-    st.markdown(
-        "<div class='subtitle'>This AI-powered app provides Public Service-wide survey results and analysis</div>",
-        unsafe_allow_html=True
-    )
+    st.markdown("<div class='main-title'>Welcome to the AI-powered Explorer of the Public Service Employee Survey (PSES)</div>", unsafe_allow_html=True)
+    st.markdown("<div class='subtitle'>This AI-powered app provides Public Service-wide survey results and analysis</div>", unsafe_allow_html=True)
     st.markdown("<div class='survey-years'>(2019, 2020, 2022, and 2024)</div>", unsafe_allow_html=True)
 
     st.markdown("<div class='menu-grid'>", unsafe_allow_html=True)
 
-    # RENAMED: Menu 1
+    # ✅ Single-click menu navigation (no wireframe flash)
     if st.button("🔍 Search by Survey Question", key="menu1_button"):
         st.session_state.run_menu = "1"
-        st.experimental_rerun()
+        st.rerun()
 
-    # RENAMED: Menu 2
     if st.button("🧩 Search by keywords or theme", key="menu2_button"):
         st.session_state.run_menu = "2"
-        st.experimental_rerun()
+        st.rerun()
 
-    # REMOVED: Menu 3 button
-
-    # Menu 4 unchanged
     if st.button("📋 View Questionnaire", key="menu4_button"):
         st.session_state.run_menu = "4"
-        st.experimental_rerun()
+        st.rerun()
 
     st.markdown("</div>", unsafe_allow_html=True)
 
