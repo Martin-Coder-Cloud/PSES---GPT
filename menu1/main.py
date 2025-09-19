@@ -6,6 +6,7 @@ import io
 import json
 import os
 import time
+import threading
 from datetime import datetime
 
 import pandas as pd
@@ -18,7 +19,7 @@ from utils.data_loader import (
     load_results2024_filtered,
     get_results2024_schema,
     get_results2024_schema_inferred,
-    _resolve_results_path,   # <— used to show actual data path
+    _resolve_results_path,   # <— used to show actual data path if needed elsewhere
 )
 
 # Ensure OpenAI key is available from Streamlit secrets (no hardcoding)
@@ -267,9 +268,9 @@ def detect_metric_mode(df_disp: pd.DataFrame, scale_pairs) -> dict:
     Returns:
       {
         "mode": "positive" | "agree" | "answer1",
-        "metric_col": str,         # column present in df_disp
-        "ui_label": str,           # string to display under title and summary table
-        "metric_label": str,       # human phrasing to pass to AI (“% positive” | “% agree” | “% <Answer1 label>”)
+        "metric_col": str,
+        "ui_label": str,
+        "metric_label": str,
         "answer1_label": str | None
       }
     """
@@ -306,7 +307,6 @@ def detect_metric_mode(df_disp: pd.DataFrame, scale_pairs) -> dict:
             if k.lower() == "answer1":
                 answer1_label = v
                 break
-    # Use the human-labeled column in df_disp that matches answer1_label
     if answer1_label and answer1_label in df_disp.columns:
         if PD.to_numeric(df_disp[answer1_label], errors="coerce").notna().any():
             return {
@@ -317,7 +317,7 @@ def detect_metric_mode(df_disp: pd.DataFrame, scale_pairs) -> dict:
                 "answer1_label": answer1_label,
             }
 
-    # Fallback (UI can still render gracefully)
+    # Fallback
     return {
         "mode": "positive",
         "metric_col": cols_l.get("positive", "POSITIVE"),
@@ -563,7 +563,7 @@ def _ai_narrative_and_storytable(
 
 
 # ─────────────────────────────
-# 🔎 AI Health Check (used in Diagnostics)
+# 🔎 AI Health Check (auto-run inside Diagnostics → AI prompt visibility)
 # ─────────────────────────────
 def run_ai_health_check():
     """Small, non-data test call to verify key + connectivity + model reachability."""
@@ -742,20 +742,11 @@ def build_pdf_report(
 
 
 # ─────────────────────────────
-# Small helper to detect backend + path (non-fatal if unavailable)
+# Small helper to detect backend (non-fatal if unavailable)
 # ─────────────────────────────
-def _detect_backend_and_path():
-    # Path: use loader helper when available
-    path = None
-    try:
-        path = _resolve_results_path()
-    except Exception:
-        pass
-
-    # Backend: try several optional attributes/functions from the loader module
+def _detect_backend():
     backend = None
     try:
-        # common patterns we might expose from utils.data_loader
         if hasattr(_dl, "LAST_BACKEND"):
             backend = getattr(_dl, "LAST_BACKEND")
         elif hasattr(_dl, "get_last_backend") and callable(_dl.get_last_backend):
@@ -764,8 +755,7 @@ def _detect_backend_and_path():
             backend = getattr(_dl, "BACKEND_IN_USE")
     except Exception:
         backend = None
-
-    return path, backend
+    return backend or ("DuckDB" if os.environ.get("USE_DUCKDB", "1") == "1" else "pandas")
 
 
 # ─────────────────────────────
@@ -777,7 +767,7 @@ def run_menu1():
     <style>
       .custom-header{ font-size: 26px; font-weight: 700; margin-bottom: 8px; }
       .custom-instruction{ font size: 15px; line-height: 1.4; margin-bottom: 8px; color: #333; }
-      .field-label{ font size: 16px; font-weight: 600; margin: 10px 0 2px; color: #222; }
+      .field-label{ font-size: 16px; font-weight: 600; margin: 10px 0 2px; color: #222; }
       .big-button button{ font-size: 16px; padding: 0.6em 1.6em; margin-top: 16px; }
       .tiny-note{ font-size: 12px; color: #666; margin-top: -4px; margin-bottom: 10px; }
       .q-sub{ font-size: 14px; color: #333; margin-top: -4px; margin-bottom: 2px; }
@@ -925,23 +915,12 @@ def run_menu1():
                         "metadata/Demographics.xlsx": os.path.exists("metadata/Demographics.xlsx"),
                     }
                     info["metadata_files_exist"] = files
-                    # results path (plus stash for later)
-                    try:
-                        results_path = _resolve_results_path()
-                        info["results_file_path"] = results_path
-                        st.session_state["results_file_path"] = results_path
-                    except Exception as e:
-                        info["results_file_path_error"] = str(e)
-                    # backend hint if the loader exposes it
-                    path_hint, backend_hint = _detect_backend_and_path()
-                    if backend_hint:
-                        info["data_backend_hint"] = backend_hint
                     st.write(info)
 
-                # 3) AI prompt visibility (with health check button)
+                # 3) AI prompt visibility — AUTO health check first; no button
                 with tabs[2]:
-                    if st.button("Run AI health check"):
-                        run_ai_health_check()
+                    st.caption("AI connectivity")
+                    run_ai_health_check()
 
                     model_used = (st.session_state.get("last_ai_model")
                                   or st.secrets.get("OPENAI_MODEL")
@@ -954,33 +933,33 @@ def run_menu1():
                     if not sys_txt and not usr_txt:
                         st.info("No AI prompt available yet. Run a query with AI enabled to populate this view.")
                     else:
-                        st.markdown("**System prompt (exact):**")
-                        with st.expander("Show / hide system prompt", expanded=False):
+                        show_sys = st.checkbox("Show system prompt", value=False)
+                        if show_sys:
                             st.code(sys_txt, language="markdown")
 
-                        st.markdown("**User payload (JSON sent to the model):**")
                         kb = len(usr_txt.encode("utf-8")) / 1024.0
-                        st.caption(f"Approx size: ~{kb:.1f} KB")
-                        with st.expander("Show / hide full JSON payload", expanded=False):
+                        st.caption(f"User JSON payload (~{kb:.1f} KB)")
+                        show_user = st.checkbox("Show user JSON", value=False)
+                        if show_user:
                             st.code(usr_txt, language="json")
 
         # Run query (single pass, cached big file)
         if st.button("🔎 Run query"):
-            # Live status line that we can update while spinner is showing
+            # live status line with engine & clock (no data paths)
+            engine_label = _detect_backend()
             live = st.empty()
 
-            # Initial hint before we start: show source path if we can resolve it up-front
-            pre_path, pre_backend = _detect_backend_and_path()
-            if not pre_path:
-                try:
-                    pre_path = st.session_state.get("results_file_path") or _resolve_results_path()
-                except Exception:
-                    pre_path = None
+            # timer thread to show elapsed seconds beside the spinner
+            stop_flag = {"run": True}
+            def _timer_loop():
+                t0 = time.perf_counter()
+                while stop_flag["run"]:
+                    elapsed = time.perf_counter() - t0
+                    live.caption(f"Processing… engine: {engine_label} • {elapsed:.1f}s")
+                    time.sleep(0.2)
 
-            # Also show open.canada.ca dataset as the public source
-            public_src = "https://open.canada.ca/data/en/dataset/7f625e97-9d02-4c12-a756-1ddebb50e69f"
-
-            live.caption(f"Processing data… source: {public_src} • file: {pre_path or 'detecting…'} • engine: {pre_backend or 'detecting…'}")
+            t_thread = threading.Thread(target=_timer_loop, daemon=True)
+            t_thread.start()
 
             t0 = time.perf_counter()
             with st.spinner("Processing data…"):
@@ -988,6 +967,8 @@ def run_menu1():
                 scale_pairs = get_scale_labels(load_scales_metadata(), question_code)
                 if scale_pairs is None or len(scale_pairs) == 0:
                     qnorm = _normalize_qcode(question_code)
+                    stop_flag["run"] = False
+                    live.caption("Processing aborted • missing scale metadata")
                     st.error(
                         f"Metadata scale not found for question '{question_code}' (normalized '{qnorm}'). "
                         "No results are displayed to avoid mislabeling. Please verify 'Survey Scales.xlsx'."
@@ -1021,13 +1002,15 @@ def run_menu1():
                     )
 
                 if df_raw is None or df_raw.empty:
-                    live.caption("Processing data… done • no rows returned")
+                    stop_flag["run"] = False
+                    live.caption("Processing complete • no rows returned")
                     st.info("No data found for this selection.")
                     return
 
                 df_raw = exclude_999_raw(df_raw)
                 if df_raw.empty:
-                    live.caption("Processing data… done • all rows were suppressed (999/9999)")
+                    stop_flag["run"] = False
+                    live.caption("Processing complete • all rows were suppressed (999/9999)")
                     st.info("Data exists, but all rows are not applicable (999/9999).")
                     return
 
@@ -1056,22 +1039,14 @@ def run_menu1():
                 )
 
             elapsed = (time.perf_counter() - t0)
-            # Now that loading is done, update backend + path definitively
-            post_path, post_backend = _detect_backend_and_path()
-            if not post_path:
-                post_path = pre_path
-            live.caption(
-                f"Processing complete in {elapsed:.1f}s • source: {public_src} • file: {post_path or 'unknown'} • engine: {post_backend or 'unknown'}"
-            )
+            stop_flag["run"] = False
+            live.caption(f"Processing complete in {elapsed:.1f}s • engine: {engine_label}")
 
-            # Results table (with source caption again for visibility)
-            st.caption(f"Data source: {public_src}")
-            if post_path:
-                st.caption(f"Local file used: {post_path}")
-            if post_backend:
-                st.caption(f"Backend engine: {post_backend}")
-
+            # Results table
             st.dataframe(df_disp, use_container_width=True)
+            # REQUIRED: show the data source URL below the table (no local file paths)
+            st.caption("Data source: https://open.canada.ca/data/en/dataset/7f625e97-9d02-4c12-a756-1ddebb50e69f")
+            st.caption(f"Backend engine: {engine_label}")
 
             # Decide metric per FINAL rule
             decision = detect_metric_mode(df_disp, scale_pairs)
