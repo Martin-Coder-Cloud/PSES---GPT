@@ -776,8 +776,8 @@ def run_menu1():
         """
     <style>
       .custom-header{ font-size: 26px; font-weight: 700; margin-bottom: 8px; }
-      .custom-instruction{ font-size: 15px; line-height: 1.4; margin-bottom: 8px; color: #333; }
-      .field-label{ font-size: 16px; font-weight: 600; margin: 10px 0 2px; color: #222; }
+      .custom-instruction{ font size: 15px; line-height: 1.4; margin-bottom: 8px; color: #333; }
+      .field-label{ font size: 16px; font-weight: 600; margin: 10px 0 2px; color: #222; }
       .big-button button{ font-size: 16px; padding: 0.6em 1.6em; margin-top: 16px; }
       .tiny-note{ font-size: 12px; color: #666; margin-top: -4px; margin-bottom: 10px; }
       .q-sub{ font-size: 14px; color: #333; margin-top: -4px; margin-bottom: 2px; }
@@ -977,7 +977,10 @@ def run_menu1():
                 except Exception:
                     pre_path = None
 
-            live.caption(f"Processing data… source: {pre_path or 'detecting…'} • engine: {pre_backend or 'detecting…'}")
+            # Also show open.canada.ca dataset as the public source
+            public_src = "https://open.canada.ca/data/en/dataset/7f625e97-9d02-4c12-a756-1ddebb50e69f"
+
+            live.caption(f"Processing data… source: {public_src} • file: {pre_path or 'detecting…'} • engine: {pre_backend or 'detecting…'}")
 
             t0 = time.perf_counter()
             with st.spinner("Processing data…"):
@@ -1058,12 +1061,13 @@ def run_menu1():
             if not post_path:
                 post_path = pre_path
             live.caption(
-                f"Processing complete in {elapsed:.1f}s • source: {post_path or 'unknown'} • engine: {post_backend or 'unknown'}"
+                f"Processing complete in {elapsed:.1f}s • source: {public_src} • file: {post_path or 'unknown'} • engine: {post_backend or 'unknown'}"
             )
 
             # Results table (with source caption again for visibility)
+            st.caption(f"Data source: {public_src}")
             if post_path:
-                st.caption(f"Data source: {post_path}")
+                st.caption(f"Local file used: {post_path}")
             if post_backend:
                 st.caption(f"Backend engine: {post_backend}")
 
