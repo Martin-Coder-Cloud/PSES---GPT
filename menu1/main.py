@@ -223,9 +223,8 @@ def format_display_table_raw(
     df: pd.DataFrame, category_in_play: bool, dem_disp_map: dict, scale_pairs
 ) -> pd.DataFrame:
     """
-    Build the display table using ONLY the scale columns provided by scale_pairs (strict),
-    plus commonly used summary columns if present.
-    Human labels from metadata are applied to the answer columns.
+    Build the display table using ONLY the scale columns specified by metadata,
+    plus summary columns if present. Apply human labels to answer columns.
     """
     if df.empty:
         return df.copy()
@@ -241,18 +240,15 @@ def format_display_table_raw(
             return dem_disp_map.get(key, str(code))
         out["Demographic"] = out["DEMCODE"].apply(to_label)
 
-    # STRICT: only the answer columns specified by metadata scale
     dist_cols_raw = []
     rename_map = {}
     if scale_pairs:
         for k, v in scale_pairs:
             ku = k.upper()
             if ku in out.columns:
-                dist_cols_raw.append(ku)
-                rename_map[ku] = v
+                dist_cols_raw.append(ku); rename_map[ku] = v
             elif k in out.columns:
-                dist_cols_raw.append(k)
-                rename_map[k] = v
+                dist_cols_raw.append(k);  rename_map[k]  = v
 
     keep_cols = (
         ["Year"]
@@ -274,38 +270,23 @@ def format_display_table_raw(
 # Metric decision (FINAL rule)
 # ─────────────────────────────
 def detect_metric_mode(df_disp: pd.DataFrame, scale_pairs) -> dict:
-    """
-    FINAL rule:
-      1) POSITIVE if usable
-      2) else AGREE if usable
-      3) else Answer1 (human label from scale metadata)
-    """
     cols_l = {c.lower(): c for c in df_disp.columns}
-
-    # 1) POSITIVE
     if "positive" in cols_l:
         col = cols_l["positive"]
         if PD.to_numeric(df_disp[col], errors="coerce").notna().any():
             return {"mode": "positive", "metric_col": col, "ui_label": "(% positive answers)", "metric_label": "% positive", "answer1_label": None}
-
-    # 2) AGREE
     if "agree" in cols_l:
         col = cols_l["agree"]
         if PD.to_numeric(df_disp[col], errors="coerce").notna().any():
             return {"mode": "agree", "metric_col": col, "ui_label": "(% agree)", "metric_label": "% agree", "answer1_label": None}
-
-    # 3) Answer1 (fallback)
     answer1_label = None
     if scale_pairs:
         for k, v in scale_pairs:
             if k.lower() == "answer1":
-                answer1_label = v
-                break
+                answer1_label = v; break
     if answer1_label and answer1_label in df_disp.columns:
         if PD.to_numeric(df_disp[answer1_label], errors="coerce").notna().any():
             return {"mode": "answer1", "metric_col": answer1_label, "ui_label": f"(% {answer1_label})", "metric_label": f"% {answer1_label}", "answer1_label": answer1_label}
-
-    # Fallback
     return {"mode": "positive", "metric_col": cols_l.get("positive", "POSITIVE"), "ui_label": "(% positive answers)", "metric_label": "% positive", "answer1_label": None}
 
 
@@ -408,14 +389,13 @@ def _ai_narrative_and_storytable(df_disp: pd.DataFrame, question_code: str, ques
         "In 2024, 186,635 employees across 93 departments and agencies responded (50.5% response rate).\n"
         "\n"
         "DATA PROVENANCE (STRICT):\n"
-        "All statistics, trends, and comparisons must be derived strictly from the values in the provided JSON payload "
-        "(which mirrors the displayed tabulation). Do not guess or impute. If a required value is not present, omit it.\n"
+        "All statistics, trends, and comparisons must be derived strictly from the values in the provided JSON payload.\n"
         "\n"
         "NARRATIVE RULES (REFINED):\n"
         "• Start with the 2024 All respondents value for the chosen metric.\n"
-        "• Trend over time (if ≥2 years): compare latest to baseline. Stable (≤1 pt), Slight (>1–2 pts), Notable (>2 pts).\n"
-        "• Demographics (if present): focus on latest year, largest pairwise gap, classify gaps (≤2 normal, >2–5 notable, >5 important).\n"
-        "• Use exact metric_label wording; executive, factual tone; no speculation.\n"
+        "• Trend over time (if ≥2 years): Stable (≤1 pt), Slight (>1–2 pts), Notable (>2 pts).\n"
+        "• Demographics (if present): focus on latest year; largest pairwise gap; classify gaps.\n"
+        "• Use exact metric_label wording; executive, factual tone.\n"
         "OUTPUT: JSON object with only 'narrative'.\n"
     )
     user_payload = {"metric_label": metric_label, "payload": data, "notes": {"trend_thresholds": {"stable": 1.0, "slight": (1.0, 2.0), "notable": 2.0}, "gap_qualification": {"normal": 2.0, "notable": (2.0, 5.0), "important": 5.0}}}
@@ -680,7 +660,8 @@ def run_menu1():
         dem_display = ["All respondents" if c is None else str(c).strip() for c in demcodes]
 
         # ──────────────────────────────────────────────────────────────────────
-        # Diagnostics (single expander with 4 tabs — now includes Loading details)
+        # Diagnostics (single expander with 4 tabs — includes Loading details)
+        # Rendered ABOVE the Run button, and populated from session_state
         # ──────────────────────────────────────────────────────────────────────
         if show_debug:
             with st.expander("🛠 Diagnostics", expanded=False):
@@ -688,7 +669,7 @@ def run_menu1():
                     "1) Parameters sent to the database",
                     "2) Environment diagnostics",
                     "3) AI prompt visibility",
-                    "4) Loading details",   # <-- new tab you asked for
+                    "4) Loading details",   # <-- your requested tab
                 ])
 
                 # 1) Parameters
@@ -701,7 +682,7 @@ def run_menu1():
                     )
                     st.dataframe(params_df, use_container_width=True, hide_index=True)
 
-                # 2) Environment diagnostics (automatic)
+                # 2) Environment diagnostics
                 with tabs[1]:
                     info = {}
                     info["OPENAI_API_KEY_present"] = bool(os.environ.get("OPENAI_API_KEY", "").strip())
@@ -721,7 +702,7 @@ def run_menu1():
                     info["metadata_files_exist"] = files
                     st.write(info)
 
-                # 3) AI prompt visibility (no button; show last health check & prompts)
+                # 3) AI prompt visibility
                 with tabs[2]:
                     hc = st.session_state.get("ai_health_result") or {}
                     status = hc.get("status", "info"); detail = hc.get("detail", "")
@@ -740,15 +721,54 @@ def run_menu1():
                         kb = len(usr_txt.encode("utf-8")) / 1024.0; st.caption(f"Approx size: ~{kb:.1f} KB")
                         st.code(usr_txt, language="json")
 
-                # 4) Loading details (engine / path / timings) — filled after a run
+                # 4) Loading details — populated from session_state (latest run)
                 with tabs[3]:
-                    st.info("Run a query to populate loading details below.")
+                    st.subheader("Loading & Backend Details")
+                    # Diagnostics from loader (persist last known so it shows above the run)
+                    diag = st.session_state.get("last_loader_diag") or {}
+                    if not diag:
+                        # Try live read from loader if available
+                        try:
+                            diag = get_last_query_diag() or {}
+                        except Exception:
+                            diag = {}
+
+                    if diag:
+                        st.markdown(
+                            f"**Engine**: `{diag.get('engine','?')}` &nbsp;&nbsp; "
+                            f"**Elapsed**: `{diag.get('elapsed_ms','?')} ms` &nbsp;&nbsp; "
+                            f"**Rows**: `{diag.get('rows','?')}`"
+                        )
+                        cols = ["engine","elapsed_ms","rows","question_code","years","group_value","parquet_dir","csv_path","parquet_error"]
+                        diag_rows = [{"Field": k, "Value": diag.get(k)} for k in cols if k in diag]
+                        if diag_rows:
+                            st.table(pd.DataFrame(diag_rows))
+                    else:
+                        # Fallback: static backend info
+                        try:
+                            info = _dl.get_backend_info() if hasattr(_dl, "get_backend_info") else {}
+                        except Exception:
+                            info = {}
+                        if info:
+                            st.write(info)
+                        else:
+                            st.info("No loader diagnostics available yet. Run a query to populate this tab.")
+
+                    # Step timings (from previous run)
+                    last_steps = st.session_state.get("last_prof_steps") or []
+                    if last_steps:
+                        st.markdown("**Step timings (ms)**")
+                        prof_df = PD.DataFrame(
+                            [{"Step": name, "Duration (ms)": int(dt * 1000)} for name, dt in last_steps]
+                        ).sort_values("Duration (ms)", ascending=False, ignore_index=True)
+                        total_ms = int(sum(dt for _, dt in last_steps) * 1000)
+                        st.caption(f"Total (profiled): ~{total_ms} ms")
+                        st.table(prof_df)
 
         # Run query (single pass, cached big file)
         if st.button("🔎 Run query"):
             engine_used = _detect_backend()
             status_line = st.empty()  # live line for engine + elapsed seconds
-
             prof = Profiler()
             t0_global = time.perf_counter()
 
@@ -793,14 +813,12 @@ def run_menu1():
                 with prof.step("Sort & format table", live=status_line, engine=engine_used, t0_global=t0_global):
                     if "SURVEYR" in df_raw.columns:
                         df_raw = df_raw.sort_values(by="SURVEYR", ascending=False)
-
                     dem_map_clean = {None: "All respondents"}
                     try:
                         for k, v in (disp_map or {}).items():
                             dem_map_clean[(None if k is None else str(k).strip())] = v
                     except Exception:
                         pass
-
                     df_disp = format_display_table_raw(df=df_raw, category_in_play=category_in_play, dem_disp_map=dem_map_clean, scale_pairs=scale_pairs)
 
             total_s = time.perf_counter() - t0_global
@@ -856,8 +874,6 @@ def run_menu1():
             else:
                 st.info("No summary table could be generated for the current selection.")
 
-            # NOTE: Processing profile was moved to Diagnostics → Loading details tab
-
             # Downloads
             with io.BytesIO() as xbuf:
                 with PD.ExcelWriter(xbuf, engine="xlsxwriter") as writer:
@@ -875,64 +891,13 @@ def run_menu1():
             else:
                 st.caption("PDF export unavailable (install `reportlab` in requirements to enable).")
 
-            # ── After run, update the Diagnostics → Loading details tab content ──
-            if st.session_state.get("show_debug", False):
-                with st.expander("🛠 Diagnostics", expanded=False):
-                    # Recreate the same 4 tabs to safely write into the 4th one
-                    tabs = st.tabs([
-                        "1) Parameters sent to the database",
-                        "2) Environment diagnostics",
-                        "3) AI prompt visibility",
-                        "4) Loading details",
-                    ])
-                    with tabs[3]:
-                        st.subheader("Loading & Backend Details")
-
-                        # 1) Engine / paths / elapsed / rows (if loader exposes diagnostics)
-                        diag = {}
-                        try:
-                            diag = get_last_query_diag() or {}
-                        except Exception:
-                            diag = {}
-
-                        if diag:
-                            st.markdown(
-                                f"**Engine**: `{diag.get('engine','?')}` &nbsp;&nbsp; "
-                                f"**Elapsed**: `{diag.get('elapsed_ms','?')} ms` &nbsp;&nbsp; "
-                                f"**Rows**: `{diag.get('rows','?')}`"
-                            )
-                            cols = ["engine","elapsed_ms","rows","question_code","years","group_value","parquet_dir","csv_path","parquet_error"]
-                            diag_rows = [{"Field": k, "Value": diag.get(k)} for k in cols if k in diag]
-                            if diag_rows:
-                                st.table(pd.DataFrame(diag_rows))
-                        else:
-                            # Fall back to static backend info if diagnostics are not implemented in the loader
-                            try:
-                                info = _dl.get_backend_info() if hasattr(_dl, "get_backend_info") else {}
-                            except Exception:
-                                info = {}
-                            if info:
-                                st.write(info)
-                            else:
-                                st.info("No loader diagnostics available for this session.")
-
-                        # 2) Step timings (moved here)
-                        if prof.steps:
-                            st.markdown("**Step timings (ms)**")
-                            prof_df = PD.DataFrame(
-                                [{"Step": name, "Duration (ms)": int(dt * 1000)} for name, dt in prof.steps]
-                            ).sort_values("Duration (ms)", ascending=False, ignore_index=True)
-                            total_ms = int(sum(dt for _, dt in prof.steps) * 1000)
-                            st.caption(f"Total (profiled): ~{total_ms} ms")
-                            st.table(prof_df)
-
-                        # 3) Optional: show resolved raw path if available
-                        try:
-                            path_hint = _resolve_results_path()
-                            if path_hint:
-                                st.caption(f"Resolved results path: `{path_hint}`")
-                        except Exception:
-                            pass
+            # ── Persist diagnostics for the expander tabs (so they show above on next render)
+            try:
+                st.session_state["last_loader_diag"] = get_last_query_diag() or {}
+            except Exception:
+                st.session_state["last_loader_diag"] = {}
+            st.session_state["last_prof_steps"] = list(prof.steps)
+            # No extra expander below; the Diagnostics expander above will show updated info on rerender.
 
 
 if __name__ == "__main__":
