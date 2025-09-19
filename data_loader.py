@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import os
 import time
-from typing import Iterable, Optional, List
+from typing import Iterable, Optional
 
 import pandas as pd
 import streamlit as st
@@ -12,8 +12,8 @@ import streamlit as st
 # Configuration
 # =============================================================================
 
-# Google Drive CSV (you already use this)
-GDRIVE_FILE_ID_FALLBACK = "1VdMQQfEP-BNXle8GeD-Z_uPIGvc8"  # keep your real one in secrets if you have it
+# Google Drive CSV (set real ID in Streamlit secrets as RESULTS2024_FILE_ID)
+GDRIVE_FILE_ID_FALLBACK = "1VdMQQfEP-BNXle8GeD-Z_uPIGvc8"  # placeholder
 LOCAL_GZ_PATH = os.environ.get("PSES_RESULTS_GZ", "/tmp/Results2024.csv.gz")
 
 # Parquet dataset location (directory). Prefer a persistent folder.
@@ -26,7 +26,6 @@ OUT_COLS = [
     "positive_pct", "neutral_pct", "negative_pct",
     "answer1", "answer2", "answer3", "answer4", "answer5", "answer6", "answer7",
 ]
-
 DTYPES = {
     "year": "Int16",
     "question_code": "string",
@@ -47,27 +46,25 @@ CSV_USECOLS = [
 ]
 
 # =============================================================================
-# Internal diagnostics (for Menu 1 tab)
+# Internal diagnostics (visible in Menu 1 → Diagnostics → Loading details)
 # =============================================================================
 _LAST_DIAG: dict = {}
 _LAST_ENGINE: str = "unknown"
 
-
 def _set_diag(**kwargs):
-    global _LAST_DIAG
+    _LAST_DIAG.clear()
     _LAST_DIAG.update(kwargs)
-
 
 def get_last_query_diag() -> dict:
     """
     Returns diagnostics for the most recent load_results2024_filtered call:
-      { engine, elapsed_ms, rows, question_code, years, group_value, parquet_dir, csv_path, parquet_error }
+      { engine, elapsed_ms, rows, question_code, years, group_value,
+        parquet_dir, csv_path, parquet_error }
     """
     return dict(_LAST_DIAG)
 
-
 # =============================================================================
-# Small capability checks
+# Capability checks
 # =============================================================================
 def _duckdb_available() -> bool:
     try:
@@ -75,7 +72,6 @@ def _duckdb_available() -> bool:
         return True
     except Exception:
         return False
-
 
 def _pyarrow_available() -> bool:
     try:
@@ -86,9 +82,8 @@ def _pyarrow_available() -> bool:
     except Exception:
         return False
 
-
 # =============================================================================
-# Download the CSV (cached)
+# CSV presence (cached)
 # =============================================================================
 @st.cache_resource(show_spinner="📥 Downloading Results2024.csv.gz…")
 def ensure_results2024_local(file_id: Optional[str] = None) -> str:
@@ -107,9 +102,8 @@ def ensure_results2024_local(file_id: Optional[str] = None) -> str:
         raise RuntimeError("Download failed or produced an empty file.")
     return LOCAL_GZ_PATH
 
-
 # =============================================================================
-# Build Parquet dataset once (preferred fast path)
+# Build Parquet one-time
 # =============================================================================
 def _build_parquet_with_duckdb(csv_path: str) -> None:
     import duckdb
@@ -140,7 +134,6 @@ def _build_parquet_with_duckdb(csv_path: str) -> None:
         (FORMAT PARQUET, COMPRESSION 'ZSTD', ROW_GROUP_SIZE 1000000,
          PARTITION_BY (year, question_code));
     """)
-
 
 def _build_parquet_with_pandas(csv_path: str) -> None:
     import pyarrow as pa
@@ -175,12 +168,9 @@ def _build_parquet_with_pandas(csv_path: str) -> None:
         compression="zstd",
     )
 
-
 @st.cache_resource(show_spinner="🗂️ Preparing Parquet dataset (one-time)…")
 def ensure_parquet_dataset() -> str:
-    """
-    Ensures a partitioned Parquet dataset exists and returns its root directory.
-    """
+    """Ensures a partitioned Parquet dataset exists and returns its root directory."""
     if not _pyarrow_available():
         raise RuntimeError("pyarrow is required for Parquet fast path.")
     csv_path = ensure_results2024_local()
@@ -199,9 +189,8 @@ def ensure_parquet_dataset() -> str:
         f.write("ok")
     return PARQUET_ROOTDIR
 
-
 # =============================================================================
-# Fast Parquet query
+# Parquet query
 # =============================================================================
 def _parquet_query(question_code: str, years: Iterable[int | str], group_value: Optional[str]) -> pd.DataFrame:
     import pyarrow.dataset as ds
@@ -220,8 +209,7 @@ def _parquet_query(question_code: str, years: Iterable[int | str], group_value: 
     else:
         filt = filt & (pc.field("group_value") == str(group_value).strip())
 
-    cols = OUT_COLS
-    tbl = dataset.to_table(columns=cols, filter=filt)
+    tbl = dataset.to_table(columns=OUT_COLS, filter=filt)
     df = tbl.to_pandas(types_mapper=pd.ArrowDtype)
 
     # Cast to friendly dtypes
@@ -235,9 +223,8 @@ def _parquet_query(question_code: str, years: Iterable[int | str], group_value: 
     df["group_value"]   = df["group_value"].astype(DTYPES["group_value"])
     return df
 
-
 # =============================================================================
-# Legacy CSV chunk scanner (fallback)
+# CSV fallback
 # =============================================================================
 def _csv_stream_filter(
     question_code: str,
@@ -293,9 +280,8 @@ def _csv_stream_filter(
     df["group_value"]   = df["group_value"].astype(DTYPES["group_value"])
     return df[OUT_COLS]
 
-
 # =============================================================================
-# Public API (unchanged signature) — now with explicit diagnostics
+# Public API (unchanged) — now with explicit diagnostics
 # =============================================================================
 @st.cache_data(show_spinner="🔎 Filtering results…")
 def load_results2024_filtered(
@@ -306,13 +292,13 @@ def load_results2024_filtered(
     """
     Returns a filtered slice at (question_code, years, group_value) grain.
     Prefers Parquet pushdown; falls back to CSV chunk scan.
+    Records detailed diagnostics for the UI.
     """
     global _LAST_ENGINE
     parquet_error = None
     t0 = time.perf_counter()
-    rows = 0
 
-    # Try Parquet fast path
+    # Try Parquet
     if _pyarrow_available():
         try:
             df = _parquet_query(question_code, years, group_value)
@@ -323,7 +309,7 @@ def load_results2024_filtered(
                 engine=_LAST_ENGINE,
                 elapsed_ms=elapsed_ms,
                 rows=rows,
-                question_code=question_code,
+                question_code=str(question_code),
                 years=",".join(str(y) for y in years),
                 group_value=("All" if group_value in (None, "", "all", "All") else str(group_value)),
                 parquet_dir=PARQUET_ROOTDIR,
@@ -343,7 +329,7 @@ def load_results2024_filtered(
         engine=_LAST_ENGINE,
         elapsed_ms=elapsed_ms,
         rows=rows,
-        question_code=question_code,
+        question_code=str(question_code),
         years=",".join(str(y) for y in years),
         group_value=("All" if group_value in (None, "", "all", "All") else str(group_value)),
         parquet_dir=PARQUET_ROOTDIR,
@@ -352,12 +338,10 @@ def load_results2024_filtered(
     )
     return df
 
-
 # =============================================================================
-# Optional helpers (for diagnostics / prewarm)
+# Helpers for UI (Diagnostics / prewarm)
 # =============================================================================
 def get_backend_info() -> dict:
-    """Lightweight indicator for UI captions."""
     return {
         "parquet_dir_exists": os.path.isdir(PARQUET_ROOTDIR),
         "parquet_ready": os.path.exists(PARQUET_FLAG),
@@ -366,17 +350,15 @@ def get_backend_info() -> dict:
         "last_engine": _LAST_ENGINE,
     }
 
-
 @st.cache_resource(show_spinner="⚡ Warming up data backend…")
 def prewarm_fastpath() -> str:
     """
     Ensure CSV is present and Parquet dataset is built (one-time).
-    Call this from your main page to pre-build before a user opens Menu 1.
+    Returns 'parquet' if Parquet is ready, else 'csv'.
     """
     ensure_results2024_local()
     try:
         ensure_parquet_dataset()
         return "parquet"
     except Exception:
-        # If pyarrow/duckdb missing, we still prefetch CSV for faster fallback.
         return "csv"
