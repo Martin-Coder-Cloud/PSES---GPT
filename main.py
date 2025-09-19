@@ -1,6 +1,6 @@
 import streamlit as st
 
-# Prewarm imports (safe if utils not available yet)
+# NEW: prewarm imports (safe if utils not available yet)
 try:
     from utils.data_loader import prewarm_fastpath, get_backend_info
 except Exception:
@@ -21,7 +21,7 @@ def main():
     if "run_menu" not in st.session_state:
         st.session_state.run_menu = None
 
-    # Prewarm Parquet/CSV backend on home page before any menu loads
+    # NEW: prewarm Parquet/CSV backend on home page before any menu loads
     if prewarm_fastpath is not None and st.session_state.run_menu is None:
         with st.spinner("Preparing data backend (one-time)…"):
             backend = prewarm_fastpath()
@@ -32,7 +32,7 @@ def main():
             else:
                 st.caption(f"✅ Parquet ready at: {info.get('parquet_dir')}")
 
-    # Menu routing (Menu 3 removed)
+    # ===== Routing (Menu 3 removed) =====
     if st.session_state.run_menu == "1":
         from menu1.main import run_menu1
         show_return_then_run(run_menu1)
@@ -46,7 +46,6 @@ def main():
         show_return_then_run(run_menu4)
         return
 
-    # ===== Landing page (original CSS kept so background + buttons show) =====
     st.markdown("""
         <style>
             .block-container {
@@ -81,7 +80,6 @@ def main():
                 margin-bottom: 40px;
                 color: white;
             }
-
             div.stButton > button {
                 background-color: transparent !important;
                 color: white !important;
@@ -103,7 +101,6 @@ def main():
                 border-color: white !important;
                 background-color: rgba(255, 255, 255, 0.1) !important;
             }
-
             .menu-grid {
                 display: flex;
                 flex-direction: column;
@@ -114,7 +111,7 @@ def main():
 
     st.markdown("<div class='main-section'>", unsafe_allow_html=True)
 
-    # UPDATED title & subtitle (as requested)
+    # UPDATED: Title & subtitle
     st.markdown(
         "<div class='main-title'>Welcome to the AI-powered Explorer of the Public Service Employee Survey (PSES)</div>",
         unsafe_allow_html=True
@@ -129,19 +126,21 @@ def main():
 
     # RENAMED: Menu 1
     if st.button("🔍 Search by Survey Question", key="menu1_button"):
-        st.session_state.run_menu = "1"   # rely on Streamlit's automatic rerun
+        st.session_state.run_menu = "1"
+        st.experimental_rerun()
 
     # RENAMED: Menu 2
     if st.button("🧩 Search by keywords or theme", key="menu2_button"):
         st.session_state.run_menu = "2"
+        st.experimental_rerun()
 
     # REMOVED: Menu 3 button
 
     # Menu 4 unchanged
     if st.button("📋 View Questionnaire", key="menu4_button"):
         st.session_state.run_menu = "4"
+        st.experimental_rerun()
 
-    st.markdown("</div>", unsafe_allow_html=True)
     st.markdown("</div>", unsafe_allow_html=True)
 
 if __name__ == "__main__":
