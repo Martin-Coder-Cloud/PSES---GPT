@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import os
 import re
-from typing import Iterable, List, Optional, Tuple
+from typing import Iterable, List, Optional
 
 import pandas as pd
 import streamlit as st
@@ -139,7 +139,7 @@ def get_results2024_schema_inferred() -> pd.DataFrame:
 
 
 # -----------------------------
-# Core loader (DuckDB → pandas fallback)
+# DuckDB support (shared connection)
 # -----------------------------
 def _duckdb_available() -> bool:
     try:
@@ -149,23 +149,45 @@ def _duckdb_available() -> bool:
         return False
 
 
+@st.cache_resource(show_spinner=False)
+def _get_duckdb(path: str):
+    """
+    Return a shared DuckDB connection with object cache enabled and a stable view
+    over the CSV.GZ. Reused across runs to avoid re-scanning the file.
+    """
+    import duckdb
+
+    con = duckdb.connect()
+    # Sensible defaults for performance
+    try:
+        con.execute(f"SET threads TO {max(1, (os.cpu_count() or 4))}")
+    except Exception:
+        pass
+    con.execute("SET enable_progress_bar = false")
+    con.execute("SET enable_object_cache = true")
+    # Create a stable view name once; subsequent calls reuse it
+    con.execute("CREATE OR REPLACE VIEW pses_csv AS SELECT * FROM read_csv_auto(?, header=true)", [path])
+    return con
+
+
 def _duckdb_query(
     path: str,
     question_code: str,
     years: List[str],
     group_values: Optional[List[str | None]],
 ) -> pd.DataFrame:
-    import duckdb
-
+    """
+    Execute the filtered query against the shared DuckDB connection/view.
+    Object cache + persistent connection keeps it fast on subsequent calls.
+    """
     qc_norm = _normalize_qcode(question_code)
     years_str = [str(y) for y in years]
 
     # Build DEMCODE predicate
     dem_pred = None
-    params: list = [path]
+    params: list = []
 
     if group_values is not None:
-        # Separate “overall/blank” and concrete codes
         raw = group_values
         want_blank = any(gv is None or str(gv).strip() == "" for gv in raw)
         codes = [gv for gv in raw if gv is not None and str(gv).strip() != ""]
@@ -186,7 +208,7 @@ def _duckdb_query(
 
     sql = f"""
     SELECT *
-    FROM read_csv_auto(?, header=true)
+    FROM pses_csv
     WHERE
       CAST(SURVEYR AS VARCHAR) IN ({year_place})
       AND regexp_replace(upper(COALESCE(QUESTION,'')), '[^A-Z0-9]', '') = ?
@@ -194,11 +216,8 @@ def _duckdb_query(
     if dem_pred:
         sql += f" AND {dem_pred}"
 
-    con = duckdb.connect()
-    try:
-        df = con.execute(sql, params).fetch_df()
-    finally:
-        con.close()
+    con = _get_duckdb(path)
+    df = con.execute(sql, params).fetch_df()
 
     # Ensure TEXT-like behavior
     for c in df.columns:
@@ -206,6 +225,9 @@ def _duckdb_query(
     return df
 
 
+# -----------------------------
+# Pandas fallback
+# -----------------------------
 def _pandas_query(
     path: str,
     question_code: str,
@@ -250,6 +272,9 @@ def _pandas_query(
     return out
 
 
+# -----------------------------
+# Core loader (DuckDB → pandas fallback)
+# -----------------------------
 @st.cache_data(show_spinner=False)
 def load_results2024_filtered(
     question_code: str,
@@ -267,6 +292,8 @@ def load_results2024_filtered(
       * All columns are returned as TEXT (object).
       * Uses DuckDB if available; otherwise pandas.
       * Backwards compatible with legacy 'group_value='.
+      * The CSV.GZ is not modified; we reuse a shared DuckDB connection/view
+        with object cache for faster repeat queries.
     """
     # Resolve file path first
     path = _resolve_results_path()
@@ -281,7 +308,7 @@ def load_results2024_filtered(
     global _LAST_BACKEND, _LAST_SOURCE_PATH
     _LAST_SOURCE_PATH = path
 
-    # Prefer DuckDB if installed
+    # Prefer DuckDB if installed (shared connection + object cache)
     if _duckdb_available():
         df = _duckdb_query(path, question_code, years, gvals)
         _LAST_BACKEND = "duckdb"
