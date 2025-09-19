@@ -20,6 +20,8 @@ from utils.data_loader import (
     get_results2024_schema,
     get_results2024_schema_inferred,
     _resolve_results_path,   # <— used to show actual data path (diagnostics only)
+    # NEW: backend/elapsed diagnostics from the loader
+    get_last_query_diag,
 )
 
 # Ensure OpenAI key is available from Streamlit secrets (no hardcoding)
@@ -932,8 +934,6 @@ def run_menu1():
                         "metadata/Demographics.xlsx": os.path.exists("metadata/Demographics.xlsx"),
                     }
                     info["metadata_files_exist"] = files
-                    # (Optional) show physical path if needed in the future:
-                    # try: info["results_file_path"] = _resolve_results_path() except: pass
                     st.write(info)
 
                 # 3) AI prompt visibility (no button; show last health check & prompts)
@@ -1054,141 +1054,175 @@ def run_menu1():
             total_s = time.perf_counter() - t0_global
             status_line.caption(f"Processing complete • engine: {engine_used} • {total_s:.1f}s")
 
-            # Results table
-            st.subheader(f"{question_code} — {question_text}")
-            st.dataframe(df_disp, use_container_width=True)
+            # ===== Tabs: Results | Diagnostics =====
+            results_tab, diag_tab = st.tabs(["Results", "Diagnostics"])
 
-            # Required data source caption (under table, not in spinner)
-            st.caption("Data source: https://open.canada.ca/data/en/dataset/7f625e97-9d02-4c12-a756-1ddebb50e69f")
-            st.caption(f"Backend engine: {engine_used}")
+            with results_tab:
+                # Results table
+                st.subheader(f"{question_code} — {question_text}")
+                st.dataframe(df_disp, use_container_width=True)
 
-            # Decide metric per FINAL rule
-            decision = detect_metric_mode(df_disp, scale_pairs)
-            mode = decision["mode"]
-            metric_col = decision["metric_col"]
-            ui_label = decision["ui_label"]
-            metric_label = decision["metric_label"]
+                # Required data source caption
+                st.caption("Data source: https://open.canada.ca/data/en/dataset/7f625e97-9d02-4c12-a756-1ddebb50e69f")
+                st.caption(f"Backend engine: {engine_used}")
 
-            # === Analysis Summary (AI) ===
-            st.markdown("### Analysis Summary")
-            st.markdown(
-                f"<div class='q-sub'>{question_code} — {question_text}</div>"
-                f"<div class='tiny-note'>{ui_label}</div>",
-                unsafe_allow_html=True,
-            )
+                # Decide metric per FINAL rule
+                decision = detect_metric_mode(df_disp, scale_pairs)
+                mode = decision["mode"]
+                metric_col = decision["metric_col"]
+                ui_label = decision["ui_label"]
+                metric_label = decision["metric_label"]
 
-            narrative = ""
-            if ai_enabled:
-                ai_t0 = time.perf_counter()
-                ai_out = _ai_narrative_and_storytable(
+                # === Analysis Summary (AI) ===
+                st.markdown("### Analysis Summary")
+                st.markdown(
+                    f"<div class='q-sub'>{question_code} — {question_text}</div>"
+                    f"<div class='tiny-note'>{ui_label}</div>",
+                    unsafe_allow_html=True,
+                )
+
+                narrative = ""
+                if ai_enabled:
+                    ai_t0 = time.perf_counter()
+                    ai_out = _ai_narrative_and_storytable(
+                        df_disp=df_disp,
+                        question_code=question_code,
+                        question_text=question_text,
+                        category_in_play=category_in_play,
+                        metric_col=metric_col,
+                        metric_label=metric_label,
+                        temperature=0.2,
+                    )
+                    narrative = (ai_out.get("narrative") or "").strip()
+                    hint = (ai_out.get("hint") or "").strip()
+                    if narrative:
+                        model_used = (st.secrets.get("OPENAI_MODEL") or "gpt-4o-mini").strip()
+                        narrative += f"\n\n_Powered by OpenAI model {model_used}_"
+                        st.write(narrative)
+                    else:
+                        hint_map = {
+                            "invalid_api_key": "Invalid or missing API key.",
+                            "timeout": "AI request timed out (took longer than 60s).",
+                            "rate_limit": "Rate limit reached. Try again shortly.",
+                            "network_error": "Network error contacting the AI endpoint.",
+                            "invalid_request": "Invalid request payload.",
+                            "json_decode_error": "AI returned a malformed response.",
+                            "type_error": "Client configuration issue (TypeError).",
+                        }
+                        msg = hint_map.get(hint, "AI unavailable right now.")
+                        st.info(f"{msg} Tables remain available.")
+                    # Record AI time in the profile
+                    prof.steps.append(("AI summary", time.perf_counter() - ai_t0))
+                else:
+                    st.caption("AI analysis is disabled (toggle above).")
+
+                # === Summary Table ===
+                st.markdown("### Summary Table")
+                st.markdown(
+                    f"<div class='q-sub'>{question_code} — {question_text}</div>"
+                    f"<div class='tiny-note'>{ui_label}</div>",
+                    unsafe_allow_html=True,
+                )
+                trend_t0 = time.perf_counter()
+                trend_df = build_trend_summary_table(
                     df_disp=df_disp,
-                    question_code=question_code,
-                    question_text=question_text,
                     category_in_play=category_in_play,
                     metric_col=metric_col,
-                    metric_label=metric_label,
-                    temperature=0.2,
+                    selected_years=selected_years,
                 )
-                narrative = (ai_out.get("narrative") or "").strip()
-                hint = (ai_out.get("hint") or "").strip()
-                if narrative:
-                    # Append the requested footer tag (no spinner text)
-                    model_used = (st.secrets.get("OPENAI_MODEL") or "gpt-4o-mini").strip()
-                    narrative += f"\n\n_Powered by OpenAI model {model_used}_"
-                    st.write(narrative)
+                prof.steps.append(("Build summary table", time.perf_counter() - trend_t0))
+
+                if trend_df is not None and not trend_df.empty:
+                    st.dataframe(trend_df, use_container_width=True, hide_index=True)
                 else:
-                    hint_map = {
-                        "invalid_api_key": "Invalid or missing API key.",
-                        "timeout": "AI request timed out (took longer than 60s).",
-                        "rate_limit": "Rate limit reached. Try again shortly.",
-                        "network_error": "Network error contacting the AI endpoint.",
-                        "invalid_request": "Invalid request payload.",
-                        "json_decode_error": "AI returned a malformed response.",
-                        "type_error": "Client configuration issue (TypeError).",
-                    }
-                    msg = hint_map.get(hint, "AI unavailable right now.")
-                    st.info(f"{msg} Tables remain available.")
-                # Record AI time in the profile
-                prof.steps.append(("AI summary", time.perf_counter() - ai_t0))
-            else:
-                st.caption("AI analysis is disabled (toggle above).")
+                    st.info("No summary table could be generated for the current selection.")
 
-            # === Summary Table ===
-            st.markdown("### Summary Table")
-            st.markdown(
-                f"<div class='q-sub'>{question_code} — {question_text}</div>"
-                f"<div class='tiny-note'>{ui_label}</div>",
-                unsafe_allow_html=True,
-            )
-            trend_t0 = time.perf_counter()
-            trend_df = build_trend_summary_table(
-                df_disp=df_disp,
-                category_in_play=category_in_play,
-                metric_col=metric_col,
-                selected_years=selected_years,
-            )
-            prof.steps.append(("Build summary table", time.perf_counter() - trend_t0))
+                # Downloads
+                with io.BytesIO() as xbuf:
+                    with PD.ExcelWriter(xbuf, engine="xlsxwriter") as writer:
+                        df_disp.to_excel(writer, sheet_name="Results", index=False)
+                        if trend_df is not None and not trend_df.empty:
+                            trend_df.to_excel(writer, sheet_name="Summary Table", index=False)
+                        ctx = {
+                            "QUESTION": question_code,
+                            "SURVEYR (years)": ", ".join(selected_years),
+                            "DEMCODE(s)": ", ".join(dem_display),
+                            "Metric used": metric_label,
+                            "AI enabled": "Yes" if ai_enabled else "No",
+                            "Generated at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                        }
+                        PD.DataFrame(list(ctx.items()), columns=["Field", "Value"]).to_excel(
+                            writer, sheet_name="Context", index=False
+                        )
+                    xdata = xbuf.getvalue()
 
-            if trend_df is not None and not trend_df.empty:
-                st.dataframe(trend_df, use_container_width=True, hide_index=True)
-            else:
-                st.info("No summary table could be generated for the current selection.")
-
-            # === Processing profile (step timings) ===
-            if prof.steps:
-                st.markdown("#### Processing profile")
-                prof_df = PD.DataFrame(
-                    [(name, f"{dt*1000:.0f} ms") for name, dt in prof.steps],
-                    columns=["Step", "Duration"]
-                )
-                total_ms = int(sum(dt for _, dt in prof.steps) * 1000)
-                st.caption(f"Total (profiled): ~{total_ms} ms")
-                st.dataframe(prof_df, use_container_width=True, hide_index=True)
-
-            # Downloads
-            with io.BytesIO() as xbuf:
-                with PD.ExcelWriter(xbuf, engine="xlsxwriter") as writer:
-                    df_disp.to_excel(writer, sheet_name="Results", index=False)
-                    if trend_df is not None and not trend_df.empty:
-                        trend_df.to_excel(writer, sheet_name="Summary Table", index=False)
-                    ctx = {
-                        "QUESTION": question_code,
-                        "SURVEYR (years)": ", ".join(selected_years),
-                        "DEMCODE(s)": ", ".join(dem_display),
-                        "Metric used": metric_label,
-                        "AI enabled": "Yes" if ai_enabled else "No",
-                        "Generated at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                    }
-                    PD.DataFrame(list(ctx.items()), columns=["Field", "Value"]).to_excel(
-                        writer, sheet_name="Context", index=False
-                    )
-                xdata = xbuf.getvalue()
-
-            st.download_button(
-                label="⬇️ Download data (Excel)",
-                data=xdata,
-                file_name=f"PSES_{question_code}_{'-'.join(selected_years)}.xlsx",
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-            )
-
-            pdf_bytes = build_pdf_report(
-                question_code=question_code,
-                question_text=question_text,
-                selected_years=selected_years,
-                dem_display=dem_display,
-                narrative=narrative,  # empty when AI disabled or failed
-                df_summary=trend_df if trend_df is not None else PD.DataFrame(),
-                ui_label=ui_label,
-            )
-            if pdf_bytes:
                 st.download_button(
-                    label="⬇️ Download summary report (PDF)",
-                    data=pdf_bytes,
-                    file_name=f"PSES_{question_code}_{'-'.join(selected_years)}.pdf",
-                    mime="application/pdf",
+                    label="⬇️ Download data (Excel)",
+                    data=xdata,
+                    file_name=f"PSES_{question_code}_{'-'.join(selected_years)}.xlsx",
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                 )
-            else:
-                st.caption("PDF export unavailable (install `reportlab` in requirements to enable).")
+
+                pdf_bytes = build_pdf_report(
+                    question_code=question_code,
+                    question_text=question_text,
+                    selected_years=selected_years,
+                    dem_display=dem_display,
+                    narrative=narrative,  # empty when AI disabled or failed
+                    df_summary=trend_df if trend_df is not None else PD.DataFrame(),
+                    ui_label=ui_label,
+                )
+                if pdf_bytes:
+                    st.download_button(
+                        label="⬇️ Download summary report (PDF)",
+                        data=pdf_bytes,
+                        file_name=f"PSES_{question_code}_{'-'.join(selected_years)}.pdf",
+                        mime="application/pdf",
+                    )
+                else:
+                    st.caption("PDF export unavailable (install `reportlab` in requirements to enable).")
+
+            with diag_tab:
+                st.subheader("Loading & Backend Details")
+
+                # 1) Engine / paths / elapsed / rows from the loader’s last query
+                diag = get_last_query_diag()
+                if diag:
+                    engine = diag.get("engine", "?")
+                    elapsed = diag.get("elapsed_ms", "?")
+                    rows = diag.get("rows", "?")
+                    st.markdown(
+                        f"**Engine**: `{engine}` &nbsp;&nbsp; "
+                        f"**Elapsed**: `{elapsed} ms` &nbsp;&nbsp; "
+                        f"**Rows**: `{rows}`"
+                    )
+
+                    # Show key fields
+                    cols = ["engine","elapsed_ms","rows","question_code","years","group_value","parquet_dir","csv_path","parquet_error"]
+                    diag_rows = [{"Field": k, "Value": diag.get(k)} for k in cols if k in diag]
+                    if diag_rows:
+                        st.table(pd.DataFrame(diag_rows))
+
+                else:
+                    st.info("No loader diagnostics available for this session yet.")
+
+                # 2) Step timings (your former profile table)
+                if prof.steps:
+                    st.markdown("**Step timings (ms)**")
+                    prof_df = PD.DataFrame(
+                        [{"Step": name, "Duration (ms)": int(dt * 1000)} for name, dt in prof.steps]
+                    ).sort_values("Duration (ms)", ascending=False, ignore_index=True)
+                    total_ms = int(sum(dt for _, dt in prof.steps) * 1000)
+                    st.caption(f"Total (profiled): ~{total_ms} ms")
+                    st.table(prof_df)
+
+                # 3) Optional: physical CSV/Parquet path if available
+                try:
+                    path_hint = _resolve_results_path()
+                    if path_hint:
+                        st.caption(f"Resolved results path: `{path_hint}`")
+                except Exception:
+                    pass
 
 
 if __name__ == "__main__":
