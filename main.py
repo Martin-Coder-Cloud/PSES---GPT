@@ -27,7 +27,11 @@ def main():
             backend = prewarm_fastpath()
         if get_backend_info is not None:
             info = get_backend_info()
-            if backend == "csv":
+            store = info.get("store")
+            # >>> UPDATED CAPTION LOGIC (handles in-memory) <<<
+            if backend == "memory_csv" or store == "in_memory_csv":
+                st.caption("🧠 In-memory data store is ready — queries will run from RAM.")
+            elif backend == "csv":
                 st.caption(f"⚠️ Using CSV fallback. Parquet unavailable. (CSV: {info.get('csv_path')})")
             else:
                 st.caption(f"✅ Parquet ready at: {info.get('parquet_dir')}")
