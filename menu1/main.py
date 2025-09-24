@@ -222,11 +222,22 @@ def format_display_table_raw(df, category_in_play, dem_disp_map, scale_pairs) ->
     keep_cols = [c for c in keep_cols if c in out.columns]
     out = out[keep_cols].rename(columns=rename_map).copy()
 
-    # Drop answer columns that are entirely NA (so only Answer1–3 remain in your case)
+    # Drop answer columns that are entirely NA
     answer_label_cols = [v for v in rename_map.values() if v in out.columns]
     drop_all_na = [c for c in answer_label_cols if PD.to_numeric(out[c], errors="coerce").isna().all()]
     if drop_all_na:
         out = out.drop(columns=drop_all_na)
+
+    # NEW: filter out rows where ALL core metrics are NA (after 9999→NA)
+    core_candidates = []
+    core_candidates += ["POSITIVE", "AGREE"]
+    core_candidates += [c for c in answer_label_cols if c in out.columns]
+    core_candidates = [c for c in core_candidates if c in out.columns]
+    if core_candidates:
+        mask_any = PD.Series(False, index=out.index)
+        for c in core_candidates:
+            mask_any = mask_any | PD.to_numeric(out[c], errors="coerce").notna()
+        out = out.loc[mask_any].copy()
 
     sort_cols = ["Year"] + (["Demographic"] if category_in_play else [])
     sort_asc = [False] + ([True] if category_in_play else [])
@@ -235,34 +246,39 @@ def format_display_table_raw(df, category_in_play, dem_disp_map, scale_pairs) ->
 
 
 # ─────────────────────────────
-# Metric decision (FINAL rule)
+# Metric decision (matches requested rule)
 # ─────────────────────────────
 def detect_metric_mode(df_disp: pd.DataFrame, scale_pairs) -> dict:
     """
-    Pick metric in this order:
-      1) POSITIVE (if it has data)
-      2) AGREE (if it has data)
-      3) First answer label with data (Answer 1..7)
+    Choose metric for both Summary (if applicable) and AI analysis using the rule:
+      1) POSITIVE if it has data
+      2) else AGREE if it has data
+      3) else first Answer (Answer1..7 label) with data
+    Also returns a flag 'summary_allowed' which is True only if mode is POSITIVE or AGREE.
     """
     cols_l = {c.lower(): c for c in df_disp.columns}
+
     # POSITIVE
     if "positive" in cols_l:
         col = cols_l["positive"]
         if PD.to_numeric(df_disp[col], errors="coerce").notna().any():
-            return {"mode":"positive","metric_col":col,"ui_label":"(% positive answers)","metric_label":"% positive","answer1_label":None}
+            return {"mode":"positive","metric_col":col,"ui_label":"(% positive answers)","metric_label":"% positive","summary_allowed":True}
+
     # AGREE
     if "agree" in cols_l:
         col = cols_l["agree"]
         if PD.to_numeric(df_disp[col], errors="coerce").notna().any():
-            return {"mode":"agree","metric_col":col,"ui_label":"(% agree)","metric_label":"% agree","answer1_label":None}
-    # First answer with data
+            return {"mode":"agree","metric_col":col,"ui_label":"(% agree)","metric_label":"% agree","summary_allowed":True}
+
+    # First answer label with data
     if scale_pairs:
         for k, v in scale_pairs:
-            label = v  # renamed label in df_disp
+            label = v  # renamed label appearing in df_disp
             if label in df_disp.columns and PD.to_numeric(df_disp[label], errors="coerce").notna().any():
-                return {"mode":k.lower(),"metric_col":label,"ui_label":f"(% {label})","metric_label":f"% {label}","answer1_label":label}
-    # Fallback to POSITIVE label even if empty (won't produce summary)
-    return {"mode":"positive","metric_col":cols_l.get("positive","POSITIVE"),"ui_label":"(% positive answers)","metric_label":"% positive","answer1_label":None}
+                return {"mode":k.lower(),"metric_col":label,"ui_label":f"(% {label})","metric_label":f"% {label}","summary_allowed":False}
+
+    # Nothing found — default to POSITIVE but summary not allowed
+    return {"mode":"none","metric_col":cols_l.get("positive","POSITIVE"),"ui_label":"(% positive answers)","metric_label":"% positive","summary_allowed":False}
 
 
 # ─────────────────────────────
@@ -576,7 +592,7 @@ def run_menu1():
     <style>
       .custom-header{ font-size: 26px; font-weight: 700; margin-bottom: 8px; }
       .custom-instruction{ font-size: 15px; line-height: 1.4; margin-bottom: 8px; color: #333; }
-      .field-label{ font size: 16px; font-weight: 600; margin: 10px 0 2px; color: #222; }
+      .field-label{ font-size: 16px; font-weight: 600; margin: 10px 0 2px; color: #222; }
       .big-button button{ font-size: 16px; padding: 0.6em 1.6em; margin-top: 16px; }
       .tiny-note{ font-size: 12px; color: #666; margin-top: -4px; margin-bottom: 10px; }
       .q-sub{ font-size: 14px; color: #333; margin-top: -4px; margin-bottom: 2px; }
@@ -613,7 +629,7 @@ def run_menu1():
             unsafe_allow_html=True,
         )
         st.markdown('<div class="custom-header">🔍 Search by Survey Question</div>', unsafe_allow_html=True)
-        # 🔤 CHANGED description
+        # Description (updated previously)
         st.markdown(
             '<div class="custom-instruction">Please select a question you are interested in, the survey year and, optionally, a demographic breakdown.<br>'
             'This application provides only Public Service-wide results. The output is a summary and a detailed result table with a short analysis.</div>',
@@ -730,7 +746,7 @@ def run_menu1():
                 with prof.step("999/9999 → NA", live=status_line, engine=engine_guess, t0_global=t0_global):
                     df_raw = exclude_999_raw(df_raw)
 
-                # 4) Sort & format
+                # 4) Sort, format & filter-out NA rows
                 with prof.step("Sort & format table", live=status_line, engine=engine_guess, t0_global=t0_global):
                     if "SURVEYR" in df_raw.columns:
                         df_raw = df_raw.sort_values(by="SURVEYR", ascending=False)
@@ -748,22 +764,15 @@ def run_menu1():
             # ---------------- Results ----------------
             st.subheader(f"{question_code} — {question_text}")
 
-            # Decide metric and build summary table BEFORE showing any tables
+            # Decide metric (POSITIVE → AGREE → first Answer)
             decision = detect_metric_mode(df_disp, scale_pairs)
             metric_col = decision["metric_col"]; ui_label = decision["ui_label"]; metric_label = decision["metric_label"]
+            summary_allowed = bool(decision.get("summary_allowed", False))
 
-            # Suppress summary table if POSITIVE exists but is fully NA (i.e., 9999)
-            positive_all_na = False
-            if "POSITIVE" in df_disp.columns:
-                positive_all_na = PD.to_numeric(df_disp["POSITIVE"], errors="coerce").isna().all()
-            elif "positive" in {c.lower() for c in df_disp.columns}:
-                pos_col = {c.lower(): c for c in df_disp.columns}["positive"]
-                positive_all_na = PD.to_numeric(df_disp[pos_col], errors="coerce").isna().all()
-
-            # Build trend summary only if allowed
+            # Build trend summary only if allowed (POSITIVE/AGREE)
             trend_t0 = time.perf_counter()
             trend_df = PD.DataFrame()
-            if not positive_all_na:
+            if summary_allowed:
                 trend_df = build_trend_summary_table(df_disp=df_disp, category_in_play=category_in_play, metric_col=metric_col, selected_years=selected_years)
             prof.steps.append(("Build summary table", time.perf_counter() - trend_t0))
 
@@ -772,11 +781,11 @@ def run_menu1():
 
             with tab_summary:
                 st.markdown(f"<div class='q-sub'>{question_code} — {question_text}</div><div class='tiny-note'>{ui_label}</div>", unsafe_allow_html=True)
-                if not positive_all_na and trend_df is not None and not trend_df.empty:
+                if summary_allowed and trend_df is not None and not trend_df.empty:
                     st.dataframe(make_arrow_safe(trend_df), use_container_width=True, hide_index=True)
                 else:
                     st.info("Summary table is unavailable for this selection.")
-                # 🔗 Named hyperlink prefixed with "Source:"
+                # Source link
                 st.markdown(
                     "Source: [2024 Public Service Employee Survey Results - Open Government Portal]"
                     "(https://open.canada.ca/data/en/dataset/7f625e97-9d02-4c12-a756-1ddebb50e69f)"
@@ -787,7 +796,7 @@ def run_menu1():
                 st.dataframe(df_disp_display, use_container_width=True)
                 st.caption(f"Backend engine: {engine_guess}")
 
-            # Narrative AFTER tabs with requested title
+            # Narrative AFTER tabs with requested title — uses the same metric rule
             st.markdown("### Analysis Summary")
             st.markdown(f"<div class='q-sub'>{question_code} — {question_text}</div><div class='tiny-note'>{ui_label}</div>", unsafe_allow_html=True)
 
@@ -802,8 +811,8 @@ def run_menu1():
                         question_code=question_code,
                         question_text=question_text,
                         category_in_play=category_in_play,
-                        metric_col=metric_col,      # uses POSITIVE if available; else first Answer with data
-                        metric_label=metric_label,  # reflects chosen metric label
+                        metric_col=metric_col,      # POSITIVE→AGREE→first Answer with data
+                        metric_label=metric_label,
                         temperature=0.2
                     )
                 ai_status.empty()
@@ -829,11 +838,11 @@ def run_menu1():
             else:
                 st.caption("AI analysis is disabled (toggle above).")
 
-            # Downloads (unchanged)
+            # Downloads (Summary sheet only when summary_allowed)
             with io.BytesIO() as xbuf:
                 with PD.ExcelWriter(xbuf, engine="xlsxwriter") as writer:
                     df_disp.to_excel(writer, sheet_name="Results", index=False)
-                    if not positive_all_na and trend_df is not None and not trend_df.empty:
+                    if summary_allowed and trend_df is not None and not trend_df.empty:
                         trend_df.to_excel(writer, sheet_name="Summary Table", index=False)
                     ctx = {
                         "QUESTION": question_code,
@@ -858,7 +867,7 @@ def run_menu1():
                 selected_years=selected_years,
                 dem_display=dem_display,
                 narrative=narrative,
-                df_summary=(trend_df if (not positive_all_na and trend_df is not None) else PD.DataFrame()),
+                df_summary=(trend_df if (summary_allowed and trend_df is not None) else PD.DataFrame()),
                 ui_label=ui_label
             )
             if pdf_bytes:
