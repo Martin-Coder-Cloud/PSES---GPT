@@ -112,7 +112,7 @@ def _find_demcode_col(demo_df: pd.DataFrame) -> str | None:
     return None
 
 def _four_digit(s: str) -> str:
-    s = "".join(ch for ch in str(s) if ch.isdigit())
+    s = "".join(ch for ch in str(s) if s is not None and ch.isdigit())
     return s.zfill(4) if s else ""
 
 def resolve_demographic_codes_from_metadata(demo_df, category_label, subgroup_label):
@@ -175,16 +175,22 @@ def get_scale_labels(scales_df: pd.DataFrame, question_code: str):
     return pairs if pairs else None
 
 def exclude_999_raw(df: pd.DataFrame) -> pd.DataFrame:
-    cols = [f"answer{i}" for i in range(1, 7 + 1)] + ["POSITIVE", "NEUTRAL", "NEGATIVE", "ANSCOUNT", "AGREE", "YES"]
-    present = [c for c in cols if c in df.columns]
-    if not present:
+    """
+    Replace 999/9999 with NA (do NOT drop rows), so partially valid rows remain.
+    """
+    if df is None or df.empty:
         return df
     out = df.copy()
-    keep = PD.Series(True, index=out.index)
+    candidates = [f"answer{i}" for i in range(1, 7 + 1)] + ["POSITIVE", "NEUTRAL", "NEGATIVE", "ANSCOUNT", "AGREE", "YES",
+                                                             "positive_pct", "neutral_pct", "negative_pct", "n"]
+    present = [c for c in candidates if c in out.columns]
     for c in present:
         s = out[c].astype(str).str.strip()
-        keep &= (s != "999") & (s != "9999")
-    return out.loc[keep].copy()
+        mask = (s == "999") | (s == "9999")
+        # also catch numeric 999/9999
+        mask |= pd.to_numeric(out[c], errors="coerce").isin([999, 9999])
+        out.loc[mask, c] = pd.NA
+    return out
 
 def format_display_table_raw(df, category_in_play, dem_disp_map, scale_pairs) -> pd.DataFrame:
     if df.empty:
@@ -216,6 +222,12 @@ def format_display_table_raw(df, category_in_play, dem_disp_map, scale_pairs) ->
     keep_cols = [c for c in keep_cols if c in out.columns]
     out = out[keep_cols].rename(columns=rename_map).copy()
 
+    # Drop answer columns that are entirely NA (so only Answer1–3 remain in your case)
+    answer_label_cols = [v for v in rename_map.values() if v in out.columns]
+    drop_all_na = [c for c in answer_label_cols if PD.to_numeric(out[c], errors="coerce").isna().all()]
+    if drop_all_na:
+        out = out.drop(columns=drop_all_na)
+
     sort_cols = ["Year"] + (["Demographic"] if category_in_play else [])
     sort_asc = [False] + ([True] if category_in_play else [])
     out = out.sort_values(sort_cols, ascending=sort_asc, kind="mergesort").reset_index(drop=True)
@@ -226,28 +238,35 @@ def format_display_table_raw(df, category_in_play, dem_disp_map, scale_pairs) ->
 # Metric decision (FINAL rule)
 # ─────────────────────────────
 def detect_metric_mode(df_disp: pd.DataFrame, scale_pairs) -> dict:
+    """
+    Pick metric in this order:
+      1) POSITIVE (if it has data)
+      2) AGREE (if it has data)
+      3) First answer label with data (Answer 1..7)
+    """
     cols_l = {c.lower(): c for c in df_disp.columns}
+    # POSITIVE
     if "positive" in cols_l:
         col = cols_l["positive"]
         if PD.to_numeric(df_disp[col], errors="coerce").notna().any():
             return {"mode":"positive","metric_col":col,"ui_label":"(% positive answers)","metric_label":"% positive","answer1_label":None}
+    # AGREE
     if "agree" in cols_l:
         col = cols_l["agree"]
         if PD.to_numeric(df_disp[col], errors="coerce").notna().any():
             return {"mode":"agree","metric_col":col,"ui_label":"(% agree)","metric_label":"% agree","answer1_label":None}
-    answer1_label=None
+    # First answer with data
     if scale_pairs:
         for k, v in scale_pairs:
-            if k.lower()=="answer1":
-                answer1_label=v; break
-    if answer1_label and answer1_label in df_disp.columns:
-        if PD.to_numeric(df_disp[answer1_label], errors="coerce").notna().any():
-            return {"mode":"answer1","metric_col":answer1_label,"ui_label":f"(% {answer1_label})","metric_label":f"% {answer1_label}","answer1_label":answer1_label}
+            label = v  # renamed label in df_disp
+            if label in df_disp.columns and PD.to_numeric(df_disp[label], errors="coerce").notna().any():
+                return {"mode":k.lower(),"metric_col":label,"ui_label":f"(% {label})","metric_label":f"% {label}","answer1_label":label}
+    # Fallback to POSITIVE label even if empty (won't produce summary)
     return {"mode":"positive","metric_col":cols_l.get("positive","POSITIVE"),"ui_label":"(% positive answers)","metric_label":"% positive","answer1_label":None}
 
 
 # ─────────────────────────────
-# Arrow-safe display helper (new)
+# Arrow-safe display helper
 # ─────────────────────────────
 def make_arrow_safe(df: pd.DataFrame) -> pd.DataFrame:
     """Cast object/mixed columns to string for clean Arrow serialization."""
@@ -341,7 +360,7 @@ def _ai_narrative_and_storytable(df_disp, question_code, question_text, category
     data = _ai_build_payload_single_metric(df_disp, question_code, question_text, category_in_play, metric_col)
     model_name = (st.secrets.get("OPENAI_MODEL") or "gpt-4o-mini").strip()
 
-    # (unchanged prompt body)
+    # Prompt change: "minimal ≤2" (was "normal ≤2")
     system = (
         "You are preparing insights for the Government of Canada’s Public Service Employee Survey (PSES).\n\n"
         "Context\n"
@@ -362,7 +381,7 @@ def _ai_narrative_and_storytable(df_disp, question_code, question_text, category
         "  • notable >2 points\n"
         "- Compare demographic groups in 2024:\n"
         "  • Focus on the most relevant comparisons (largest gap(s), or those crossing thresholds).\n"
-        "  • Report gaps in points and classify them: normal ≤2, notable >2–5, important >5.\n"
+        "  • Report gaps in points and classify them: minimal ≤2, notable >2–5, important >5.\n"
         "- If multiple groups are present, highlight only the most meaningful contrasts instead of exhaustively listing all.\n"
         "- Mention whether gaps observed in 2024 have widened, narrowed, or remained stable compared with earlier years.\n"
         "- Conclude with a concise overall statement (e.g., “Overall, results have remained steady and demographic gaps are unchanged”).\n\n"
@@ -557,7 +576,7 @@ def run_menu1():
     <style>
       .custom-header{ font-size: 26px; font-weight: 700; margin-bottom: 8px; }
       .custom-instruction{ font-size: 15px; line-height: 1.4; margin-bottom: 8px; color: #333; }
-      .field-label{ font-size: 16px; font-weight: 600; margin: 10px 0 2px; color: #222; }
+      .field-label{ font size: 16px; font-weight: 600; margin: 10px 0 2px; color: #222; }
       .big-button button{ font-size: 16px; padding: 0.6em 1.6em; margin-top: 16px; }
       .tiny-note{ font-size: 12px; color: #666; margin-top: -4px; margin-bottom: 10px; }
       .q-sub{ font-size: 14px; color: #333; margin-top: -4px; margin-bottom: 2px; }
@@ -594,9 +613,10 @@ def run_menu1():
             unsafe_allow_html=True,
         )
         st.markdown('<div class="custom-header">🔍 Search by Survey Question</div>', unsafe_allow_html=True)
+        # 🔤 CHANGED description
         st.markdown(
             '<div class="custom-instruction">Please select a question you are interested in, the survey year and, optionally, a demographic breakdown.<br>'
-            'This application provides only Public Service-wide results. The output is a result table, a short analysis and a summary table.</div>',
+            'This application provides only Public Service-wide results. The output is a summary and a detailed result table with a short analysis.</div>',
             unsafe_allow_html=True,
         )
 
@@ -652,131 +672,10 @@ def run_menu1():
             demcodes = [None] + demcodes
         dem_display = ["All respondents" if c is None else str(c).strip() for c in demcodes]
 
-        # ──────────────────────────────────────────────────────────────────────
-        # Diagnostics (single expander with 4 tabs, incl. Loading details)
-        # ──────────────────────────────────────────────────────────────────────
-        if show_debug:
-            with st.expander("🛠 Diagnostics", expanded=False):
-                tabs = st.tabs([
-                    "1) Parameters sent to the database",
-                    "2) Environment diagnostics",
-                    "3) AI prompt visibility",
-                    "4) Loading details",
-                ])
-
-                # 1) Parameters
-                with tabs[0]:
-                    params_df = PD.DataFrame(
-                        {"Parameter": ["QUESTION (from metadata)", "SURVEYR (years)", "DEMCODE(s) (from metadata)"],
-                         "Value": [str(question_code), ", ".join(selected_years), ", ".join(dem_display)]}
-                    )
-                    st.dataframe(make_arrow_safe(params_df), use_container_width=True, hide_index=True)
-
-                # 2) Environment diagnostics
-                with tabs[1]:
-                    info = {}
-                    info["OPENAI_API_KEY_present"] = bool(os.environ.get("OPENAI_API_KEY", "").strip())
-                    info["OPENAI_MODEL_secret_present"] = bool(st.secrets.get("OPENAI_MODEL", ""))
-                    try:
-                        import openai  # type: ignore
-                        info["openai_version"] = getattr(openai, "__version__", "unknown")
-                    except Exception:
-                        info["openai_version"] = "not installed"
-                    info["pandas_version"] = pd.__version__
-                    info["streamlit_version"] = st.__version__
-                    files = {
-                        "metadata/Survey Scales.xlsx": os.path.exists("metadata/Survey Scales.xlsx"),
-                        "metadata/Survey Questions.xlsx": os.path.exists("metadata/Survey Questions.xlsx"),
-                        "metadata/Demographics.xlsx": os.path.exists("metadata/Demographics.xlsx"),
-                    }
-                    info["metadata_files_exist"] = files
-                    st.write(info)
-
-                # 3) AI prompt visibility
-                with tabs[2]:
-                    hc = st.session_state.get("ai_health_result") or {}
-                    status = hc.get("status", "info"); detail = hc.get("detail", "")
-                    if status == "ok": st.success(f"AI health check passed ({detail}).")
-                    elif status == "warn": st.warning(f"AI health check: {detail}.")
-                    elif status == "error": st.error(f"AI health check error: {detail}.")
-                    else: st.info(f"AI health check: {detail or 'no details'}")
-                    model_used = (st.session_state.get("last_ai_model") or st.secrets.get("OPENAI_MODEL") or "gpt-4o-mini")
-                    st.caption(f"Last AI model used: {model_used}")
-                    sys_txt = st.session_state.get("last_ai_system", ""); usr_txt = st.session_state.get("last_ai_user", "")
-                    if not sys_txt and not usr_txt:
-                        st.info("No AI prompt available yet. Run a query with AI enabled to populate this view.")
-                    else:
-                        st.markdown("**System prompt (exact):**"); st.code(sys_txt, language="markdown")
-                        st.markdown("**User payload (JSON sent to the model):**")
-                        kb = len(usr_txt.encode("utf-8")) / 1024.0; st.caption(f"Approx size: ~{kb:.1f} KB")
-                        st.code(usr_txt, language="json")
-
-                # 4) Loading details — ALWAYS useful (even pre-run)
-                with tabs[3]:
-                    st.subheader("Loading & Backend Details")
-
-                    # Live backend status (exists even before first run)
-                    backend = {}
-                    try:
-                        backend = get_backend_info() or {}
-                    except Exception:
-                        backend = {}
-
-                    # Warm-up / build Parquet (one click, idempotent)
-                    col_a, col_b = st.columns([1, 2])
-                    with col_a:
-                        if st.button("⚡ Warm up fast path (build Parquet)"):
-                            try:
-                                result = prewarm_fastpath()
-                                backend = get_backend_info() or {}
-                                st.success(f"Warm-up complete (result: {result}).")
-                            except Exception as e:
-                                st.warning(f"Warm-up skipped: {e}")
-
-                    # Latest run diagnostics (we record them after each run)
-                    diag = st.session_state.get("last_loader_diag") or {}
-
-                    # Quick badges
-                    engine_badge = diag.get("engine") or ("parquet" if backend.get("parquet_ready") else "csv")
-                    elapsed_badge = diag.get("elapsed_ms", "—")
-                    rows_badge = diag.get("rows", "—")
-                    st.markdown(
-                        f"**Engine**: `{engine_badge}` &nbsp;&nbsp; "
-                        f"**Elapsed**: `{elapsed_badge} ms` &nbsp;&nbsp; "
-                        f"**Rows**: `{rows_badge}`"
-                    )
-
-                    # Details table (merge diag + backend for paths)
-                    rows = []
-                    def add(k, v): rows.append({"Field": k, "Value": v})
-                    add("engine",        engine_badge)
-                    add("elapsed_ms",    elapsed_badge)
-                    add("rows",          rows_badge)
-                    add("question_code", diag.get("question_code", "—"))
-                    add("years",         diag.get("years", "—"))
-                    add("group_value",   diag.get("group_value", "—"))
-                    add("parquet_dir",   diag.get("parquet_dir", backend.get("parquet_dir", "—")))
-                    add("parquet_ready", backend.get("parquet_ready", "—"))
-                    add("csv_path",      diag.get("csv_path", backend.get("csv_path", "—")))
-                    add("parquet_error", diag.get("parquet_error", "—"))
-                    st.table(make_arrow_safe(pd.DataFrame(rows)))
-
-                    # Step timings from the last run (if any)
-                    last_steps = st.session_state.get("last_prof_steps") or []
-                    if last_steps:
-                        st.markdown("**Step timings (ms)**")
-                        prof_df = PD.DataFrame(
-                            [{"Step": name, "Duration (ms)": int(dt * 1000)} for name, dt in last_steps]
-                        ).sort_values("Duration (ms)", ascending=False, ignore_index=True)
-                        total_ms = int(sum(dt for _, dt in last_steps) * 1000)
-                        st.caption(f"Total (profiled): ~{total_ms} ms")
-                        st.table(make_arrow_safe(prof_df))
-
         # ──────────────────────────────────────────────────────────────────
         # Run query (single pass, cached big file)
         # ──────────────────────────────────────────────────────────────────
         if st.button("🔎 Run query"):
-            # We’ll profile and then store diagnostics into session_state
             engine_guess = _detect_backend()
             status_line = st.empty()
             prof = Profiler()
@@ -795,7 +694,6 @@ def run_menu1():
 
                 # 2) Load data
                 with prof.step("Load data", live=status_line, engine=engine_guess, t0_global=t0_global):
-                    # Our loader signature prefers either group_value OR group_values; try both
                     try:
                         df_raw = load_results2024_filtered(question_code=question_code, years=selected_years, group_values=demcodes)  # type: ignore[arg-type]
                     except TypeError:
@@ -828,26 +726,9 @@ def run_menu1():
                     st.session_state["last_prof_steps"] = list(prof.steps)
                     return
 
-                # 3) Suppression
-                with prof.step("Suppress 999/9999", live=status_line, engine=engine_guess, t0_global=t0_global):
+                # 3) Replace 999/9999 with NA (keep rows)
+                with prof.step("999/9999 → NA", live=status_line, engine=engine_guess, t0_global=t0_global):
                     df_raw = exclude_999_raw(df_raw)
-                    if df_raw.empty:
-                        status_line.caption(f"Processing complete • engine: {engine_guess} • {time.perf_counter()-t0_global:.1f}s")
-                        st.info("Data exists, but all rows are not applicable (999/9999).")
-                        backend = get_backend_info() or {}
-                        st.session_state["last_loader_diag"] = {
-                            "engine": engine_guess,
-                            "elapsed_ms": int((time.perf_counter() - t0_global) * 1000),
-                            "rows": 0,
-                            "question_code": question_code,
-                            "years": ",".join(selected_years),
-                            "group_value": ("multiple" if len(demcodes) > 1 else str(demcodes[0])),
-                            "parquet_dir": backend.get("parquet_dir"),
-                            "csv_path": backend.get("csv_path"),
-                            "parquet_error": None,
-                        }
-                        st.session_state["last_prof_steps"] = list(prof.steps)
-                        return
 
                 # 4) Sort & format
                 with prof.step("Sort & format table", live=status_line, engine=engine_guess, t0_global=t0_global):
@@ -871,22 +752,33 @@ def run_menu1():
             decision = detect_metric_mode(df_disp, scale_pairs)
             metric_col = decision["metric_col"]; ui_label = decision["ui_label"]; metric_label = decision["metric_label"]
 
+            # Suppress summary table if POSITIVE exists but is fully NA (i.e., 9999)
+            positive_all_na = False
+            if "POSITIVE" in df_disp.columns:
+                positive_all_na = PD.to_numeric(df_disp["POSITIVE"], errors="coerce").isna().all()
+            elif "positive" in {c.lower() for c in df_disp.columns}:
+                pos_col = {c.lower(): c for c in df_disp.columns}["positive"]
+                positive_all_na = PD.to_numeric(df_disp[pos_col], errors="coerce").isna().all()
+
+            # Build trend summary only if allowed
             trend_t0 = time.perf_counter()
-            trend_df = build_trend_summary_table(df_disp=df_disp, category_in_play=category_in_play, metric_col=metric_col, selected_years=selected_years)
+            trend_df = PD.DataFrame()
+            if not positive_all_na:
+                trend_df = build_trend_summary_table(df_disp=df_disp, category_in_play=category_in_play, metric_col=metric_col, selected_years=selected_years)
             prof.steps.append(("Build summary table", time.perf_counter() - trend_t0))
 
-            # NEW: Two tabs with Summary first, Detailed second
+            # Two tabs with Summary first, Detailed second
             tab_summary, tab_detail = st.tabs(["Summary results", "Detailed results"])
 
             with tab_summary:
                 st.markdown(f"<div class='q-sub'>{question_code} — {question_text}</div><div class='tiny-note'>{ui_label}</div>", unsafe_allow_html=True)
-                if trend_df is not None and not trend_df.empty:
+                if not positive_all_na and trend_df is not None and not trend_df.empty:
                     st.dataframe(make_arrow_safe(trend_df), use_container_width=True, hide_index=True)
                 else:
-                    st.info("No summary table could be generated for the current selection.")
-                # 🔗 CHANGED: show named hyperlink instead of raw URL
+                    st.info("Summary table is unavailable for this selection.")
+                # 🔗 Named hyperlink prefixed with "Source:"
                 st.markdown(
-                    "[Data source: 2024 Public Service Employee Survey Results - Open Government Portal]"
+                    "Source: [2024 Public Service Employee Survey Results - Open Government Portal]"
                     "(https://open.canada.ca/data/en/dataset/7f625e97-9d02-4c12-a756-1ddebb50e69f)"
                 )
 
@@ -910,8 +802,8 @@ def run_menu1():
                         question_code=question_code,
                         question_text=question_text,
                         category_in_play=category_in_play,
-                        metric_col=metric_col,
-                        metric_label=metric_label,
+                        metric_col=metric_col,      # uses POSITIVE if available; else first Answer with data
+                        metric_label=metric_label,  # reflects chosen metric label
                         temperature=0.2
                     )
                 ai_status.empty()
@@ -941,7 +833,7 @@ def run_menu1():
             with io.BytesIO() as xbuf:
                 with PD.ExcelWriter(xbuf, engine="xlsxwriter") as writer:
                     df_disp.to_excel(writer, sheet_name="Results", index=False)
-                    if trend_df is not None and not trend_df.empty:
+                    if not positive_all_na and trend_df is not None and not trend_df.empty:
                         trend_df.to_excel(writer, sheet_name="Summary Table", index=False)
                     ctx = {
                         "QUESTION": question_code,
@@ -966,7 +858,7 @@ def run_menu1():
                 selected_years=selected_years,
                 dem_display=dem_display,
                 narrative=narrative,
-                df_summary=trend_df if trend_df is not None else PD.DataFrame(),
+                df_summary=(trend_df if (not positive_all_na and trend_df is not None) else PD.DataFrame()),
                 ui_label=ui_label
             )
             if pdf_bytes:
