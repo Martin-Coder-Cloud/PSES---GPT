@@ -341,7 +341,7 @@ def _ai_narrative_and_storytable(df_disp, question_code, question_text, category
     data = _ai_build_payload_single_metric(df_disp, question_code, question_text, category_in_play, metric_col)
     model_name = (st.secrets.get("OPENAI_MODEL") or "gpt-4o-mini").strip()
 
-    # ─── Only change: improved system prompt ─────────────────────────────
+    # (unchanged prompt body)
     system = (
         "You are preparing insights for the Government of Canada’s Public Service Employee Survey (PSES).\n\n"
         "Context\n"
@@ -370,7 +370,6 @@ def _ai_narrative_and_storytable(df_disp, question_code, question_text, category
         "- Professional, concise, neutral. Narrative style (1–3 short paragraphs, no lists).\n"
         "- Output VALID JSON with exactly one key: \"narrative\".\n"
     )
-    # ────────────────────────────────────────────────────────────────────
 
     user_payload = {"metric_label": metric_label, "payload": data}
     user = json.dumps(user_payload, ensure_ascii=False)
@@ -389,7 +388,6 @@ def _ai_narrative_and_storytable(df_disp, question_code, question_text, category
     if not isinstance(out, dict):
         return {"narrative": "", "hint": "non_dict_json"}
 
-    # Harden: accept string or structured narrative
     n = out.get("narrative", "")
     if isinstance(n, (dict, list)):
         n = (n.get("text", "") if isinstance(n, dict) and "text" in n
@@ -812,7 +810,6 @@ def run_menu1():
                 if df_raw is None or df_raw.empty:
                     status_line.caption(f"Processing complete • engine: {engine_guess} • {time.perf_counter()-t0_global:.1f}s")
                     st.info("No data found for this selection.")
-                    # Even if empty, stash a minimal diag so the tab shows something
                     try:
                         backend = get_backend_info() or {}
                     except Exception:
@@ -869,26 +866,40 @@ def run_menu1():
 
             # ---------------- Results ----------------
             st.subheader(f"{question_code} — {question_text}")
-            df_disp_display = make_arrow_safe(df_disp)
-            st.dataframe(df_disp_display, use_container_width=True)
-            st.caption("Data source: https://open.canada.ca/data/en/dataset/7f625e97-9d02-4c12-a756-1ddebb50e69f")
-            st.caption(f"Backend engine: {engine_guess}")
 
+            # Decide metric and build summary table BEFORE showing any tables
             decision = detect_metric_mode(df_disp, scale_pairs)
             metric_col = decision["metric_col"]; ui_label = decision["ui_label"]; metric_label = decision["metric_label"]
 
+            trend_t0 = time.perf_counter()
+            trend_df = build_trend_summary_table(df_disp=df_disp, category_in_play=category_in_play, metric_col=metric_col, selected_years=selected_years)
+            prof.steps.append(("Build summary table", time.perf_counter() - trend_t0))
+
+            # NEW: Two tabs with Summary first, Detailed second
+            tab_summary, tab_detail = st.tabs(["Summary results", "Detailed results"])
+
+            with tab_summary:
+                st.markdown(f"<div class='q-sub'>{question_code} — {question_text}</div><div class='tiny-note'>{ui_label}</div>", unsafe_allow_html=True)
+                if trend_df is not None and not trend_df.empty:
+                    st.dataframe(make_arrow_safe(trend_df), use_container_width=True, hide_index=True)
+                else:
+                    st.info("No summary table could be generated for the current selection.")
+                st.caption("Data source: https://open.canada.ca/data/en/dataset/7f625e97-9d02-4c12-a756-1ddebb50e69f")
+
+            with tab_detail:
+                df_disp_display = make_arrow_safe(df_disp)
+                st.dataframe(df_disp_display, use_container_width=True)
+                st.caption(f"Backend engine: {engine_guess}")
+
+            # Narrative AFTER tabs with requested title
             st.markdown("### Analysis Summary")
             st.markdown(f"<div class='q-sub'>{question_code} — {question_text}</div><div class='tiny-note'>{ui_label}</div>", unsafe_allow_html=True)
 
             narrative = ""
             if st.session_state.get("ai_enabled", False):
                 ai_t0 = time.perf_counter()
-
-                # NEW: Optional status placeholder before spinner
                 ai_status = st.empty()
                 ai_status.info("Preparing AI summary…")
-
-                # NEW: Spinner while contacting OpenAI
                 with st.spinner("🤖 Contacting OpenAI… generating analysis"):
                     ai_out = _ai_narrative_and_storytable(
                         df_disp=df_disp,
@@ -899,10 +910,7 @@ def run_menu1():
                         metric_label=metric_label,
                         temperature=0.2
                     )
-
-                # Clear the temporary status
                 ai_status.empty()
-
                 narrative = str(ai_out.get("narrative") or "").strip()
                 hint = str(ai_out.get("hint") or "").strip()
                 if narrative:
@@ -925,18 +933,7 @@ def run_menu1():
             else:
                 st.caption("AI analysis is disabled (toggle above).")
 
-            st.markdown("### Summary Table")
-            st.markdown(f"<div class='q-sub'>{question_code} — {question_text}</div><div class='tiny-note'>{ui_label}</div>", unsafe_allow_html=True)
-            trend_t0 = time.perf_counter()
-            trend_df = build_trend_summary_table(df_disp=df_disp, category_in_play=category_in_play, metric_col=metric_col, selected_years=selected_years)
-            prof.steps.append(("Build summary table", time.perf_counter() - trend_t0))
-
-            if trend_df is not None and not trend_df.empty:
-                st.dataframe(make_arrow_safe(trend_df), use_container_width=True, hide_index=True)
-            else:
-                st.info("No summary table could be generated for the current selection.")
-
-            # Downloads
+            # Downloads (unchanged)
             with io.BytesIO() as xbuf:
                 with PD.ExcelWriter(xbuf, engine="xlsxwriter") as writer:
                     df_disp.to_excel(writer, sheet_name="Results", index=False)
@@ -983,7 +980,6 @@ def run_menu1():
                 backend = get_backend_info() or {}
             except Exception:
                 backend = {}
-            # Row count heuristic (works for both parquet + csv outputs we convert)
             rows_count = 0
             if isinstance(df_raw, pd.DataFrame):
                 rows_count = int(df_raw.shape[0])
