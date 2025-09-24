@@ -886,7 +886,7 @@ def run_menu1():
                     st.info("No summary table could be generated for the current selection.")
                 # 🔗 CHANGED: show named hyperlink instead of raw URL
                 st.markdown(
-                    "[2024 Public Service Employee Survey Results - Open Government Portal]"
+                    "[Data source: 2024 Public Service Employee Survey Results - Open Government Portal]"
                     "(https://open.canada.ca/data/en/dataset/7f625e97-9d02-4c12-a756-1ddebb50e69f)"
                 )
 
