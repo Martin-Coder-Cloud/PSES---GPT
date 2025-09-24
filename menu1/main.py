@@ -341,13 +341,37 @@ def _ai_narrative_and_storytable(df_disp, question_code, question_text, category
     data = _ai_build_payload_single_metric(df_disp, question_code, question_text, category_in_play, metric_col)
     model_name = (st.secrets.get("OPENAI_MODEL") or "gpt-4o-mini").strip()
 
+    # ─── Only change: improved system prompt ─────────────────────────────
     system = (
-        "You are preparing insights for the Government of Canada’s Public Service Employee Survey (PSES).\n"
-        "Scope: Public Service–wide results only. Use only the provided payload.\n"
-        "Trend thresholds (points): stable ≤1; slight >1–2; notable >2.\n"
-        "Gap qualifiers: normal ≤2; notable >2–5; important >5.\n"
-        "Output JSON with key 'narrative' only.\n"
+        "You are preparing insights for the Government of Canada’s Public Service Employee Survey (PSES).\n\n"
+        "Context\n"
+        "- The PSES provides information to improve people management practices in the federal public service.\n"
+        "- Results help departments and agencies identify strengths and concerns in areas such as employee engagement, anti-racism, equity and inclusion, and workplace well-being.\n"
+        "- The survey tracks progress over time to refine action plans. Employees’ voices guide improvements to workplace quality, which leads to better results for the public service and Canadians.\n"
+        "- Each cycle includes recurring questions (for tracking trends) and new/modified questions reflecting evolving priorities (e.g., updated Employment Equity questions and streamlined hybrid-work items in 2024).\n"
+        "- Statistics Canada administers the survey with the Treasury Board of Canada Secretariat. Confidentiality is guaranteed under the Statistics Act (grouped reporting; results for groups <10 are suppressed).\n\n"
+        "Data-use rules (hard constraints)\n"
+        "- Use ONLY the provided JSON payload/table. DO NOT invent, assume, extrapolate, infer, or generalize beyond the numbers present. No speculation or hypotheses.\n"
+        "- Public Service–wide scope ONLY; do not reference specific departments unless present in the payload.\n"
+        "- Express percentages as whole numbers (e.g., “75%”). Use “points” for differences/changes.\n\n"
+        "Analysis rules\n"
+        "- Begin with the 2024 result for the selected question (metric_label).\n"
+        "- Describe trend over time: compare 2024 with the earliest year available, using thresholds:\n"
+        "  • stable ≤1 point\n"
+        "  • slight >1–2 points\n"
+        "  • notable >2 points\n"
+        "- Compare demographic groups in 2024:\n"
+        "  • Focus on the most relevant comparisons (largest gap(s), or those crossing thresholds).\n"
+        "  • Report gaps in points and classify them: normal ≤2, notable >2–5, important >5.\n"
+        "- If multiple groups are present, highlight only the most meaningful contrasts instead of exhaustively listing all.\n"
+        "- Mention whether gaps observed in 2024 have widened, narrowed, or remained stable compared with earlier years.\n"
+        "- Conclude with a concise overall statement (e.g., “Overall, results have remained steady and demographic gaps are unchanged”).\n\n"
+        "Style & output\n"
+        "- Professional, concise, neutral. Narrative style (1–3 short paragraphs, no lists).\n"
+        "- Output VALID JSON with exactly one key: \"narrative\".\n"
     )
+    # ────────────────────────────────────────────────────────────────────
+
     user_payload = {"metric_label": metric_label, "payload": data}
     user = json.dumps(user_payload, ensure_ascii=False)
 
