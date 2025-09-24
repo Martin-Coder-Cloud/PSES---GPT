@@ -859,15 +859,26 @@ def run_menu1():
             narrative = ""
             if st.session_state.get("ai_enabled", False):
                 ai_t0 = time.perf_counter()
-                ai_out = _ai_narrative_and_storytable(
-                    df_disp=df_disp,
-                    question_code=question_code,
-                    question_text=question_text,
-                    category_in_play=category_in_play,
-                    metric_col=metric_col,
-                    metric_label=metric_label,
-                    temperature=0.2
-                )
+
+                # NEW: Optional status placeholder before spinner
+                ai_status = st.empty()
+                ai_status.info("Preparing AI summary…")
+
+                # NEW: Spinner while contacting OpenAI
+                with st.spinner("🤖 Contacting OpenAI… generating analysis"):
+                    ai_out = _ai_narrative_and_storytable(
+                        df_disp=df_disp,
+                        question_code=question_code,
+                        question_text=question_text,
+                        category_in_play=category_in_play,
+                        metric_col=metric_col,
+                        metric_label=metric_label,
+                        temperature=0.2
+                    )
+
+                # Clear the temporary status
+                ai_status.empty()
+
                 narrative = str(ai_out.get("narrative") or "").strip()
                 hint = str(ai_out.get("hint") or "").strip()
                 if narrative:
