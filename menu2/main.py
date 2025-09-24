@@ -1,22 +1,19 @@
 # menu2/main.py — PSES AI Explorer (Menu 2: Theme/Keyword search → checkbox multi-select)
-# Updates in this version:
-#   • Guaranteed spinner + status badge when embeddings are used (names the model).
-#   • Results as a vertical CHECKBOX LIST (multi-select), not dropdown.
-#   • Hybrid re-ranker (Embeddings cosine + keyword overlap) for tighter precision.
-#     - Toggleable: "Use hybrid re-ranker (recommended)". Turn OFF for strict embeddings-only.
-#   • Gated flow preserved: Search → pick questions → pick Years & Demographics → Run query.
-#   • AI analysis toggle ON by default.
-#
-# NOTE: The OpenAI summary analysis prompt is updated per your specification.
+# Key features:
+#   • Strict thresholded semantic/hybrid search (no top-K caps).
+#   • Query expansion (synonyms) + hybrid gate for precision.
+#   • Gated flow: Search → Pick questions → Pick Years & Demographics → Busy → Ready.
+#   • Checkbox multi-select (no dropdown).
+#   • AI analysis ON by default; per-question + overall theme.
+#   • Updated summary-analysis system prompt (as provided).
+#   • Cross-question summary helper included.
 
 from __future__ import annotations
 
-import io
 import json
 import os
 import re
 import time
-from datetime import datetime
 from typing import List, Dict, Tuple
 
 import pandas as pd
@@ -35,7 +32,7 @@ except Exception:
     def get_backend_info(): return {}
     def prewarm_fastpath(): return "csv"
 
-# OpenAI key (if AI/embeddings enabled)
+# OpenAI key from Streamlit secrets
 os.environ.setdefault("OPENAI_API_KEY", st.secrets.get("OPENAI_API_KEY", ""))
 
 SHOW_DEBUG = False
@@ -109,7 +106,7 @@ def _find_demcode_col(demo_df: pd.DataFrame) -> str | None:
     return None
 
 def _four_digit(s: str) -> str:
-    s = "".join(ch for ch in str(s) if s is not None and ch.isdigit())
+    s = "".join(ch for ch in str(s) if s is not None and s.isdigit())
     return s.zfill(4) if s else ""
 
 def resolve_demographic_codes_from_metadata(demo_df, category_label, subgroup_label):
@@ -179,7 +176,7 @@ def exclude_999_raw(df: pd.DataFrame) -> pd.DataFrame:
                                                              "positive_pct", "neutral_pct", "negative_pct", "n"]
     present = [c for c in candidates if c in out.columns]
     for c in present:
-        s = out[c].astype(str).stripped = out[c].astype(str).str.strip()
+        s = out[c].astype(str).str.strip()
         mask = (s == "999") | (s == "9999")
         mask |= pd.to_numeric(out[c], errors="coerce").isin([999, 9999])
         out.loc[mask, c] = pd.NA
@@ -439,7 +436,7 @@ class Profiler:
 
 
 # ─────────────────────────────
-# Embeddings (with spinner) + Hybrid re-ranker
+# Embeddings + Hybrid strict search (no top-K)
 # ─────────────────────────────
 def _embeddings_available() -> bool:
     try:
@@ -453,19 +450,17 @@ def _get_embed_model() -> str:
 
 def _get_embed_threshold() -> float:
     try:
-        return float(st.secrets.get("OPENAI_EMBED_THRESHOLD", 0.27))
+        return float(st.secrets.get("OPENAI_EMBED_THRESHOLD", 0.40))
     except Exception:
-        return 0.27
+        return 0.40
 
 def _get_top_k() -> int:
+    # Not used anymore (strict gate returns all passing items)
     try:
-        return int(st.secrets.get("OPENAI_EMBED_TOPK", 12))
+        int(st.secrets.get("OPENAI_EMBED_TOPK", 0))
     except Exception:
-        return 12
-
-def _get_use_hybrid() -> bool:
-    val = str(st.secrets.get("OPENAI_EMBED_HYBRID", "true")).strip().lower()
-    return val not in ("0", "false", "no")
+        pass
+    return 0
 
 @st.cache_resource(show_spinner=False)
 def _build_question_embeddings(qdf: pd.DataFrame) -> Dict[str, List[float]]:
@@ -486,11 +481,12 @@ def _keyword_overlap_score(qdf_row_tokens: List[str], query_tokens: set[str]) ->
     toks = set(qdf_row_tokens)
     return len(toks & query_tokens)
 
-def _semantic_rank_basic(qdf: pd.DataFrame, user_query: str, top_k: int) -> pd.DataFrame:
+def _semantic_rank_basic(qdf: pd.DataFrame, user_query: str, _dummy: int) -> pd.DataFrame:
     if not user_query or qdf.empty:
         return qdf.head(0)
     uq = user_query.strip().lower()
     q_tokens = set(_tokenize(uq))
+    # Require at least 2 token overlaps to be considered "relevant"
     def _score_row(tokens: List[str], norm: str) -> float:
         toks = set(tokens)
         exact = len(q_tokens & toks)
@@ -501,33 +497,58 @@ def _semantic_rank_basic(qdf: pd.DataFrame, user_query: str, top_k: int) -> pd.D
         return exact + 0.5 * subs
     scores = qdf.apply(lambda r: _score_row(r["__tokens__"], r["__norm__"]), axis=1)
     out = qdf.assign(__score__=scores)
+    out = out[out["__score__"] >= 2]  # strict keyword gate
     out = out.sort_values(["__score__", "code"], ascending=[False, True])
-    out = out[out["__score__"] > 0]
-    return out.head(top_k)[["code", "text", "display", "__score__"]]
+    return out[["code", "text", "display", "__score__"]]
+
+def _expand_query_terms(uq: str) -> set[str]:
+    base = set([t for t in _tokenize(uq) if len(t) >= 3])
+    synonyms = {
+        "pay": {"salary","compensation","wage","wages","remuneration","pay"},
+        "salary": {"pay","compensation","remuneration","wage","wages"},
+        "compensation": {"salary","pay","remuneration","wage","wages"},
+        "recognition": {"recognize","recognized","appreciation","reward","recognition"},
+        "harassment": {"harass","harassment","violence","bullying"},
+        "inclusion": {"inclusion","inclusive","belonging","equity"},
+        "psychological": {"psychological","mental","health","safety"},
+    }
+    for t in list(base):
+        if t in synonyms:
+            base |= synonyms[t]
+    return base
 
 def _semantic_search(qdf: pd.DataFrame, user_query: str, use_hybrid: bool) -> tuple[pd.DataFrame, dict]:
     """
-    Returns (matches_df, diag) where diag includes:
-      { 'path': 'embeddings'|'fallback', 'model': str|None, 'hybrid': bool, 'threshold': float, 'topk': int }
+    Strict relevance:
+      - Embeddings-only: keep items with cosine >= thr_strict (default 0.40)
+      - Hybrid: keep items that satisfy EITHER:
+          A) cosine >= thr_strong (thr+0.06, e.g., 0.46), OR
+          B) cosine >= thr_strict AND keyword_overlap >= 2
+      - Return ALL that pass; if none, return empty with diag.
     """
-    top_k = _get_top_k()
+    thr_strict = _get_embed_threshold()    # e.g., 0.40
+    thr_strong = thr_strict + 0.06         # e.g., 0.46
+    KW_MIN = 2
+
     if not user_query.strip():
-        return qdf.head(0), {'path':'none','model':None,'hybrid':use_hybrid,'threshold':_get_embed_threshold(),'topk':top_k}
+        return qdf.head(0), {'path':'none','model':None,'hybrid':use_hybrid,'threshold':thr_strict,'rule':'strict'}
 
     if not _embeddings_available():
-        out = _semantic_rank_basic(qdf, user_query, top_k)
-        return out, {'path':'fallback','model':None,'hybrid':use_hybrid,'threshold':None,'topk':top_k}
+        out = _semantic_rank_basic(qdf, user_query, 0)
+        return out, {'path':'fallback','model':None,'hybrid':use_hybrid,'threshold':None,'rule':f'kw_overlap>={KW_MIN}'}
 
-    # Embeddings path with spinner that names the model
     try:
         import numpy as np  # noqa
         from openai import OpenAI  # noqa
     except Exception:
-        out = _semantic_rank_basic(qdf, user_query, top_k)
-        return out, {'path':'fallback','model':None,'hybrid':use_hybrid,'threshold':None,'topk':top_k}
+        out = _semantic_rank_basic(qdf, user_query, 0)
+        return out, {'path':'fallback','model':None,'hybrid':use_hybrid,'threshold':None,'rule':f'kw_overlap>={KW_MIN}'}
 
     model = _get_embed_model()
-    thr = _get_embed_threshold()
+    uq = user_query.strip().lower()
+    q_tokens = _expand_query_terms(uq)
+
+    # Get embeddings (with visible spinner)
     with st.spinner(f"🔎 Searching… contacting OpenAI and computing embeddings (model: {model})…"):
         try:
             emb_map = _build_question_embeddings(qdf)
@@ -535,10 +556,10 @@ def _semantic_search(qdf: pd.DataFrame, user_query: str, use_hybrid: bool) -> tu
             qresp = client.embeddings.create(model=model, input=user_query.strip())
             qvec = qresp.data[0].embedding
         except Exception:
-            out = _semantic_rank_basic(qdf, user_query, top_k)
-            return out, {'path':'fallback','model':None,'hybrid':use_hybrid,'threshold':None,'topk':top_k}
+            out = _semantic_rank_basic(qdf, user_query, 0)
+            return out, {'path':'fallback','model':None,'hybrid':use_hybrid,'threshold':None,'rule':f'kw_overlap>={KW_MIN}'}
 
-    # Cosine function
+    # Cosine
     import numpy as np
     def cos(a, b):
         a = np.array(a, dtype=float); b = np.array(b, dtype=float)
@@ -546,10 +567,7 @@ def _semantic_search(qdf: pd.DataFrame, user_query: str, use_hybrid: bool) -> tu
         if na == 0 or nb == 0: return 0.0
         return float(np.dot(a, b) / (na * nb))
 
-    # Compute candidates
-    uq = user_query.strip().lower()
-    q_tokens = set([t for t in _tokenize(uq) if len(t) >= 3])
-
+    # Score all; APPLY ONLY THE GATE; do not cap or prune
     rows = []
     kw_max = 1
     for _, r in qdf.iterrows():
@@ -558,42 +576,30 @@ def _semantic_search(qdf: pd.DataFrame, user_query: str, use_hybrid: bool) -> tu
         if vec is None:
             continue
         coss = cos(qvec, vec)
-        if use_hybrid:
-            kw = _keyword_overlap_score(r["__tokens__"], q_tokens)
-            kw_max = max(kw_max, kw)
-            rows.append((code, text, f"{code} – {text}", coss, kw))
-        else:
-            rows.append((code, text, f"{code} – {text}", coss, 0))
+        kw = _keyword_overlap_score(r["__tokens__"], q_tokens) if use_hybrid else 0
+        kw_max = max(kw_max, kw)
+        rows.append((code, text, f"{code} – {text}", coss, kw))
 
-    if not rows:
-        out = _semantic_rank_basic(qdf, user_query, top_k)
-        return out, {'path':'fallback','model':None,'hybrid':use_hybrid,'threshold':None,'topk':top_k}
-
-    # Filter + final score
-    out_rows = []
+    kept = []
     if use_hybrid:
         for code, text, disp, coss, kw in rows:
-            if (coss >= thr) or (kw > 0):
-                kw_norm = (kw / kw_max) if kw_max > 0 else 0.0
-                score = 0.7 * coss + 0.3 * kw_norm
-                out_rows.append((code, text, disp, score))
+            if (coss >= thr_strong) or (coss >= thr_strict and kw >= KW_MIN):
+                score = 0.8 * coss + 0.2 * (kw / kw_max if kw_max > 0 else 0.0)
+                kept.append((code, text, disp, score))
     else:
-        for code, text, disp, coss, _ in rows:
-            if coss >= thr:
-                out_rows.append((code, text, disp, coss))
+        for code, text, disp, coss, kw in rows:
+            if coss >= thr_strict:
+                kept.append((code, text, disp, coss))
 
-    if not out_rows:
-        # If strict mode filtered everything, fall back to keyword
-        out = _semantic_rank_basic(qdf, user_query, top_k)
-        return out, {'path':'fallback','model':None,'hybrid':use_hybrid,'threshold':None,'topk':top_k}
+    if not kept:
+        return qdf.head(0), {'path':'embeddings','model':model,'hybrid':use_hybrid,'threshold':thr_strict,'rule':f'A:cos≥{thr_strong:.2f} OR B:cos≥{thr_strict:.2f}+KW≥{KW_MIN}','kept':0}
 
-    out = PD.DataFrame(out_rows, columns=["code", "text", "display", "__score__"])
-    out = out.sort_values(["__score__", "code"], ascending=[False, True]).head(top_k)
-    return out[["code", "text", "display", "__score__"]], {'path':'embeddings','model':model,'hybrid':use_hybrid,'threshold':thr,'topk':top_k}
+    out = PD.DataFrame(kept, columns=["code","text","display","__score__"]).sort_values(["__score__","code"], ascending=[False, True])
+    return out[["code","text","display","__score__"]], {'path':'embeddings','model':model,'hybrid':use_hybrid,'threshold':thr_strict,'rule':f'A:cos≥{thr_strong:.2f} OR B:cos≥{thr_strict:.2f}+KW≥{KW_MIN}','kept':len(kept)}
 
 
 # ─────────────────────────────
-# Cross-question summary builder (added helper)
+# Cross-question summary builder
 # ─────────────────────────────
 def build_cross_question_summary(
     per_q_disp: dict[str, pd.DataFrame],
@@ -601,10 +607,10 @@ def build_cross_question_summary(
     selected_years: list[str]
 ) -> pd.DataFrame:
     """
-    Builds the Overview table:
-      - Rows = Question code (and Demographic when a category is selected)
+    Overview table:
+      - Rows = Question (and Demographic when selected)
       - Columns = selected years
-      - Cells   = POSITIVE (or AGREE if POSITIVE unavailable; else first answer label) as whole-number percents
+      - Cells   = POSITIVE (or AGREE else first answer) as whole-number percents
     """
     rows: list[pd.DataFrame] = []
     years = sorted([str(y) for y in selected_years], key=lambda x: int(x))
@@ -614,11 +620,9 @@ def build_cross_question_summary(
             continue
 
         df = df_disp.copy()
-        # Ensure there is a Demographic column so the pivot logic is stable
         if "Demographic" not in df.columns:
             df["Demographic"] = "All respondents"
 
-        # Decide which metric to summarize (POSITIVE → AGREE → first answer)
         decision = detect_metric_mode(df, scale_pairs=None)
         metric_col = decision["metric_col"]
 
@@ -628,18 +632,14 @@ def build_cross_question_summary(
             continue
 
         df = df[keep].copy()
-
-        # Pivot to Year columns
         pivot = df.pivot_table(index="Demographic", columns="Year", values=metric_col, aggfunc="first")
 
-        # Ensure all selected years exist as columns
         for y in years:
             if y not in pivot.columns:
                 pivot[y] = pd.NA
 
         pivot = pivot.reset_index()
         pivot.insert(0, "Question", qcode)
-
         rows.append(pivot)
 
     if not rows:
@@ -647,7 +647,6 @@ def build_cross_question_summary(
 
     combined = pd.concat(rows, ignore_index=True)
 
-    # Format as whole-number percents where numeric, else "n/a"
     for y in years:
         if y in combined.columns:
             vals = pd.to_numeric(combined[y], errors="coerce").round(0)
@@ -656,13 +655,11 @@ def build_cross_question_summary(
             out.loc[mask] = vals.loc[mask].astype(int).astype(str) + "%"
             combined[y] = out
 
-    # If no demographic breakdown, keep one row per question (All respondents)
     if not category_in_play:
         if "Demographic" in combined.columns:
             combined = combined[combined["Demographic"] == "All respondents"].copy()
             combined = combined.drop(columns=["Demographic"])
 
-    # Order rows nicely
     sort_cols = ["Question"] + (["Demographic"] if category_in_play else [])
     combined = combined.sort_values(sort_cols).reset_index(drop=True)
 
@@ -693,7 +690,7 @@ def _detect_backend():
 
 
 # ─────────────────────────────
-# UI — Gated flow with CHECKBOX selection
+# UI — Gated flow with CHECKBOX selection + Busy phase
 # ─────────────────────────────
 def run_menu2():
     st.markdown(
@@ -723,10 +720,10 @@ def run_menu2():
 
     demo_df = load_demographics_metadata()
     qdf = load_questions_metadata()
-    sdf = load_scales_metadata()
+    _ = load_scales_metadata()  # cached; called later per question
 
     # Persistent UI state
-    st.session_state.setdefault("menu2_phase", "search")          # search | pick | pick_filters | ready
+    st.session_state.setdefault("menu2_phase", "search")          # search | pick | pick_filters | busy | ready
     st.session_state.setdefault("menu2_matches", PD.DataFrame())
     st.session_state.setdefault("menu2_selected_codes", [])       # list[str]
 
@@ -746,12 +743,12 @@ def run_menu2():
         st.session_state["ai_enabled"] = ai_enabled
 
         # Optional: allow disabling hybrid when diagnosing relevance
-        adv_col1, adv_col2 = st.columns([1,1])
+        adv_col1, _ = st.columns([1,1])
         with adv_col1:
-            use_hybrid_ui = st.toggle("Use hybrid re-ranker (recommended)", value=st.session_state.get("menu2_use_hybrid", _get_use_hybrid()))
+            use_hybrid_ui = st.toggle("Use hybrid re-ranker (recommended)", value=st.session_state.get("menu2_use_hybrid", True))
             st.session_state["menu2_use_hybrid"] = use_hybrid_ui
 
-        # ── Phase 1: Search box only ───────────────────────────────────
+        # Phase: SEARCH
         if st.session_state["menu2_phase"] == "search":
             st.markdown('<div class="custom-instruction">Step 1 — Enter a theme or keywords (e.g., “compensation”, “recognition”, “psychological safety”).</div>', unsafe_allow_html=True)
             st.markdown('<div class="field-label">Enter keywords or a theme:</div>', unsafe_allow_html=True)
@@ -768,25 +765,25 @@ def run_menu2():
                     matches_df, diag = _semantic_search(qdf, user_query.strip(), use_hybrid=st.session_state.get("menu2_use_hybrid", True))
                     st.session_state["menu2_diag"] = diag
                     if matches_df.empty:
-                        st.info("No matching questions found. Try broader or different keywords.")
+                        st.info("No matching questions met the relevance threshold. Try different or broader keywords.")
                     else:
                         st.session_state["menu2_matches"] = matches_df
                         st.session_state["menu2_phase"] = "pick"
 
-        # ── Phase 2: Checkbox list (multi-select), then confirm ────────
+        # Phase: PICK QUESTIONS
         if st.session_state["menu2_phase"] == "pick":
             matches_df = st.session_state["menu2_matches"]
             diag = st.session_state.get("menu2_diag", {})
-            # Status pill (shows embeddings vs fallback)
             if diag.get("path") == "embeddings":
                 hybrid_note = "hybrid" if diag.get("hybrid") else "embeddings-only"
-                st.markdown(f"<span class='pill'>Search: Embeddings ({diag.get('model')}, {hybrid_note}, thr={diag.get('threshold')}, topK={diag.get('topk')})</span>", unsafe_allow_html=True)
+                rule = diag.get("rule","strict"); kept = diag.get("kept", None)
+                kept_txt = f", kept={kept}" if kept is not None else ""
+                st.markdown(f"<span class='pill'>Search: Embeddings ({diag.get('model')}, {hybrid_note}, {rule}{kept_txt})</span>", unsafe_allow_html=True)
             elif diag.get("path") == "fallback":
-                st.markdown("<span class='pill red'>Search: Fallback (keyword similarity)</span>", unsafe_allow_html=True)
+                st.markdown("<span class='pill red'>Search: Fallback (strict keyword match: ≥2 overlaps)</span>", unsafe_allow_html=True)
 
             st.markdown('<div class="custom-instruction">Step 2 — Tick one or more related questions to analyze.</div>', unsafe_allow_html=True)
 
-            # Render as checkbox list (no dropdown)
             selected_codes: List[str] = []
             for idx, r in matches_df.reset_index(drop=True).iterrows():
                 label = f"{r['code']} — {r['text']}"
@@ -796,7 +793,6 @@ def run_menu2():
                 if val:
                     selected_codes.append(str(r["code"]))
 
-            # Confirm selection
             col_a, col_b = st.columns([1,1])
             with col_a:
                 if st.button("✅ Confirm selection"):
@@ -808,11 +804,10 @@ def run_menu2():
             with col_b:
                 if st.button("↩️ Back to search"):
                     st.session_state["menu2_phase"] = "search"
-                    # clear checkboxes state
                     for _, r in matches_df.iterrows():
                         st.session_state.pop(f"chk_{r['code']}", None)
 
-        # ── Phase 3: Years & Demographics (both required), then Run ────
+        # Phase: PICK FILTERS (Years & Demographics)
         if st.session_state["menu2_phase"] == "pick_filters":
             st.markdown('<div class="custom-instruction">Step 3 — Select survey year(s) and a demographic breakdown (or All respondents).</div>', unsafe_allow_html=True)
 
@@ -846,7 +841,6 @@ def run_menu2():
                 if sub_selection == "":
                     sub_selection = None
 
-            # Validate required inputs
             ready = True
             if not st.session_state.get("menu2_selected_codes"):
                 ready = False; st.info("Please select related questions first.")
@@ -868,13 +862,14 @@ def run_menu2():
                     "sub_selection": sub_selection,
                 }
                 if st.button("🔎 Run query"):
-                    st.session_state["menu2_phase"] = "ready"
+                    st.session_state["menu2_phase"] = "busy"
+                    st.rerun()
 
             if st.button("↩️ Back to question selection"):
                 st.session_state["menu2_phase"] = "pick"
 
-        # ── Phase 4: Execute & show results ────────────────────────────
-        if st.session_state["menu2_phase"] == "ready":
+        # Phase: BUSY (compute; no greyed-out duplicates)
+        if st.session_state["menu2_phase"] == "busy":
             selected_codes = st.session_state.get("menu2_selected_codes", [])
             filt = st.session_state.get("menu2_filters", {})
             selected_years = filt.get("years", [])
@@ -904,7 +899,6 @@ def run_menu2():
                     with prof.step(f"[{qcode}] Match scales", live=status_line, engine=engine_guess, t0_global=t0_global):
                         scale_pairs = get_scale_labels(load_scales_metadata(), qcode)
                         if not scale_pairs:
-                            st.warning(f"Scale metadata missing for '{qcode}'. Skipping.")
                             continue
 
                     # 2) load
@@ -921,7 +915,6 @@ def run_menu2():
                             df_raw = (PD.concat([p for p in parts if p is not None and not p.empty], ignore_index=True) if parts else PD.DataFrame())
 
                     if df_raw is None or df_raw.empty:
-                        st.info(f"No data for {qcode}.")
                         continue
 
                     # 3) clean
@@ -939,21 +932,39 @@ def run_menu2():
                         df_disp = format_display_table_raw(df=df_raw, category_in_play=category_in_play, dem_disp_map=dem_map_clean, scale_pairs=scale_pairs)
 
                     if df_disp is None or df_disp.empty:
-                        st.info(f"No displayable rows for {qcode}.")
                         continue
 
                     per_q_disp[qcode] = df_disp
                     decision = detect_metric_mode(df_disp, scale_pairs)
                     per_q_metric[qcode] = (decision["metric_col"], decision["ui_label"], bool(decision.get("summary_allowed", False)))
 
-                # Cross-question summary table
+                # Cross-question summary
                 with prof.step("Build cross-question summary", live=status_line, engine=engine_guess, t0_global=t0_global):
                     cross_summary = build_cross_question_summary(per_q_disp, category_in_play, selected_years)
 
-                total_s = time.perf_counter() - t0_global
-                status_line.caption(f"Processing complete • engine: {engine_guess} • {total_s:.1f}s")
+            # Stash payload for rendering
+            st.session_state["menu2_ready_payload"] = dict(
+                per_q_disp=per_q_disp,
+                per_q_text=per_q_text,
+                per_q_metric=per_q_metric,
+                cross_summary=cross_summary,
+                selected_years=selected_years,
+                category_in_play=category_in_play
+            )
 
-            # ── Results UI: Overview + one tab per question
+            st.session_state["menu2_phase"] = "ready"
+            st.rerun()
+
+        # Phase: READY (render results)
+        if st.session_state["menu2_phase"] == "ready":
+            payload = st.session_state.get("menu2_ready_payload", {})
+            per_q_disp = payload.get("per_q_disp", {})
+            per_q_text = payload.get("per_q_text", {})
+            per_q_metric = payload.get("per_q_metric", {})
+            cross_summary = payload.get("cross_summary", PD.DataFrame())
+            selected_years = payload.get("selected_years", [])
+            category_in_play = bool(payload.get("category_in_play", False))
+
             tabs = st.tabs(["Overview"] + [f"{q} — Details" for q in per_q_disp.keys()])
 
             # Overview
@@ -1001,14 +1012,13 @@ def run_menu2():
                     "(https://open.canada.ca/data/en/dataset/7f625e97-9d02-4c12-a756-1ddebb50e69f)"
                 )
 
-            # One tab per question
+            # Per-question tabs
             idx = 1
             for qcode, df_disp in per_q_disp.items():
                 with tabs[idx]:
                     qtext = per_q_text.get(qcode, "")
                     st.subheader(f"{qcode} — {qtext}")
                     metric_col, ui_label, summary_allowed = per_q_metric.get(qcode, ("POSITIVE", "(% positive answers)", True))
-                    # Trend summary when POSITIVE/AGREE available
                     trend_df = PD.DataFrame()
                     if summary_allowed:
                         trend_df = build_trend_summary_table(df_disp=df_disp, category_in_play=category_in_play, metric_col=metric_col, selected_years=selected_years)
@@ -1042,7 +1052,7 @@ def run_menu2():
                     st.session_state["menu2_selected_codes"] = []
 
 
-# Reuse from Menu 1 (for per-question trend tab)
+# Per-question trend table (reuse pattern from Menu 1)
 def build_trend_summary_table(df_disp, category_in_play, metric_col, selected_years: list[str] | None = None) -> pd.DataFrame:
     if df_disp is None or df_disp.empty or "Year" not in df_disp.columns:
         return PD.DataFrame()
