@@ -884,7 +884,11 @@ def run_menu1():
                     st.dataframe(make_arrow_safe(trend_df), use_container_width=True, hide_index=True)
                 else:
                     st.info("No summary table could be generated for the current selection.")
-                st.caption("Data source: https://open.canada.ca/data/en/dataset/7f625e97-9d02-4c12-a756-1ddebb50e69f")
+                # 🔗 CHANGED: show named hyperlink instead of raw URL
+                st.markdown(
+                    "[2024 Public Service Employee Survey Results - Open Government Portal]"
+                    "(https://open.canada.ca/data/en/dataset/7f625e97-9d02-4c12-a756-1ddebb50e69f)"
+                )
 
             with tab_detail:
                 df_disp_display = make_arrow_safe(df_disp)
