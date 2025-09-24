@@ -247,6 +247,20 @@ def detect_metric_mode(df_disp: pd.DataFrame, scale_pairs) -> dict:
 
 
 # ─────────────────────────────
+# Arrow-safe display helper (new)
+# ─────────────────────────────
+def make_arrow_safe(df: pd.DataFrame) -> pd.DataFrame:
+    """Cast object/mixed columns to string for clean Arrow serialization."""
+    if df is None or df.empty:
+        return df
+    out = df.copy()
+    for c in out.columns:
+        if pd.api.types.is_object_dtype(out[c]):
+            out[c] = out[c].astype(str)
+    return out
+
+
+# ─────────────────────────────
 # AI helpers (compact)
 # ─────────────────────────────
 def _class_name(e: Exception) -> str: return type(e).__name__
@@ -350,7 +364,16 @@ def _ai_narrative_and_storytable(df_disp, question_code, question_text, category
         return {"narrative": "", "hint": "json_decode_error"}
     if not isinstance(out, dict):
         return {"narrative": "", "hint": "non_dict_json"}
-    return {"narrative": out.get("narrative", "").strip(), "hint": ""}
+
+    # Harden: accept string or structured narrative
+    n = out.get("narrative", "")
+    if isinstance(n, (dict, list)):
+        n = (n.get("text", "") if isinstance(n, dict) and "text" in n
+             else json.dumps(n, ensure_ascii=False))
+    else:
+        n = str(n)
+
+    return {"narrative": n.strip(), "hint": ""}
 
 
 # ─────────────────────────────
@@ -623,9 +646,9 @@ def run_menu1():
                 with tabs[0]:
                     params_df = PD.DataFrame(
                         {"Parameter": ["QUESTION (from metadata)", "SURVEYR (years)", "DEMCODE(s) (from metadata)"],
-                         "Value": [question_code, ", ".join(selected_years), ", ".join(dem_display)]}
+                         "Value": [str(question_code), ", ".join(selected_years), ", ".join(dem_display)]}
                     )
-                    st.dataframe(params_df, use_container_width=True, hide_index=True)
+                    st.dataframe(make_arrow_safe(params_df), use_container_width=True, hide_index=True)
 
                 # 2) Environment diagnostics
                 with tabs[1]:
@@ -714,7 +737,7 @@ def run_menu1():
                     add("parquet_ready", backend.get("parquet_ready", "—"))
                     add("csv_path",      diag.get("csv_path", backend.get("csv_path", "—")))
                     add("parquet_error", diag.get("parquet_error", "—"))
-                    st.table(pd.DataFrame(rows))
+                    st.table(make_arrow_safe(pd.DataFrame(rows)))
 
                     # Step timings from the last run (if any)
                     last_steps = st.session_state.get("last_prof_steps") or []
@@ -725,7 +748,7 @@ def run_menu1():
                         ).sort_values("Duration (ms)", ascending=False, ignore_index=True)
                         total_ms = int(sum(dt for _, dt in last_steps) * 1000)
                         st.caption(f"Total (profiled): ~{total_ms} ms")
-                        st.table(prof_df)
+                        st.table(make_arrow_safe(prof_df))
 
         # ──────────────────────────────────────────────────────────────────
         # Run query (single pass, cached big file)
@@ -822,7 +845,8 @@ def run_menu1():
 
             # ---------------- Results ----------------
             st.subheader(f"{question_code} — {question_text}")
-            st.dataframe(df_disp, use_container_width=True)
+            df_disp_display = make_arrow_safe(df_disp)
+            st.dataframe(df_disp_display, use_container_width=True)
             st.caption("Data source: https://open.canada.ca/data/en/dataset/7f625e97-9d02-4c12-a756-1ddebb50e69f")
             st.caption(f"Backend engine: {engine_guess}")
 
@@ -835,9 +859,17 @@ def run_menu1():
             narrative = ""
             if st.session_state.get("ai_enabled", False):
                 ai_t0 = time.perf_counter()
-                ai_out = _ai_narrative_and_storytable(df_disp=df_disp, question_code=question_code, question_text=question_text, category_in_play=category_in_play, metric_col=metric_col, metric_label=metric_label, temperature=0.2)
-                narrative = (ai_out.get("narrative") or "").strip()
-                hint = (ai_out.get("hint") or "").strip()
+                ai_out = _ai_narrative_and_storytable(
+                    df_disp=df_disp,
+                    question_code=question_code,
+                    question_text=question_text,
+                    category_in_play=category_in_play,
+                    metric_col=metric_col,
+                    metric_label=metric_label,
+                    temperature=0.2
+                )
+                narrative = str(ai_out.get("narrative") or "").strip()
+                hint = str(ai_out.get("hint") or "").strip()
                 if narrative:
                     model_used = (st.secrets.get("OPENAI_MODEL") or "gpt-4o-mini").strip()
                     narrative += f"\n\n_Powered by OpenAI model {model_used}_"
@@ -865,7 +897,7 @@ def run_menu1():
             prof.steps.append(("Build summary table", time.perf_counter() - trend_t0))
 
             if trend_df is not None and not trend_df.empty:
-                st.dataframe(trend_df, use_container_width=True, hide_index=True)
+                st.dataframe(make_arrow_safe(trend_df), use_container_width=True, hide_index=True)
             else:
                 st.info("No summary table could be generated for the current selection.")
 
@@ -875,14 +907,39 @@ def run_menu1():
                     df_disp.to_excel(writer, sheet_name="Results", index=False)
                     if trend_df is not None and not trend_df.empty:
                         trend_df.to_excel(writer, sheet_name="Summary Table", index=False)
-                    ctx = {"QUESTION": question_code, "SURVEYR (years)": ", ".join(selected_years), "DEMCODE(s)": ", ".join(dem_display), "Metric used": metric_label, "AI enabled": "Yes" if st.session_state.get("ai_enabled", False) else "No", "Generated at": datetime.now().strftime("%Y-%m-%d %H:%M:%S")}
+                    ctx = {
+                        "QUESTION": question_code,
+                        "SURVEYR (years)": ", ".join(selected_years),
+                        "DEMCODE(s)": ", ".join(dem_display),
+                        "Metric used": metric_label,
+                        "AI enabled": "Yes" if st.session_state.get("ai_enabled", False) else "No",
+                        "Generated at": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                    }
                     PD.DataFrame(list(ctx.items()), columns=["Field", "Value"]).to_excel(writer, sheet_name="Context", index=False)
                 xdata = xbuf.getvalue()
-            st.download_button(label="⬇️ Download data (Excel)", data=xdata, file_name=f"PSES_{question_code}_{'-'.join(selected_years)}.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+            st.download_button(
+                label="⬇️ Download data (Excel)",
+                data=xdata,
+                file_name=f"PSES_{question_code}_{'-'.join(selected_years)}.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+            )
 
-            pdf_bytes = build_pdf_report(question_code=question_code, question_text=question_text, selected_years=selected_years, dem_display=dem_display, narrative=narrative, df_summary=trend_df if trend_df is not None else PD.DataFrame(), ui_label=ui_label)
+            pdf_bytes = build_pdf_report(
+                question_code=question_code,
+                question_text=question_text,
+                selected_years=selected_years,
+                dem_display=dem_display,
+                narrative=narrative,
+                df_summary=trend_df if trend_df is not None else PD.DataFrame(),
+                ui_label=ui_label
+            )
             if pdf_bytes:
-                st.download_button(label="⬇️ Download summary report (PDF)", data=pdf_bytes, file_name=f"PSES_{question_code}_{'-'.join(selected_years)}.pdf", mime="application/pdf")
+                st.download_button(
+                    label="⬇️ Download summary report (PDF)",
+                    data=pdf_bytes,
+                    file_name=f"PSES_{question_code}_{'-'.join(selected_years)}.pdf",
+                    mime="application/pdf"
+                )
             else:
                 st.caption("PDF export unavailable (install `reportlab` in requirements to enable).")
 
