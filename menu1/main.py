@@ -632,7 +632,7 @@ def run_menu1():
         # Description (updated previously)
         st.markdown(
             '<div class="custom-instruction">Please select a question you are interested in, the survey year and, optionally, a demographic breakdown.<br>'
-            'This application provides only Public Service-wide results. The output is a summary and a detailed result table with a short analysis.</div>',
+            'This application provides only Public Service-wide results. The output is a summary and a detailed results table with a short analysis.</div>',
             unsafe_allow_html=True,
         )
 
@@ -784,7 +784,7 @@ def run_menu1():
                 if summary_allowed and trend_df is not None and not trend_df.empty:
                     st.dataframe(make_arrow_safe(trend_df), use_container_width=True, hide_index=True)
                 else:
-                    st.info("Summary table is unavailable for this selection.")
+                    st.info("Summary table is unavailable for this selection, please see detailed results table.")
                 # Source link
                 st.markdown(
                     "Source: [2024 Public Service Employee Survey Results - Open Government Portal]"
