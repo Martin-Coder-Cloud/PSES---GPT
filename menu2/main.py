@@ -6,6 +6,8 @@
 #     - Toggleable: "Use hybrid re-ranker (recommended)". Turn OFF for strict embeddings-only.
 #   • Gated flow preserved: Search → pick questions → pick Years & Demographics → Run query.
 #   • AI analysis toggle ON by default.
+#
+# NOTE: The OpenAI summary analysis prompt is updated per your specification.
 
 from __future__ import annotations
 
@@ -177,7 +179,7 @@ def exclude_999_raw(df: pd.DataFrame) -> pd.DataFrame:
                                                              "positive_pct", "neutral_pct", "negative_pct", "n"]
     present = [c for c in candidates if c in out.columns]
     for c in present:
-        s = out[c].astype(str).str.strip()
+        s = out[c].astype(str).stripped = out[c].astype(str).str.strip()
         mask = (s == "999") | (s == "9999")
         mask |= pd.to_numeric(out[c], errors="coerce").isin([999, 9999])
         out.loc[mask, c] = pd.NA
@@ -337,19 +339,37 @@ def _ai_narrative_single(df_disp, question_code, question_text, category_in_play
     client = OpenAI()
     data = _ai_build_payload_single_metric(df_disp, question_code, question_text, category_in_play, metric_col)
     model_name = (st.secrets.get("OPENAI_MODEL") or "gpt-4o-mini").strip()
+
+    # Prompt change: "minimal ≤2" (was "normal ≤2")
     system = (
         "You are preparing insights for the Government of Canada’s Public Service Employee Survey (PSES).\n\n"
-        "Data-use rules:\n"
-        "- Use ONLY the provided JSON payload/table. No speculation.\n"
-        "- Public Service–wide scope only.\n"
-        "- Whole-number percentages and “points”.\n\n"
-        "Analysis rules:\n"
-        "- Start with the latest-year result for the selected metric.\n"
-        "- Trend vs earliest year: stable ≤1 pt; slight >1–2 pts; notable >2 pts.\n"
-        "- Compare demographic groups (latest year), classify gaps: minimal ≤2, notable >2–5, important >5; mention change vs earliest.\n"
-        "- Output ≤1 concise paragraph.\n"
-        "- Return VALID JSON with exactly one key: \"narrative\"."
+        "Context\n"
+        "- The PSES provides information to improve people management practices in the federal public service.\n"
+        "- Results help departments and agencies identify strengths and concerns in areas such as employee engagement, anti-racism, equity and inclusion, and workplace well-being.\n"
+        "- The survey tracks progress over time to refine action plans. Employees’ voices guide improvements to workplace quality, which leads to better results for the public service and Canadians.\n"
+        "- Each cycle includes recurring questions (for tracking trends) and new/modified questions reflecting evolving priorities (e.g., updated Employment Equity questions and streamlined hybrid-work items in 2024).\n"
+        "- Statistics Canada administers the survey with the Treasury Board of Canada Secretariat. Confidentiality is guaranteed under the Statistics Act (grouped reporting; results for groups <10 are suppressed).\n\n"
+        "Data-use rules (hard constraints)\n"
+        "- Use ONLY the provided JSON payload/table. DO NOT invent, assume, extrapolate, infer, or generalize beyond the numbers present. No speculation or hypotheses.\n"
+        "- Public Service–wide scope ONLY; do not reference specific departments unless present in the payload.\n"
+        "- Express percentages as whole numbers (e.g., “75%”). Use “points” for differences/changes.\n\n"
+        "Analysis rules\n"
+        "- Begin with the 2024 result for the selected question (metric_label).\n"
+        "- Describe trend over time: compare 2024 with the earliest year available, using thresholds:\n"
+        "  • stable ≤1 point\n"
+        "  • slight >1–2 points\n"
+        "  • notable >2 points\n"
+        "- Compare demographic groups in 2024:\n"
+        "  • Focus on the most relevant comparisons (largest gap(s), or those crossing thresholds).\n"
+        "  • Report gaps in points and classify them: minimal ≤2, notable >2–5, important >5.\n"
+        "- If multiple groups are present, highlight only the most meaningful contrasts instead of exhaustively listing all.\n"
+        "- Mention whether gaps observed in 2024 have widened, narrowed, or remained stable compared with earlier years.\n"
+        "- Conclude with a concise overall statement (e.g., “Overall, results have remained steady and demographic gaps are unchanged”).\n\n"
+        "Style & output\n"
+        "- Professional, concise, neutral. Narrative style (1–3 short paragraphs, no lists).\n"
+        "- Output VALID JSON with exactly one key: \"narrative\".\n"
     )
+
     user_payload = {"metric_label": metric_label, "payload": data}
     user = json.dumps(user_payload, ensure_ascii=False)
     kwargs = dict(model=model_name, temperature=0.2, response_format={"type":"json_object"},
@@ -444,7 +464,6 @@ def _get_top_k() -> int:
         return 12
 
 def _get_use_hybrid() -> bool:
-    # You can default to True; set OPENAI_EMBED_HYBRID=false in secrets to disable by default
     val = str(st.secrets.get("OPENAI_EMBED_HYBRID", "true")).strip().lower()
     return val not in ("0", "false", "no")
 
@@ -574,6 +593,84 @@ def _semantic_search(qdf: pd.DataFrame, user_query: str, use_hybrid: bool) -> tu
 
 
 # ─────────────────────────────
+# Cross-question summary builder (added helper)
+# ─────────────────────────────
+def build_cross_question_summary(
+    per_q_disp: dict[str, pd.DataFrame],
+    category_in_play: bool,
+    selected_years: list[str]
+) -> pd.DataFrame:
+    """
+    Builds the Overview table:
+      - Rows = Question code (and Demographic when a category is selected)
+      - Columns = selected years
+      - Cells   = POSITIVE (or AGREE if POSITIVE unavailable; else first answer label) as whole-number percents
+    """
+    rows: list[pd.DataFrame] = []
+    years = sorted([str(y) for y in selected_years], key=lambda x: int(x))
+
+    for qcode, df_disp in per_q_disp.items():
+        if df_disp is None or df_disp.empty:
+            continue
+
+        df = df_disp.copy()
+        # Ensure there is a Demographic column so the pivot logic is stable
+        if "Demographic" not in df.columns:
+            df["Demographic"] = "All respondents"
+
+        # Decide which metric to summarize (POSITIVE → AGREE → first answer)
+        decision = detect_metric_mode(df, scale_pairs=None)
+        metric_col = decision["metric_col"]
+
+        keep = ["Demographic", "Year", metric_col]
+        keep = [c for c in keep if c in df.columns]
+        if "Year" not in keep:
+            continue
+
+        df = df[keep].copy()
+
+        # Pivot to Year columns
+        pivot = df.pivot_table(index="Demographic", columns="Year", values=metric_col, aggfunc="first")
+
+        # Ensure all selected years exist as columns
+        for y in years:
+            if y not in pivot.columns:
+                pivot[y] = pd.NA
+
+        pivot = pivot.reset_index()
+        pivot.insert(0, "Question", qcode)
+
+        rows.append(pivot)
+
+    if not rows:
+        return pd.DataFrame()
+
+    combined = pd.concat(rows, ignore_index=True)
+
+    # Format as whole-number percents where numeric, else "n/a"
+    for y in years:
+        if y in combined.columns:
+            vals = pd.to_numeric(combined[y], errors="coerce").round(0)
+            out = pd.Series("n/a", index=combined.index, dtype="object")
+            mask = vals.notna()
+            out.loc[mask] = vals.loc[mask].astype(int).astype(str) + "%"
+            combined[y] = out
+
+    # If no demographic breakdown, keep one row per question (All respondents)
+    if not category_in_play:
+        if "Demographic" in combined.columns:
+            combined = combined[combined["Demographic"] == "All respondents"].copy()
+            combined = combined.drop(columns=["Demographic"])
+
+    # Order rows nicely
+    sort_cols = ["Question"] + (["Demographic"] if category_in_play else [])
+    combined = combined.sort_values(sort_cols).reset_index(drop=True)
+
+    display_cols = ["Question"] + (["Demographic"] if category_in_play else []) + years
+    return combined[display_cols]
+
+
+# ─────────────────────────────
 # Backend detect (soft)
 # ─────────────────────────────
 def _detect_backend():
@@ -691,11 +788,10 @@ def run_menu2():
 
             # Render as checkbox list (no dropdown)
             selected_codes: List[str] = []
-            for _, r in matches_df.iterrows():
+            for idx, r in matches_df.reset_index(drop=True).iterrows():
                 label = f"{r['code']} — {r['text']}"
                 key = f"chk_{r['code']}"
-                # Preselect top 1 to give user a starting point
-                default_val = (matches_df.index[0] == _)  # True for first row only
+                default_val = (idx == 0)  # preselect top 1 to give user a starting point
                 val = st.checkbox(label, value=st.session_state.get(key, default_val), key=key)
                 if val:
                     selected_codes.append(str(r["code"]))
@@ -944,6 +1040,35 @@ def run_menu2():
                     st.session_state["menu2_phase"] = "search"
                     st.session_state["menu2_matches"] = PD.DataFrame()
                     st.session_state["menu2_selected_codes"] = []
+
+
+# Reuse from Menu 1 (for per-question trend tab)
+def build_trend_summary_table(df_disp, category_in_play, metric_col, selected_years: list[str] | None = None) -> pd.DataFrame:
+    if df_disp is None or df_disp.empty or "Year" not in df_disp.columns:
+        return PD.DataFrame()
+    if metric_col not in df_disp.columns:
+        low = {c.lower(): c for c in df_disp.columns}
+        if metric_col.lower() in low:
+            metric_col = low[metric_col.lower()]
+        else:
+            return PD.DataFrame()
+    df = df_disp.copy()
+    if "Demographic" not in df.columns:
+        df["Demographic"] = "All respondents"
+    years = sorted([str(y) for y in (selected_years or df["Year"].astype(str).unique().tolist())], key=lambda x: int(x))
+    pivot = df.pivot_table(index="Demographic", columns="Year", values=metric_col, aggfunc="first").copy()
+    pivot.index.name = "Segment"
+    for y in years:
+        if y not in pivot.columns:
+            pivot[y] = PD.NA
+    for c in pivot.columns:
+        vals = PD.to_numeric(pivot[c], errors="coerce").round(0)
+        out = PD.Series("n/a", index=pivot.index, dtype="object")
+        mask = vals.notna()
+        out.loc[mask] = vals.loc[mask].astype(int).astype(str) + "%"
+        pivot[c] = out
+    pivot = pivot.reset_index()
+    return pivot[["Segment"] + years]
 
 
 if __name__ == "__main__":
