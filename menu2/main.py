@@ -1,12 +1,16 @@
-# menu2/main.py — PSES AI Explorer (Menu 2: Search by Theme/Keywords, multi-question, embeddings)
-# PS-wide only. Big-file single-pass loader. All data read as TEXT. 999/9999 suppressed.
-# Key differences from Menu 1:
-#   • Text box for theme/keywords → semantic search over Survey Questions.xlsx
-#   • Multi-select of matched questions
-#   • Overview tab: cross-question summary table
-#   • One tab per question with detailed results
-#   • AI mini-analysis per question (≤1 paragraph) + overall theme summary
-#   • Embeddings-based search (fallback to token-overlap if embeddings unavailable)
+# menu2/main.py — PSES AI Explorer (Menu 2: Search by Theme/Keywords, embeddings, gated flow)
+# Flow:
+#   1) User enters theme/keywords in a wide text area → clicks "Search"
+#   2) App shows spinner ("contacting OpenAI and computing embeddings…"), returns matched questions
+#   3) User selects one or more questions → clicks "Confirm selection"
+#   4) App reveals Years + Demographics pickers (both required) → "Run query" button
+#   5) Results: Overview (cross-question summary + per-question mini-analyses + overall theme) + one tab per question
+#
+# Notes:
+#   • AI toggle is ON by default
+#   • Embeddings search (text-embedding-3-small by default) with safe fallback to basic ranker
+#   • 999/9999 -> NA kept, POSITIVE→AGREE metric rule preserved
+#   • "Source:" prefix retained
 
 from __future__ import annotations
 
@@ -40,6 +44,7 @@ os.environ.setdefault("OPENAI_API_KEY", st.secrets.get("OPENAI_API_KEY", ""))
 SHOW_DEBUG = False
 PD = pd
 
+
 # ─────────────────────────────
 # Cached metadata (same structure as Menu 1)
 # ─────────────────────────────
@@ -69,8 +74,6 @@ def load_questions_metadata() -> pd.DataFrame:
         qdf["qnum"] = pd.to_numeric(qdf["qnum"], errors="coerce")
     qdf = qdf.sort_values(["qnum", "code"], na_position="last")
     qdf["display"] = qdf["code"] + " – " + qdf["text"].astype(str)
-
-    # Precompute fields for semantic search
     qdf["__norm__"] = (qdf["code"].astype(str) + " " + qdf["text"].astype(str)).str.lower()
     qdf["__tokens__"] = qdf["__norm__"].apply(_tokenize)
     return qdf[["code", "text", "display", "__norm__", "__tokens__"]]
@@ -104,6 +107,7 @@ def load_scales_metadata() -> pd.DataFrame:
         return sdf
     sdf["__code_norm__"] = sdf[code_col].astype(str).map(_normalize_qcode)
     return sdf
+
 
 # ─────────────────────────────
 # Helpers (same behavior as Menu 1)
@@ -220,13 +224,11 @@ def format_display_table_raw(df, category_in_play, dem_disp_map, scale_pairs) ->
     keep_cols = [c for c in keep_cols if c in out.columns]
     out = out[keep_cols].rename(columns=rename_map).copy()
 
-    # Drop answer columns entirely NA
     answer_label_cols = [v for v in rename_map.values() if v in out.columns]
     drop_all_na = [c for c in answer_label_cols if PD.to_numeric(out[c], errors="coerce").isna().all()]
     if drop_all_na:
         out = out.drop(columns=drop_all_na)
 
-    # Filter out rows where ALL core metrics are NA after 9999→NA
     core_candidates = []
     core_candidates += ["POSITIVE", "AGREE"]
     core_candidates += [c for c in answer_label_cols if c in out.columns]
@@ -267,6 +269,7 @@ def make_arrow_safe(df: pd.DataFrame) -> pd.DataFrame:
         if pd.api.types.is_object_dtype(out[c]):
             out[c] = out[c].astype(str)
     return out
+
 
 # ─────────────────────────────
 # AI helpers (≤1 paragraph per question + overall)
@@ -345,7 +348,6 @@ def _ai_narrative_single(df_disp, question_code, question_text, category_in_play
     data = _ai_build_payload_single_metric(df_disp, question_code, question_text, category_in_play, metric_col)
     model_name = (st.secrets.get("OPENAI_MODEL") or "gpt-4o-mini").strip()
 
-    # Keep the "minimal ≤2" threshold
     system = (
         "You are preparing insights for the Government of Canada’s Public Service Employee Survey (PSES).\n\n"
         "Data-use rules:\n"
@@ -407,6 +409,7 @@ def _ai_overall_theme_summary(per_question_paragraphs: List[str], temperature: f
     except Exception:
         return ""
 
+
 # ─────────────────────────────
 # Profiler
 # ─────────────────────────────
@@ -425,6 +428,7 @@ class Profiler:
             dt = time.perf_counter() - t0
             self.steps.append((name, dt))
 
+
 # ─────────────────────────────
 # Embeddings semantic search (with safe fallback)
 # ─────────────────────────────
@@ -436,54 +440,41 @@ def _embeddings_available() -> bool:
         return False
 
 def _get_embed_model() -> str:
-    # Defaults to fast, cost-effective model; override in secrets with OPENAI_EMBED_MODEL
     return (st.secrets.get("OPENAI_EMBED_MODEL") or "text-embedding-3-small").strip()
 
 @st.cache_resource(show_spinner=False)
 def _build_question_embeddings(qdf: pd.DataFrame) -> Dict[str, List[float]]:
-    """Return dict: qcode -> embedding vector (list of floats). Cached across runs."""
-    from openai import OpenAI  # will raise if not installed
-    import numpy as np  # noqa: F401
+    from openai import OpenAI  # raises if not installed
     client = OpenAI()
     model = _get_embed_model()
-
-    # We embed the normalized text: "CODE text"
     texts = (qdf["code"].astype(str) + " " + qdf["text"].astype(str)).tolist()
-    # Batch to respect token/size constraints (simple chunking)
     BATCH = 96
     vectors: List[List[float]] = []
     for i in range(0, len(texts), BATCH):
         chunk = texts[i:i+BATCH]
         resp = client.embeddings.create(model=model, input=chunk)
         vectors.extend([d.embedding for d in resp.data])
-
     codes = qdf["code"].astype(str).tolist()
     return {c: v for c, v in zip(codes, vectors)}
 
 def _semantic_rank_embeddings(qdf: pd.DataFrame, user_query: str, top_k: int = 20) -> pd.DataFrame:
-    """Embeddings cosine similarity. Falls back to basic ranker on error."""
     try:
         import numpy as np
         from openai import OpenAI  # noqa
     except Exception:
         return _semantic_rank_basic(qdf, user_query, top_k)
-
     if not user_query.strip():
         return qdf.head(0)
-
     try:
-        # Get or build cached embeddings
         emb_map = _build_question_embeddings(qdf)
-        # Embed the query
         client = OpenAI()
         model = _get_embed_model()
-        qresp = client.embeddings.create(model=model, input=user_query.strip())
+        with st.spinner("🔎 Searching… contacting OpenAI and computing embeddings…"):
+            qresp = client.embeddings.create(model=model, input=user_query.strip())
         qvec = qresp.data[0].embedding
     except Exception:
-        # API/key/service issues → fallback
         return _semantic_rank_basic(qdf, user_query, top_k)
 
-    # Compute cosine similarity
     def cos(a, b):
         a = np.array(a, dtype=float); b = np.array(b, dtype=float)
         na = np.linalg.norm(a); nb = np.linalg.norm(b)
@@ -498,16 +489,13 @@ def _semantic_rank_embeddings(qdf: pd.DataFrame, user_query: str, top_k: int = 2
             continue
         score = cos(qvec, vec)
         rows.append((code, r["text"], f"{code} – {r['text']}", score))
-
     if not rows:
         return _semantic_rank_basic(qdf, user_query, top_k)
-
     out = PD.DataFrame(rows, columns=["code", "text", "display", "__score__"])
     out = out.sort_values(["__score__", "code"], ascending=[False, True])
     return out.head(top_k)
 
 def _semantic_rank_basic(qdf: pd.DataFrame, user_query: str, top_k: int = 20) -> pd.DataFrame:
-    """Token-overlap + substring hits (previous implementation)."""
     if not user_query or qdf.empty:
         return qdf.head(0)
     uq = user_query.strip().lower()
@@ -528,6 +516,7 @@ def _semantic_rank_basic(qdf: pd.DataFrame, user_query: str, top_k: int = 20) ->
     out = out[out["__score__"] > 0]
     return out.head(top_k)[["code", "text", "display", "__score__"]]
 
+
 # ─────────────────────────────
 # Cross-question summary builder
 # ─────────────────────────────
@@ -541,16 +530,13 @@ def build_cross_question_summary(
         df = df_disp.copy()
         if "Demographic" not in df.columns:
             df["Demographic"] = "All respondents"
-
-        decision = detect_metric_mode(df, scale_pairs=None)  # prefer POSITIVE, else AGREE
+        decision = detect_metric_mode(df, scale_pairs=None)
         metric_col = decision["metric_col"]
-
         keep = ["Demographic", "Year", metric_col]
         keep = [c for c in keep if c in df.columns]
         if not keep or "Year" not in keep:
             continue
         df = df[keep].copy()
-
         pivot = df.pivot_table(index="Demographic", columns="Year", values=metric_col, aggfunc="first")
         for y in selected_years:
             if y not in pivot.columns:
@@ -558,14 +544,10 @@ def build_cross_question_summary(
         pivot = pivot.reset_index()
         pivot.insert(0, "Question", qcode)
         rows.append(pivot)
-
     if not rows:
         return PD.DataFrame()
-
     combined = PD.concat(rows, ignore_index=True)
     years = sorted([str(y) for y in selected_years], key=lambda x: int(x))
-
-    # format percents
     for y in years:
         if y in combined.columns:
             vals = PD.to_numeric(combined[y], errors="coerce").round(0)
@@ -573,19 +555,17 @@ def build_cross_question_summary(
             mask = vals.notna()
             out.loc[mask] = vals.loc[mask].astype(int).astype(str) + "%"
             combined[y] = out
-
     if not category_in_play:
         combined = combined[combined["Demographic"] == "All respondents"].copy()
         combined = combined.drop(columns=["Demographic"])
-
     sort_cols = ["Question"] + (["Demographic"] if category_in_play else [])
     combined = combined.sort_values(sort_cols).reset_index(drop=True)
-
     display_cols = ["Question"] + (["Demographic"] if category_in_play else []) + years
     return combined[display_cols]
 
+
 # ─────────────────────────────
-# Reused from Menu 1: per-question trend summary builder
+# Single-question summary (reuse)
 # ─────────────────────────────
 def build_trend_summary_table(df_disp, category_in_play, metric_col, selected_years: list[str] | None = None) -> pd.DataFrame:
     if df_disp is None or df_disp.empty or "Year" not in df_disp.columns:
@@ -614,6 +594,7 @@ def build_trend_summary_table(df_disp, category_in_play, metric_col, selected_ye
     pivot = pivot.reset_index()
     return pivot[["Segment"] + years]
 
+
 # ─────────────────────────────
 # Backend detect (soft)
 # ─────────────────────────────
@@ -635,21 +616,23 @@ def _detect_backend():
         pass
     return "csv"
 
+
 # ─────────────────────────────
-# UI
+# UI — Gated flow (Search → Select questions → Years & Demographics → Run query)
 # ─────────────────────────────
 def run_menu2():
+    # Minimal style tweaks for wide input
     st.markdown(
         """
-    <style>
-      .custom-header{ font-size: 26px; font-weight: 700; margin-bottom: 8px; }
-      .custom-instruction{ font-size: 15px; line-height: 1.4; margin-bottom: 8px; color: #333; }
-      .field-label{ font-size: 16px; font-weight: 600; margin: 10px 0 2px; color: #222; }
-      .tiny-note{ font-size: 12px; color: #666; margin-top: -4px; margin-bottom: 10px; }
-      .q-sub{ font-size: 14px; color: #333; margin-top: -4px; margin-bottom: 2px; }
-      .codebox { font-family: monospace; white-space: pre-wrap; border: 1px solid #ddd; padding: 8px; border-radius: 6px; background: #fafafa; }
-    </style>
-    """,
+        <style>
+          .custom-header{ font-size: 26px; font-weight: 700; margin-bottom: 8px; }
+          .custom-instruction{ font-size: 15px; line-height: 1.4; margin-bottom: 8px; color: #333; }
+          .field-label{ font-size: 16px; font-weight: 600; margin: 10px 0 2px; color: #222; }
+          .tiny-note{ font-size: 12px; color: #666; margin-top: -4px; margin-bottom: 10px; }
+          .q-sub{ font-size: 14px; color: #333; margin-top: -4px; margin-bottom: 2px; }
+          .full-width textarea { min-height: 120px !important; }
+        </style>
+        """,
         unsafe_allow_html=True,
     )
 
@@ -666,6 +649,11 @@ def run_menu2():
     qdf = load_questions_metadata()
     sdf = load_scales_metadata()
 
+    # Persistent UI state
+    st.session_state.setdefault("menu2_phase", "search")         # search | pick | pick_filters | ready
+    st.session_state.setdefault("menu2_matches", PD.DataFrame())
+    st.session_state.setdefault("menu2_selected_codes", [])      # list[str]
+
     # Header
     left, center, right = st.columns([1, 2, 1])
     with center:
@@ -676,94 +664,157 @@ def run_menu2():
         )
         st.markdown('<div class="custom-header">🎯 Search by Theme / Keywords</div>', unsafe_allow_html=True)
         st.markdown(
-            '<div class="custom-instruction">Enter keywords or a theme (e.g., “psychological safety”, “leadership communication”). '
-            'We will suggest matching survey questions. Select one or more to analyze. '
-            'Then pick the survey year(s) and (optionally) a demographic breakdown. '
-            'This application provides only Public Service-wide results. The output includes a cross-question summary, '
-            'per-question detailed tables, and short analyses.</div>',
+            '<div class="custom-instruction">Step 1 — Enter a theme or keywords (e.g., “psychological safety”, “compensation”, “recognition”). '
+            'We’ll suggest related survey questions.</div>',
             unsafe_allow_html=True,
         )
 
         # Toggles
         show_debug = st.toggle("🔧 Show technical parameters & diagnostics", value=st.session_state.get("show_debug", SHOW_DEBUG))
         st.session_state["show_debug"] = show_debug
-
-        # ✅ Default ON now
         ai_enabled = st.toggle("🧠 Enable AI analysis (OpenAI)", value=st.session_state.get("ai_enabled", True), help="Turn OFF while testing to avoid API usage.")
         st.session_state["ai_enabled"] = ai_enabled
 
-        # Query box + semantic matches
-        st.markdown('<div class="field-label">Enter keywords or a theme:</div>', unsafe_allow_html=True)
-        user_query = st.text_input("Search theme/keywords", key="menu2_theme", label_visibility="collapsed", placeholder="e.g., harassment, inclusion, recognition, leadership communication")
+        # ── Phase 1: Search box only ───────────────────────────────────
+        if st.session_state["menu2_phase"] == "search":
+            st.markdown('<div class="field-label">Enter keywords or a theme:</div>', unsafe_allow_html=True)
+            with st.container():
+                st.markdown('<div class="full-width">', unsafe_allow_html=True)
+                user_query = st.text_area("Theme/keywords", key="menu2_theme", label_visibility="collapsed",
+                                          placeholder="Type here… e.g., harassment, inclusion, recognition, compensation")
+                st.markdown('</div>', unsafe_allow_html=True)
 
-        matches_df = PD.DataFrame()
-        if user_query.strip():
-            if _embeddings_available():
-                matches_df = _semantic_rank_embeddings(qdf, user_query.strip(), top_k=25)
-            else:
-                matches_df = _semantic_rank_basic(qdf, user_query.strip(), top_k=25)
+            search_clicked = st.button("🔎 Search related questions")
+            if search_clicked:
+                if not (user_query or "").strip():
+                    st.warning("Please enter a theme or keywords.")
+                else:
+                    # Run semantic search with spinner that mentions OpenAI embeddings
+                    if _embeddings_available():
+                        matches_df = _semantic_rank_embeddings(qdf, user_query.strip(), top_k=25)
+                        if matches_df.empty:
+                            st.info("No matching questions found. Try broader or different keywords.")
+                        else:
+                            st.session_state["menu2_matches"] = matches_df
+                            st.session_state["menu2_phase"] = "pick"
+                    else:
+                        with st.spinner("🔎 Searching… OpenAI embeddings unavailable — using keyword similarity…"):
+                            matches_df = _semantic_rank_basic(qdf, user_query.strip(), top_k=25)
+                        if matches_df.empty:
+                            st.info("No matching questions found. Try broader or different keywords.")
+                        else:
+                            st.session_state["menu2_matches"] = matches_df
+                            st.session_state["menu2_phase"] = "pick"
 
-            if matches_df.empty:
-                st.info("No matching questions found. Try broader or different keywords.")
-                # If embeddings unavailable, let the user know we’re using the fallback
-                if not _embeddings_available():
-                    st.caption("Note: Embeddings unavailable (missing SDK or API key). Using basic keyword matching.")
-            else:
-                st.markdown('<div class="field-label">Select one or more matched questions:</div>', unsafe_allow_html=True)
-                options = (matches_df["code"] + " – " + matches_df["text"]).tolist()
-                picked_labels = st.multiselect("Matched questions", options=options, default=options[:1], label_visibility="collapsed")
-                selected = matches_df[matches_df.apply(lambda r: (r["code"] + " – " + r["text"]) in picked_labels, axis=1)]
-        else:
-            selected = PD.DataFrame()
-
-        # Years
-        st.markdown('<div class="field-label">Select survey year(s):</div>', unsafe_allow_html=True)
-        all_years = ["2024", "2022", "2020", "2019"]
-        select_all = st.checkbox("All years", value=True, key="menu2_select_all_years")
-        selected_years: list[str] = []
-        year_cols = st.columns(len(all_years))
-        for idx, yr in enumerate(all_years):
-            with year_cols[idx]:
-                checked = True if select_all else False
-                if st.checkbox(yr, value=checked, key=f"menu2_year_{yr}"):
-                    selected_years.append(yr)
-        selected_years = sorted(selected_years)
-        if not selected_years:
-            st.warning("⚠️ Please select at least one year.")
-            return
-
-        # Demographic selection
-        DEMO_CAT_COL = "DEMCODE Category"; LABEL_COL = "DESCRIP_E"
-        st.markdown('<div class="field-label">Select a demographic category (or All respondents):</div>', unsafe_allow_html=True)
-        demo_categories = ["All respondents"] + sorted(demo_df[DEMO_CAT_COL].dropna().astype(str).unique().tolist())
-        demo_selection = st.selectbox("Demographic category", demo_categories, key="menu2_demo_main", label_visibility="collapsed")
-
-        sub_selection = None
-        if demo_selection != "All respondents":
-            st.markdown(f'<div class="field-label">Subgroup ({demo_selection}) (optional):</div>', unsafe_allow_html=True)
-            sub_items = sorted(
-                demo_df.loc[demo_df[DEMO_CAT_COL] == demo_selection, LABEL_COL]
-                .dropna().astype(str).unique().tolist()
+        # ── Phase 2: Pick questions (multiselect), then confirm ────────
+        if st.session_state["menu2_phase"] == "pick":
+            matches_df = st.session_state["menu2_matches"]
+            st.markdown(
+                '<div class="custom-instruction">Step 2 — Select one or more related questions to analyze.</div>',
+                unsafe_allow_html=True,
             )
-            sub_selection = st.selectbox("(leave blank to include all subgroups in this category)", [""] + sub_items, key=f"menu2_sub_{demo_selection.replace(' ', '_')}", label_visibility="collapsed")
-            if sub_selection == "":
-                sub_selection = None
+            options = (matches_df["code"] + " – " + matches_df["text"]).tolist()
+            default_opts = options[:1]
+            picked_labels = st.multiselect("Matched questions", options=options, default=default_opts, label_visibility="collapsed")
+            # Map back to codes
+            picked_codes = [
+                matches_df.iloc[i]["code"]
+                for i, lbl in enumerate(options)
+                if lbl in picked_labels
+            ]
+            confirm = st.button("✅ Confirm selection")
+            if confirm:
+                if not picked_codes:
+                    st.warning("Please select at least one question.")
+                else:
+                    st.session_state["menu2_selected_codes"] = picked_codes
+                    st.session_state["menu2_phase"] = "pick_filters"
 
-        # Resolve DEMCODEs once
-        demcodes, disp_map, category_in_play = resolve_demographic_codes_from_metadata(demo_df, demo_selection, sub_selection)
-        if category_in_play and (None not in demcodes):
-            demcodes = [None] + demcodes
-        dem_display = ["All respondents" if c is None else str(c).strip() for c in demcodes]
+            # Back to search
+            if st.button("↩️ Back to search"):
+                st.session_state["menu2_phase"] = "search"
 
-        # ───────────────────────────────────────────────────────────────
-        # Run query for MULTIPLE QUESTIONS
-        # ───────────────────────────────────────────────────────────────
-        run_ok = st.button("🔎 Run query")
-        if run_ok:
-            if selected is None or selected.empty:
-                st.warning("Please select at least one matched question.")
-                return
+        # ── Phase 3: Pick filters (years & demographics), then enable Run ─
+        if st.session_state["menu2_phase"] == "pick_filters":
+            st.markdown(
+                '<div class="custom-instruction">Step 3 — Select survey year(s) and (optionally) a demographic breakdown.</div>',
+                unsafe_allow_html=True,
+            )
 
+            # Years
+            st.markdown('<div class="field-label">Select survey year(s):</div>', unsafe_allow_html=True)
+            all_years = ["2024", "2022", "2020", "2019"]
+            select_all = st.checkbox("All years", value=True, key="menu2_select_all_years")
+            selected_years: list[str] = []
+            year_cols = st.columns(len(all_years))
+            for idx, yr in enumerate(all_years):
+                with year_cols[idx]:
+                    checked = True if select_all else False
+                    if st.checkbox(yr, value=checked, key=f"menu2_year_{yr}"):
+                        selected_years.append(yr)
+            selected_years = sorted(selected_years)
+
+            # Demographic selection
+            DEMO_CAT_COL = "DEMCODE Category"; LABEL_COL = "DESCRIP_E"
+            st.markdown('<div class="field-label">Select a demographic category (or All respondents):</div>', unsafe_allow_html=True)
+            demo_categories = ["All respondents"] + sorted(demo_df[DEMO_CAT_COL].dropna().astype(str).unique().tolist())
+            demo_selection = st.selectbox("Demographic category", demo_categories, key="menu2_demo_main", label_visibility="collapsed")
+
+            sub_selection = None
+            if demo_selection != "All respondents":
+                st.markdown(f'<div class="field-label">Subgroup ({demo_selection}) (optional):</div>', unsafe_allow_html=True)
+                sub_items = sorted(
+                    demo_df.loc[demo_df[DEMO_CAT_COL] == demo_selection, LABEL_COL]
+                    .dropna().astype(str).unique().tolist()
+                )
+                sub_selection = st.selectbox("(leave blank to include all subgroups in this category)", [""] + sub_items, key=f"menu2_sub_{demo_selection.replace(' ', '_')}", label_visibility="collapsed")
+                if sub_selection == "":
+                    sub_selection = None
+
+            # Validate all three requirements
+            ready = True
+            if not st.session_state.get("menu2_selected_codes"):
+                ready = False
+                st.info("Please select related questions first.")
+            if not selected_years:
+                ready = False
+                st.warning("Please select at least one year.")
+            if demo_selection is None:
+                ready = False
+                st.warning("Please select a demographic category (or All respondents).")
+
+            # Resolve DEMCODEs now (stored for next phase)
+            if ready:
+                demcodes, disp_map, category_in_play = resolve_demographic_codes_from_metadata(demo_df, demo_selection, sub_selection)
+                if category_in_play and (None not in demcodes):
+                    demcodes = [None] + demcodes
+                st.session_state["menu2_filters"] = {
+                    "years": selected_years,
+                    "demcodes": demcodes,
+                    "disp_map": disp_map,
+                    "category_in_play": category_in_play,
+                    "demo_selection": demo_selection,
+                    "sub_selection": sub_selection,
+                }
+                # Show Run button only when ready
+                if st.button("🔎 Run query"):
+                    st.session_state["menu2_phase"] = "ready"
+
+            # Back to question selection
+            if st.button("↩️ Back to question selection"):
+                st.session_state["menu2_phase"] = "pick"
+
+        # ── Phase 4: Run & show results ─────────────────────────────────
+        if st.session_state["menu2_phase"] == "ready":
+            # Pull state
+            selected_codes = st.session_state.get("menu2_selected_codes", [])
+            filt = st.session_state.get("menu2_filters", {})
+            selected_years = filt.get("years", [])
+            demcodes = filt.get("demcodes", [None])
+            disp_map = filt.get("disp_map", {None: "All respondents"})
+            category_in_play = bool(filt.get("category_in_play", False))
+
+            # Execute query for each question
             engine_guess = _detect_backend()
             status_line = st.empty()
             prof = Profiler()
@@ -772,26 +823,25 @@ def run_menu2():
             per_q_disp: Dict[str, pd.DataFrame] = {}
             per_q_text: Dict[str, str] = {}
             per_q_metric: Dict[str, Tuple[str, str, bool]] = {}  # metric_col, ui_label, summary_allowed
-            per_q_narr: Dict[str, str] = {}
 
             with st.spinner("Processing data…"):
                 status_line.caption(f"Processing… engine: {engine_guess} • 0.0s")
 
-                # For each selected question: load, clean, format
-                for _, row in selected.iterrows():
-                    qcode = str(row["code"]).strip()
-                    qtext = str(row["text"]).strip()
-                    per_q_text[qcode] = qtext
+                qdf = load_questions_metadata()  # for code→text
+                for qcode in selected_codes:
+                    qrow = qdf[qdf["code"] == qcode].head(1)
+                    qtext = (qrow["text"].iloc[0] if not qrow.empty else "")
+                    per_q_text[qcode] = str(qtext)
 
-                    # 1) Match scales
+                    # 1) Scales
                     with prof.step(f"[{qcode}] Match scales", live=status_line, engine=engine_guess, t0_global=t0_global):
-                        scale_pairs = get_scale_labels(sdf, qcode)
+                        scale_pairs = get_scale_labels(load_scales_metadata(), qcode)
                         if not scale_pairs:
                             qnorm = _normalize_qcode(qcode)
                             st.warning(f"Scale metadata missing for '{qcode}' (normalized '{qnorm}'). Skipping.")
                             continue
 
-                    # 2) Load data
+                    # 2) Load
                     with prof.step(f"[{qcode}] Load data", live=status_line, engine=engine_guess, t0_global=t0_global):
                         try:
                             df_raw = load_results2024_filtered(question_code=qcode, years=selected_years, group_values=demcodes)  # type: ignore[arg-type]
@@ -808,11 +858,11 @@ def run_menu2():
                         st.info(f"No data for {qcode}.")
                         continue
 
-                    # 3) 999/9999 → NA
+                    # 3) Clean
                     with prof.step(f"[{qcode}] 999/9999 → NA", live=status_line, engine=engine_guess, t0_global=t0_global):
                         df_raw = exclude_999_raw(df_raw)
 
-                    # 4) Sort, format & filter
+                    # 4) Format
                     with prof.step(f"[{qcode}] Sort & format table", live=status_line, engine=engine_guess, t0_global=t0_global):
                         dem_map_clean = {None: "All respondents"}
                         try:
@@ -827,27 +877,20 @@ def run_menu2():
                         continue
 
                     per_q_disp[qcode] = df_disp
-
-                    # Decide metric (POSITIVE→AGREE→first Answer)
                     decision = detect_metric_mode(df_disp, scale_pairs)
                     per_q_metric[qcode] = (decision["metric_col"], decision["ui_label"], bool(decision.get("summary_allowed", False)))
 
-                # After loop: build cross-question summary table
+                # Cross-question summary
                 with prof.step("Build cross-question summary", live=status_line, engine=engine_guess, t0_global=t0_global):
                     cross_summary = build_cross_question_summary(per_q_disp, category_in_play, selected_years)
 
                 total_s = time.perf_counter() - t0_global
                 status_line.caption(f"Processing complete • engine: {engine_guess} • {total_s:.1f}s")
 
-            # ───────────────── Results UI ─────────────────
-            tabs = []
-            tab_labels = []
+            # Results UI
+            tabs = st.tabs(["Overview"] + [f"{q} — Details" for q in per_q_disp.keys()])
 
-            # First tab: Overview
-            tab_labels.append("Overview")
-            tabs = st.tabs(tab_labels + [f"{q} — Details" for q in per_q_disp.keys()])
-
-            # Overview tab
+            # Overview
             with tabs[0]:
                 st.subheader("Cross-question summary")
                 if cross_summary is not None and not cross_summary.empty:
@@ -855,7 +898,7 @@ def run_menu2():
                 else:
                     st.info("No summary available for the current selection.")
 
-                # Analyses
+                # Per-question analyses + overall theme
                 per_question_paras: List[str] = []
                 if st.session_state.get("ai_enabled", False):
                     st.markdown("### Analysis — Per question (≤1 paragraph each)")
@@ -869,7 +912,7 @@ def run_menu2():
                                 question_text=qtext,
                                 category_in_play=category_in_play,
                                 metric_col=metric_col,
-                                metric_label=( "% positive" if metric_col.lower()=="positive" else ("% agree" if metric_col.lower()=="agree" else metric_col) ),
+                                metric_label=("% positive" if metric_col.lower()=="positive" else ("% agree" if metric_col.lower()=="agree" else metric_col)),
                                 temperature=0.2
                             )
                         if para:
@@ -887,7 +930,6 @@ def run_menu2():
                     else:
                         st.info("Overall synthesis unavailable.")
 
-                # Source line
                 st.markdown(
                     "Source: [2024 Public Service Employee Survey Results - Open Government Portal]"
                     "(https://open.canada.ca/data/en/dataset/7f625e97-9d02-4c12-a756-1ddebb50e69f)"
@@ -897,11 +939,11 @@ def run_menu2():
             idx = 1
             for qcode, df_disp in per_q_disp.items():
                 with tabs[idx]:
-                    qtext = per_q_text.get(qcode, "")
+                    qdf_local = load_questions_metadata()
+                    qtext = qdf_local.loc[qdf_local["code"] == qcode, "text"].iloc[0] if not qdf_local[qdf_local["code"] == qcode].empty else ""
                     st.subheader(f"{qcode} — {qtext}")
                     metric_col, ui_label, summary_allowed = per_q_metric.get(qcode, ("POSITIVE", "(% positive answers)", True))
 
-                    # Build per-question trend summary (if POSITIVE/AGREE)
                     trend_df = PD.DataFrame()
                     if summary_allowed:
                         trend_df = build_trend_summary_table(df_disp=df_disp, category_in_play=category_in_play, metric_col=metric_col, selected_years=selected_years)
@@ -915,43 +957,23 @@ def run_menu2():
 
                     st.markdown("#### Detailed results")
                     st.dataframe(make_arrow_safe(df_disp), use_container_width=True)
-
                     st.markdown(
                         "Source: [2024 Public Service Employee Survey Results - Open Government Portal]"
                         "(https://open.canada.ca/data/en/dataset/7f625e97-9d02-4c12-a756-1ddebb50e69f)"
                     )
                 idx += 1
 
-            # Combined Excel download: Cross-summary + each question detail
-            with io.BytesIO() as xbuf:
-                with PD.ExcelWriter(xbuf, engine="xlsxwriter") as writer:
-                    if cross_summary is not None and not cross_summary.empty:
-                        cross_summary.to_excel(writer, sheet_name="Cross-Summary", index=False)
-                    for qcode, df_disp in per_q_disp.items():
-                        safe_name = (qcode or "Q").replace("/", "_")[:28]
-                        df_disp.to_excel(writer, sheet_name=f"{safe_name}_Detail", index=False)
-                xdata = xbuf.getvalue()
-            st.download_button(
-                label="⬇️ Download data (Excel, all questions)",
-                data=xdata,
-                file_name=f"PSES_Theme_{'-'.join(selected_years)}.xlsx",
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-            )
-
-            # Diagnostics
-            try:
-                backend = get_backend_info() or {}
-            except Exception:
-                backend = {}
-            st.session_state["menu2_last_diag"] = {
-                "engine": engine_guess,
-                "elapsed_ms": int(total_s * 1000),
-                "question_count": len(per_q_disp),
-                "years": ",".join(selected_years),
-                "group_value": ("multiple" if len(demcodes) > 1 else str(demcodes[0])),
-                "parquet_dir": backend.get("parquet_dir"),
-                "csv_path": backend.get("csv_path"),
-            }
+            # Back controls
+            st.divider()
+            cols = st.columns([1,1,6])
+            with cols[0]:
+                if st.button("↩️ Back to filters"):
+                    st.session_state["menu2_phase"] = "pick_filters"
+            with cols[1]:
+                if st.button("🔁 New search"):
+                    st.session_state["menu2_phase"] = "search"
+                    st.session_state["menu2_matches"] = PD.DataFrame()
+                    st.session_state["menu2_selected_codes"] = []
 
 if __name__ == "__main__":
     run_menu2()
