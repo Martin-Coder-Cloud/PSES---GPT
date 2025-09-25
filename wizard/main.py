@@ -1,19 +1,12 @@
-# wizard/main.py — compact controller for the multi-step Search Wizard
-WIZARD_CONTROLLER_VERSION = "controller-v0.4-scope-fix"
+# wizard/main.py — single-page wizard with progress bar
+WIZARD_CONTROLLER_VERSION = "progress-v1.0"
 
 import importlib
 from dataclasses import dataclass
 from typing import Any, Dict, Optional
 import streamlit as st
 
-STEP_ORDER = ["question", "years", "demo", "review", "results"]
-STEP_TITLES = {
-    "question": "1) Select a Question",
-    "years":    "2) Select Years",
-    "demo":     "3) Choose a Demographic (optional)",
-    "review":   "4) Review & Run",
-    "results":  "Results",
-}
+STEP_KEYS = ["question", "years", "demo"]  # 3 steps before results
 
 @dataclass
 class StepResult:
@@ -23,133 +16,149 @@ class StepResult:
     message: Optional[str] = None
     go_results: bool = False
 
-def _as_result(obj: Any) -> StepResult:
-    if isinstance(obj, StepResult):
-        return obj
-    if isinstance(obj, dict):
-        return StepResult(
-            data=obj.get("data") or {},
-            is_valid=bool(obj.get("is_valid", False)),
-            next_step=obj.get("next_step"),
-            message=obj.get("message"),
-            go_results=bool(obj.get("go_results", False)),
-        )
-    return StepResult(data={}, is_valid=False, message="Step not ready yet.")
-
-def _ensure_state() -> None:
-    if "wizard" not in st.session_state:
-        st.session_state.wizard = {"question": None, "years": [], "demo": None, "group": None}
-    if "wizard_page" not in st.session_state:
-        st.session_state.wizard_page = "question"
-
-def _reset_to_start() -> None:
-    st.session_state.wizard = {"question": None, "years": [], "demo": None, "group": None}
-    st.session_state.wizard_page = "question"
-
-def _go_to(step_key: str) -> None:
-    if step_key in STEP_ORDER:
-        st.session_state.wizard_page = step_key
-
-def _prev_step(current: str) -> Optional[str]:
+def _import_callable(mod_name: str, fn_name: str):
     try:
-        i = STEP_ORDER.index(current)
-        return STEP_ORDER[i - 1] if i > 0 else None
-    except ValueError:
-        return None
-
-# —— FIXED: capture the exception message so the inner function can use it
-def _import_callable(module_name: str, fn_name: str):
-    try:
-        mod = importlib.import_module(module_name)
+        mod = importlib.import_module(mod_name)
         return getattr(mod, fn_name)
     except Exception as err:
         msg = f"{type(err).__name__}: {err}"
-        def _placeholder(*args, _msg=msg, **kwargs):
-            st.info("This page isn’t implemented yet. We’ll add it next.")
-            st.caption(f"Missing: `{module_name}.{fn_name}()`")
+        def _placeholder(*_a, _msg=msg, **_kw):
+            st.info("This section isn’t implemented yet.")
+            st.caption(f"Missing: `{mod_name}.{fn_name}()`")
             st.caption(_msg)
             return StepResult(is_valid=False, message=_msg)
         return _placeholder
 
-def _render_step(step_key: str) -> StepResult:
-    mapping = {
-        "question": ("wizard.steps.step_question", "render"),
-        "years":    ("wizard.steps.step_years", "render"),
-        "demo":     ("wizard.steps.step_demo", "render"),
-        "review":   ("wizard.steps.step_review", "render"),
-    }
-    if step_key == "results":
-        mod, fn = ("wizard.results", "render")
-        render_results = _import_callable(mod, fn)
-        render_results(st.session_state.wizard)  # draws the Results page
-        return StepResult(is_valid=True)
-
-    mod, fn = mapping.get(step_key, (None, None))
-    if not mod:
-        st.error(f"Unknown step: {step_key}")
-        return StepResult(is_valid=False)
-    render_callable = _import_callable(mod, fn)
-    return _as_result(render_callable(st.session_state.wizard))
+def _ensure_state():
+    if "wizard" not in st.session_state:
+        st.session_state.wizard = {
+            "question": None,            # {"code","label"}
+            "years": [],                 # ["2024","2022",...]
+            "demo_category": "All respondents",
+            "demo_subgroup": None,
+            "demcodes": [None],
+            "dem_disp_map": {None: "All respondents"},
+            "category_in_play": False,
+            "has_results": False,        # becomes True after we run the query
+        }
+    if "wizard_step" not in st.session_state:
+        st.session_state.wizard_step = 0  # 0,1,2 for steps; results appear below
 
 def _header():
     st.markdown(
         """
-        <div style="padding:8px 0 16px 0;">
-          <h2 style="margin:0;">PSES AI Explorer — Search Wizard</h2>
-          <div style="opacity:.8;">
-            Please select a question, survey year(s), and (optionally) a demographic breakdown.
-            The app will send you to a separate <b>Results</b> page to run the query.
-          </div>
-        </div>
+        <style>
+          .custom-header{ font-size: 26px; font-weight: 700; margin-bottom: 8px; }
+          .custom-instruction{ font-size: 15px; line-height: 1.45; margin-bottom: 10px; color: #333; }
+          .field-label{ font-size: 16px; font-weight: 600; margin: 10px 0 6px; color: #222; }
+          .tiny-note{ font-size: 12px; color: #666; margin-top: -4px; margin-bottom: 10px; }
+          .pill{ padding:6px 10px;border-radius:9999px;border:1px solid #ddd; background:#f8f8f8; color:#444; }
+          .pill.active{ background:#1f77b4; color:white; border-color:#1f77b4; }
+          .pill.done{ background:#74c476; color:white; border-color:#5aa463; }
+          .wizard-bar{ margin:8px 0 14px 0; }
+        </style>
         """,
+        unsafe_allow_html=True,
+    )
+    st.markdown(
+        "<img style='width:75%;max-width:740px;height:auto;display:block;margin:0 auto 16px;' "
+        "src='https://raw.githubusercontent.com/Martin-Coder-Cloud/PSES---GPT/main/PSES%20Banner%20New.png'>",
+        unsafe_allow_html=True,
+    )
+    st.markdown('<div class="custom-header">🔍 PSES AI Explorer — Search Wizard</div>', unsafe_allow_html=True)
+    st.markdown(
+        '<div class="custom-instruction">'
+        'Please select a question, survey year(s), and (optionally) a demographic breakdown. '
+        'The app will show results on this page after you run the query.'
+        '</div>',
         unsafe_allow_html=True,
     )
     st.caption(f"Wizard controller: {WIZARD_CONTROLLER_VERSION}")
 
-def _breadcrumbs(current_key: str):
-    cols = st.columns(len(STEP_ORDER))
-    for i, key in enumerate(STEP_ORDER):
-        label = STEP_TITLES.get(key, key.title())
-        with cols[i]:
-            if key == current_key:
-                st.markdown(f"**{label}**")
-            else:
-                st.markdown(label)
+def _progress_ui():
+    step = st.session_state.wizard_step
+    has_results = st.session_state.wizard.get("has_results", False)
+    # 0..3 progress (3 steps → results). Once results are shown, show 100%.
+    completed = step
+    if has_results:
+        completed = 3
+    pct = int(round(100 * completed / 3))
+    st.progress(pct, text=f"Progress: {pct}%")
+    # Pills
+    labels = ["1) Question", "2) Years", "3) Demographics"]
+    cols = st.columns(3)
+    for i, lab in enumerate(labels):
+        cls = "pill"
+        if i < step:
+            cls += " done"
+        elif i == step and not has_results:
+            cls += " active"
+        cols[i].markdown(f"<div class='{cls}'>{lab}</div>", unsafe_allow_html=True)
 
-def _top_actions(current_key: str):
-    c1, c2 = st.columns([1, 1])
-    with c1:
-        if st.button("🔙 Start Over", use_container_width=True):
-            _reset_to_start()
+def _nav_buttons(is_valid: bool):
+    left, mid, right = st.columns([1, 4, 1])
+    with left:
+        if st.button("◀ Back", disabled=(st.session_state.wizard_step == 0)):
+            st.session_state.wizard_step = max(0, st.session_state.wizard_step - 1)
+            st.session_state.wizard["has_results"] = False
             st.experimental_rerun()
-    with c2:
-        prev_key = _prev_step(current_key)
-        disabled = prev_key is None or current_key == "results"
-        if st.button("◀ Back", disabled=disabled, use_container_width=True):
-            if prev_key:
-                _go_to(prev_key)
+    with right:
+        label = "Next ▶"
+        if st.session_state.wizard_step == 2:
+            label = "🔎 Run query"
+        if st.button(label, disabled=(not is_valid)):
+            if st.session_state.wizard_step < 2:
+                st.session_state.wizard_step += 1
                 st.experimental_rerun()
+            else:
+                # Step 3 → run query with spinner and then show results below
+                _run_and_show_results()
+
+def _run_and_show_results():
+    st.session_state.wizard["has_results"] = False
+    with st.spinner("Processing data…"):
+        render_results = _import_callable("wizard.results", "render")
+        render_results(st.session_state.wizard)
+    st.session_state.wizard["has_results"] = True
+    st.experimental_rerun()
 
 def render():
     _ensure_state()
-    current_key = st.session_state.wizard_page
-
     _header()
-    _breadcrumbs(current_key)
-    _top_actions(current_key)
+    _progress_ui()
     st.divider()
 
-    result = _render_step(current_key)
+    step = st.session_state.wizard_step
 
-    if result.data:
-        st.session_state.wizard.update(result.data)
+    # Render the active step (single page)
+    if step == 0:
+        render_q = _import_callable("wizard.steps.step_question", "render")
+        res = render_q(st.session_state.wizard)
+        if isinstance(res, dict) and res.get("data"):
+            st.session_state.wizard.update(res["data"])
+        _nav_buttons(bool(res.get("is_valid")))
+    elif step == 1:
+        render_years = _import_callable("wizard.steps.step_years", "render")
+        res = render_years(st.session_state.wizard)
+        if isinstance(res, dict) and res.get("data"):
+            st.session_state.wizard.update(res["data"])
+        _nav_buttons(bool(res.get("is_valid")))
+    elif step == 2:
+        render_demo = _import_callable("wizard.steps.step_demo", "render")
+        res = render_demo(st.session_state.wizard)
+        if isinstance(res, dict) and res.get("data"):
+            st.session_state.wizard.update(res["data"])
+        _nav_buttons(bool(res.get("is_valid")))
+    else:
+        st.error("Unknown step.")
 
-    if result.go_results or (result.next_step == "results"):
-        _go_to("results")
-        st.experimental_rerun()
-    elif result.next_step and result.next_step in STEP_ORDER:
-        _go_to(result.next_step)
-        st.experimental_rerun()
+    st.markdown("---")
+
+    # If we already ran a query in this session, keep the results visible at the bottom
+    if st.session_state.wizard.get("has_results", False):
+        st.subheader("Results")
+        render_results = _import_callable("wizard.results", "render")
+        render_results(st.session_state.wizard)
 
 # Back-compat alias for your router:
 def run_wizard():
