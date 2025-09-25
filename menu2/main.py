@@ -1,9 +1,12 @@
 # menu2/main.py — PSES AI Explorer (Menu 2: Theme/Keyword search → checkbox multi-select)
 # Key features:
+#   • Tiered retrieval with visibility:
+#       Tier 0: Exact whole-word match (shows extracted keywords)
+#       Tier 1: Embeddings / Hybrid strict gate (shows extracted+expanded terms)
+#       Tier 2: Keyword fallback (shows extracted keywords)
 #   • Strict thresholded semantic/hybrid search (no top-K caps).
-#   • Query expansion (synonyms) + hybrid gate for precision.
-#   • Gated flow: Search → Pick questions → Pick Years & Demographics → Busy → Ready.
-#   • Checkbox multi-select (no dropdown).
+#   • Checkbox multi-select (no dropdowns).
+#   • Busy phase to avoid greyed-out duplicate widgets.
 #   • AI analysis ON by default; per-question + overall theme.
 #   • Updated summary-analysis system prompt (as provided).
 #   • Cross-question summary helper included.
@@ -436,7 +439,7 @@ class Profiler:
 
 
 # ─────────────────────────────
-# Embeddings + Hybrid strict search (no top-K)
+# Embeddings + Hybrid strict search (no top-K) + visible keywords
 # ─────────────────────────────
 def _embeddings_available() -> bool:
     try:
@@ -462,44 +465,88 @@ def _get_top_k() -> int:
         pass
     return 0
 
-@st.cache_resource(show_spinner=False)
-def _build_question_embeddings(qdf: pd.DataFrame) -> Dict[str, List[float]]:
-    from openai import OpenAI
-    client = OpenAI()
-    model = _get_embed_model()
-    texts = (qdf["code"].astype(str) + " " + qdf["text"].astype(str)).tolist()
-    BATCH = 96
-    vectors: List[List[float]] = []
-    for i in range(0, len(texts), BATCH):
-        chunk = texts[i:i+BATCH]
-        resp = client.embeddings.create(model=model, input=chunk)
-        vectors.extend([d.embedding for d in resp.data])
-    codes = qdf["code"].astype(str).tolist()
-    return {c: v for c, v in zip(codes, vectors)}
+# Minimal stopwords for keyword extraction
+_STOPWORDS = {
+    "the","a","an","and","or","but","if","then","else","so","to","of","for","in","on","at",
+    "is","are","was","were","be","being","been","i","we","you","they","he","she","it",
+    "with","about","regarding","re","re:", "re-", "re–","this","that","these","those",
+    "how","what","why","which","when","where","please","find","interested","into"
+}
 
-def _keyword_overlap_score(qdf_row_tokens: List[str], query_tokens: set[str]) -> int:
-    toks = set(qdf_row_tokens)
-    return len(toks & query_tokens)
+def _extract_keywords(query: str) -> list[str]:
+    """
+    Returns salient keywords from a user sentence:
+      • Keeps quoted phrases as single units: "career progression"
+      • Keeps hyphenated terms: "work-life"
+      • Drops short/stop words; lowercases; dedups while preserving order.
+    """
+    if not query or not str(query).strip():
+        return []
+    q = str(query).strip().lower()
+    phrases = re.findall(r'"([^"]+)"|“([^”]+)”|\'([^\']+)\'', q)
+    phrases = [" ".join([p for p in tup if p]) for tup in phrases if any(tup)]
+    q_wo_quotes = re.sub(r'"[^"]+"|“[^”]+”|\'[^\']+\'', " ", q)
+    tokens = re.findall(r"[a-z0-9][a-z0-9\-\/_']*[a-z0-9]", q_wo_quotes)
+    def keep(t: str) -> bool:
+        if len(t) < 3: return False
+        return t not in _STOPWORDS
+    toks = [t for t in tokens if keep(t)]
+    raw = phrases + toks
+    seen = set(); out = []
+    for t in raw:
+        if t not in seen:
+            seen.add(t); out.append(t)
+    return out
+
+def _compile_word_regexes(query_terms: list[str]) -> list[re.Pattern]:
+    regs = []
+    for t in query_terms:
+        if not t:
+            continue
+        if " " in t:
+            pat = r"\b" + re.escape(t) + r"\b"
+        else:
+            pat = r"\b" + re.escape(t) + r"(?:s)?\b"
+        regs.append(re.compile(pat, flags=re.IGNORECASE))
+    return regs
+
+def _exact_keyword_filter(qdf: pd.DataFrame, user_query: str) -> pd.DataFrame:
+    """
+    Returns rows where ANY extracted keyword (or phrase) appears as a WHOLE WORD
+    in code or text. Score = number of distinct keyword hits. No cap.
+    """
+    if qdf.empty or not user_query.strip():
+        return qdf.head(0)
+    query_terms = _extract_keywords(user_query)
+    if not query_terms:
+        return qdf.head(0)
+    regs = _compile_word_regexes(query_terms)
+    def _hitcount(code: str, text: str) -> int:
+        s = f"{code} {text}"
+        return sum(1 for rg in regs if rg.search(s) is not None)
+    hits = qdf.apply(lambda r: _hitcount(str(r["code"]), str(r["text"])), axis=1)
+    out = qdf.assign(__score__=hits)
+    out = out[out["__score__"] > 0]
+    if out.empty:
+        return out
+    return out.sort_values(["__score__", "code"], ascending=[False, True])[["code","text","display","__score__"]]
 
 def _semantic_rank_basic(qdf: pd.DataFrame, user_query: str, _dummy: int) -> pd.DataFrame:
     if not user_query or qdf.empty:
         return qdf.head(0)
-    uq = user_query.strip().lower()
-    q_tokens = set(_tokenize(uq))
-    # Require at least 2 token overlaps to be considered "relevant"
+    q_terms = _extract_keywords(user_query)
+    if not q_terms:
+        return qdf.head(0)
+    q_set = set(q_terms)
     def _score_row(tokens: List[str], norm: str) -> float:
         toks = set(tokens)
-        exact = len(q_tokens & toks)
-        subs = 0
-        for t in q_tokens:
-            if len(t) >= 3 and t in norm:
-                subs += 1
+        exact = len(q_set & toks)
+        subs = sum(1 for t in q_set if len(t) >= 3 and t in norm)
         return exact + 0.5 * subs
     scores = qdf.apply(lambda r: _score_row(r["__tokens__"], r["__norm__"]), axis=1)
     out = qdf.assign(__score__=scores)
-    out = out[out["__score__"] >= 2]  # strict keyword gate
-    out = out.sort_values(["__score__", "code"], ascending=[False, True])
-    return out[["code", "text", "display", "__score__"]]
+    out = out[out["__score__"] >= 1]  # allow single-term queries
+    return out.sort_values(["__score__", "code"], ascending=[False, True])[["code","text","display","__score__"]]
 
 def _expand_query_terms(uq: str) -> set[str]:
     base = set([t for t in _tokenize(uq) if len(t) >= 3])
@@ -511,42 +558,66 @@ def _expand_query_terms(uq: str) -> set[str]:
         "harassment": {"harass","harassment","violence","bullying"},
         "inclusion": {"inclusion","inclusive","belonging","equity"},
         "psychological": {"psychological","mental","health","safety"},
+        # career-related
+        "career": {"career","advancement","promotion","promotions","progression","mobility",
+                   "development","professional","professional development","growth",
+                   "learning","training","upskilling","reskilling","mentorship","mentoring",
+                   "opportunity","opportunities","talent","talent management","succession"},
+        "development": {"development","professional development","learning","training","growth",
+                        "upskilling","reskilling","mentorship"},
+        "promotion": {"promotion","promotions","advancement","progression","career"},
+        "mobility": {"mobility","internal mobility","career mobility","lateral move","rotation"},
+        "mentorship": {"mentorship","mentor","mentoring","coaching"},
+        "training": {"training","learning","courses","learning opportunities","professional development"},
     }
     for t in list(base):
         if t in synonyms:
             base |= synonyms[t]
     return base
 
+def _keyword_overlap_score(qdf_row_tokens: List[str], query_tokens: set[str]) -> int:
+    toks = set(qdf_row_tokens)
+    return len(toks & query_tokens)
+
 def _semantic_search(qdf: pd.DataFrame, user_query: str, use_hybrid: bool) -> tuple[pd.DataFrame, dict]:
     """
-    Strict relevance:
-      - Embeddings-only: keep items with cosine >= thr_strict (default 0.40)
-      - Hybrid: keep items that satisfy EITHER:
-          A) cosine >= thr_strong (thr+0.06, e.g., 0.46), OR
-          B) cosine >= thr_strict AND keyword_overlap >= 2
-      - Return ALL that pass; if none, return empty with diag.
+    Tiered retrieval (with visibility):
+      Tier 0) Exact whole-word matches (incl. phrases). If any, return those only.
+      Tier 1) Embeddings/Hybrid strict gate (no caps). Hybrid requires ≥1 keyword overlap.
+      Tier 2) Strict keyword fallback (≥1 signal) if embeddings unavailable/error.
+      Diag includes: path, terms extracted, expanded terms (if any), thresholds, kept count.
     """
     thr_strict = _get_embed_threshold()    # e.g., 0.40
     thr_strong = thr_strict + 0.06         # e.g., 0.46
-    KW_MIN = 2
+    KW_MIN = 1
 
     if not user_query.strip():
-        return qdf.head(0), {'path':'none','model':None,'hybrid':use_hybrid,'threshold':thr_strict,'rule':'strict'}
+        return qdf.head(0), {'path':'none','model':None,'hybrid':use_hybrid,'threshold':thr_strict,'rule':'strict','terms':[],'expanded':[]}
 
+    # Extract primary terms once for display + matching tiers
+    base_terms = _extract_keywords(user_query)
+    # ── Tier 0: exact whole-word hits ────────────────────────────────
+    exact_df = _exact_keyword_filter(qdf, user_query)
+    if not exact_df.empty:
+        return exact_df, {'path':'exact','model':None,'hybrid':False,'threshold':None,'rule':'whole-word','kept': int(exact_df.shape[0]), 'terms': base_terms, 'expanded': base_terms}
+
+    # If no exact hits, prep embeddings/hybrid
     if not _embeddings_available():
         out = _semantic_rank_basic(qdf, user_query, 0)
-        return out, {'path':'fallback','model':None,'hybrid':use_hybrid,'threshold':None,'rule':f'kw_overlap>={KW_MIN}'}
+        return out, {'path':'fallback','model':None,'hybrid':use_hybrid,'threshold':None,'rule':'keyword≥1','kept': int(out.shape[0]), 'terms': base_terms, 'expanded': base_terms}
 
     try:
         import numpy as np  # noqa
         from openai import OpenAI  # noqa
     except Exception:
         out = _semantic_rank_basic(qdf, user_query, 0)
-        return out, {'path':'fallback','model':None,'hybrid':use_hybrid,'threshold':None,'rule':f'kw_overlap>={KW_MIN}'}
+        return out, {'path':'fallback','model':None,'hybrid':use_hybrid,'threshold':None,'rule':'keyword≥1','kept': int(out.shape[0]), 'terms': base_terms, 'expanded': base_terms}
 
     model = _get_embed_model()
     uq = user_query.strip().lower()
-    q_tokens = _expand_query_terms(uq)
+    # expand terms for hybrid keyword overlap visibility
+    expanded_terms = sorted(_expand_query_terms(" ".join(base_terms))) if base_terms else []
+    q_tokens = set(expanded_terms) if expanded_terms else set()
 
     # Get embeddings (with visible spinner)
     with st.spinner(f"🔎 Searching… contacting OpenAI and computing embeddings (model: {model})…"):
@@ -557,7 +628,7 @@ def _semantic_search(qdf: pd.DataFrame, user_query: str, use_hybrid: bool) -> tu
             qvec = qresp.data[0].embedding
         except Exception:
             out = _semantic_rank_basic(qdf, user_query, 0)
-            return out, {'path':'fallback','model':None,'hybrid':use_hybrid,'threshold':None,'rule':f'kw_overlap>={KW_MIN}'}
+            return out, {'path':'fallback','model':None,'hybrid':use_hybrid,'threshold':None,'rule':'keyword≥1','kept': int(out.shape[0]), 'terms': base_terms, 'expanded': base_terms}
 
     # Cosine
     import numpy as np
@@ -567,7 +638,6 @@ def _semantic_search(qdf: pd.DataFrame, user_query: str, use_hybrid: bool) -> tu
         if na == 0 or nb == 0: return 0.0
         return float(np.dot(a, b) / (na * nb))
 
-    # Score all; APPLY ONLY THE GATE; do not cap or prune
     rows = []
     kw_max = 1
     for _, r in qdf.iterrows():
@@ -591,11 +661,32 @@ def _semantic_search(qdf: pd.DataFrame, user_query: str, use_hybrid: bool) -> tu
             if coss >= thr_strict:
                 kept.append((code, text, disp, coss))
 
-    if not kept:
-        return qdf.head(0), {'path':'embeddings','model':model,'hybrid':use_hybrid,'threshold':thr_strict,'rule':f'A:cos≥{thr_strong:.2f} OR B:cos≥{thr_strict:.2f}+KW≥{KW_MIN}','kept':0}
-
     out = PD.DataFrame(kept, columns=["code","text","display","__score__"]).sort_values(["__score__","code"], ascending=[False, True])
-    return out[["code","text","display","__score__"]], {'path':'embeddings','model':model,'hybrid':use_hybrid,'threshold':thr_strict,'rule':f'A:cos≥{thr_strong:.2f} OR B:cos≥{thr_strict:.2f}+KW≥{KW_MIN}','kept':len(kept)}
+    return out[["code","text","display","__score__"]], {
+        'path':'embeddings',
+        'model':model,
+        'hybrid':use_hybrid,
+        'threshold':thr_strict,
+        'rule':f'A:cos≥{thr_strong:.2f} OR B:cos≥{thr_strict:.2f}+KW≥{KW_MIN}',
+        'kept': int(out.shape[0]),
+        'terms': base_terms,
+        'expanded': expanded_terms or base_terms
+    }
+
+@st.cache_resource(show_spinner=False)
+def _build_question_embeddings(qdf: pd.DataFrame) -> Dict[str, List[float]]:
+    from openai import OpenAI
+    client = OpenAI()
+    model = _get_embed_model()
+    texts = (qdf["code"].astype(str) + " " + qdf["text"].astype(str)).tolist()
+    BATCH = 96
+    vectors: List[List[float]] = []
+    for i in range(0, len(texts), BATCH):
+        chunk = texts[i:i+BATCH]
+        resp = client.embeddings.create(model=model, input=chunk)
+        vectors.extend([d.embedding for d in resp.data])
+    codes = qdf["code"].astype(str).tolist()
+    return {c: v for c, v in zip(codes, vectors)}
 
 
 # ─────────────────────────────
@@ -704,6 +795,8 @@ def run_menu2():
           .full-width textarea { min-height: 120px !important; }
           .pill { display:inline-block; padding:4px 8px; border-radius:999px; font-size:12px; margin-left:6px; background:#eef; color:#224; }
           .pill.red { background:#fee; color:#822; }
+          .kw { font-size:13px; color:#111; margin:8px 0; }
+          .kw code { background:#f4f4f8; padding:2px 6px; border-radius:6px; margin-right:4px; display:inline-block; }
         </style>
         """,
         unsafe_allow_html=True,
@@ -742,7 +835,7 @@ def run_menu2():
         ai_enabled = st.toggle("🧠 Enable AI analysis (OpenAI)", value=st.session_state.get("ai_enabled", True))
         st.session_state["ai_enabled"] = ai_enabled
 
-        # Optional: allow disabling hybrid when diagnosing relevance
+        # Hybrid toggle
         adv_col1, _ = st.columns([1,1])
         with adv_col1:
             use_hybrid_ui = st.toggle("Use hybrid re-ranker (recommended)", value=st.session_state.get("menu2_use_hybrid", True))
@@ -750,12 +843,12 @@ def run_menu2():
 
         # Phase: SEARCH
         if st.session_state["menu2_phase"] == "search":
-            st.markdown('<div class="custom-instruction">Step 1 — Enter a theme or keywords (e.g., “compensation”, “recognition”, “psychological safety”).</div>', unsafe_allow_html=True)
+            st.markdown('<div class="custom-instruction">Step 1 — Enter a theme or keywords (e.g., “compensation”, “career progression”, “psychological safety”).</div>', unsafe_allow_html=True)
             st.markdown('<div class="field-label">Enter keywords or a theme:</div>', unsafe_allow_html=True)
             with st.container():
                 st.markdown('<div class="full-width">', unsafe_allow_html=True)
                 user_query = st.text_area("Theme/keywords", key="menu2_theme", label_visibility="collapsed",
-                                          placeholder="Type here… e.g., compensation, inclusion, harassment, recognition")
+                                          placeholder="Type here… e.g., compensation, “career progression”, inclusion, recognition")
                 st.markdown('</div>', unsafe_allow_html=True)
 
             if st.button("🔎 Search related questions"):
@@ -764,23 +857,58 @@ def run_menu2():
                 else:
                     matches_df, diag = _semantic_search(qdf, user_query.strip(), use_hybrid=st.session_state.get("menu2_use_hybrid", True))
                     st.session_state["menu2_diag"] = diag
+                    st.session_state["menu2_matches"] = matches_df
+
+                    # Always show what we searched for (extracted/expanded) so the user can refine
+                    terms = diag.get("terms", []) or []
+                    expanded = diag.get("expanded", []) or terms
+                    if terms:
+                        chips = " ".join(f"<code>{t}</code>" for t in terms)
+                        st.markdown(f"<div class='kw'><b>Extracted keywords:</b> {chips}</div>", unsafe_allow_html=True)
+                    if diag.get("path") == "embeddings" and expanded and (set(expanded) - set(terms)):
+                        exp_only = [t for t in expanded if t not in terms]
+                        chips2 = " ".join(f"<code>{t}</code>" for t in exp_only)
+                        st.markdown(f"<div class='kw'><b>Semantic expansion used:</b> {chips2}</div>", unsafe_allow_html=True)
+
                     if matches_df.empty:
-                        st.info("No matching questions met the relevance threshold. Try different or broader keywords.")
+                        # Show mode pill and refinement hint
+                        if diag.get("path") == "exact":
+                            st.markdown("<span class='pill'>Search: Exact match (whole-word)</span>", unsafe_allow_html=True)
+                        elif diag.get("path") == "embeddings":
+                            hybrid_note = "hybrid" if diag.get("hybrid") else "embeddings-only"
+                            st.markdown(f"<span class='pill'>Search: Embeddings ({hybrid_note}, {diag.get('rule','')})</span>", unsafe_allow_html=True)
+                        else:
+                            st.markdown("<span class='pill red'>Search: Fallback keyword (≥1 signal)</span>", unsafe_allow_html=True)
+                        st.info("No matching questions met the relevance criteria. Try rephrasing, removing quotes, or using a shorter keyword.")
                     else:
-                        st.session_state["menu2_matches"] = matches_df
                         st.session_state["menu2_phase"] = "pick"
 
         # Phase: PICK QUESTIONS
         if st.session_state["menu2_phase"] == "pick":
             matches_df = st.session_state["menu2_matches"]
             diag = st.session_state.get("menu2_diag", {})
-            if diag.get("path") == "embeddings":
+
+            # Mode/status pill
+            if diag.get("path") == "exact":
+                st.markdown(f"<span class='pill'>Search: Exact match (whole-word), kept={diag.get('kept', 0)}</span>", unsafe_allow_html=True)
+            elif diag.get("path") == "embeddings":
                 hybrid_note = "hybrid" if diag.get("hybrid") else "embeddings-only"
                 rule = diag.get("rule","strict"); kept = diag.get("kept", None)
                 kept_txt = f", kept={kept}" if kept is not None else ""
                 st.markdown(f"<span class='pill'>Search: Embeddings ({diag.get('model')}, {hybrid_note}, {rule}{kept_txt})</span>", unsafe_allow_html=True)
             elif diag.get("path") == "fallback":
-                st.markdown("<span class='pill red'>Search: Fallback (strict keyword match: ≥2 overlaps)</span>", unsafe_allow_html=True)
+                st.markdown("<span class='pill red'>Search: Fallback (keyword ≥1)</span>", unsafe_allow_html=True)
+
+            # Always echo back the extracted/expanded terms so the user can refine
+            terms = diag.get("terms", []) or []
+            expanded = diag.get("expanded", []) or terms
+            if terms:
+                chips = " ".join(f"<code>{t}</code>" for t in terms)
+                st.markdown(f"<div class='kw'><b>Extracted keywords:</b> {chips}</div>", unsafe_allow_html=True)
+            if diag.get("path") == "embeddings" and expanded and (set(expanded) - set(terms)):
+                exp_only = [t for t in expanded if t not in terms]
+                chips2 = " ".join(f"<code>{t}</code>" for t in exp_only)
+                st.markdown(f"<div class='kw'><b>Semantic expansion used:</b> {chips2}</div>", unsafe_allow_html=True)
 
             st.markdown('<div class="custom-instruction">Step 2 — Tick one or more related questions to analyze.</div>', unsafe_allow_html=True)
 
