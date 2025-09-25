@@ -1,4 +1,4 @@
-# main.py — homepage (routes to Wizard; Menu 4 removed; legacy Menus 1 & 2 in expander)
+# main.py — homepage (Wizard CTA; Menu 4 removed; Menu 1 & 2 in expander)
 import streamlit as st
 
 # Keep prewarm imports
@@ -64,10 +64,33 @@ def main():
                 background-position: center top;
                 color: white;
             }
-            .main-section { margin-left: 200px; max-width: 820px; }
-            .main-title { font-size: 42px; font-weight: 800; margin-bottom: 16px; }
-            .subtitle { font-size: 22px; line-height: 1.4; margin-bottom: 18px; opacity: 0.95; }
-            .context { font-size: 18px; line-height: 1.55; margin-top: 8px; margin-bottom: 36px; opacity: 0.95; }
+            /* Content rail: keeps a shared left indent and max width for title, subtitle, and context */
+            .main-section {
+                margin-left: 200px;      /* ← shared left indent */
+                max-width: 820px;        /* width of the content rail */
+                text-align: left;        /* left-align all text in the rail */
+            }
+            .main-title {
+                font-size: 42px;
+                font-weight: 800;
+                margin-bottom: 16px;
+            }
+            .subtitle {
+                font-size: 22px;
+                line-height: 1.4;
+                margin-bottom: 18px;
+                opacity: 0.95;
+                max-width: 700px;       /* keep subtitle aligned & narrow */
+            }
+            .context {
+                font-size: 18px;
+                line-height: 1.55;
+                margin-top: 8px;
+                margin-bottom: 36px;
+                opacity: 0.95;
+                max-width: 700px;       /* prevent spill into center image */
+                text-align: left;       /* force left alignment */
+            }
             .single-button { display: flex; flex-direction: column; gap: 16px; }
             div.stButton > button {
                 background-color: rgba(255,255,255,0.08) !important;
@@ -84,7 +107,9 @@ def main():
                 border-color: white !important;
                 background-color: rgba(255, 255, 255, 0.14) !important;
             }
-            div[data-testid="stExpander"] > details > summary { color: #fff; font-size: 16px; }
+            div[data-testid="stExpander"] > details > summary {
+                color: #fff; font-size: 16px;
+            }
         </style>
     """, unsafe_allow_html=True)
 
@@ -96,13 +121,11 @@ def main():
         unsafe_allow_html=True
     )
 
-    # Updated subtitle (exact wording requested)
     st.markdown(
         "<div class='subtitle'>This app provides Public Service-wide survey results and analysis for the previous 4 survey cycles (2019, 2020, 2022, and 2024)</div>",
         unsafe_allow_html=True
     )
 
-    # Context block (exact text requested)
     st.markdown(
         """
         <div class='context'>
