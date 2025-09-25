@@ -1,6 +1,7 @@
-# wizard/main.py — Consolidated 3-step Wizard with Menu 1 presentation
+# wizard/main.py — Consolidated 3-step Wizard + Results page
 from __future__ import annotations
 
+import io
 import json
 import os
 import re
@@ -31,7 +32,7 @@ WKEY = "wiz3"
 def _init_state():
     if WKEY not in st.session_state:
         st.session_state[WKEY] = {
-            "step": 1,                         # 1 → 2 → 3
+            "step": 1,                         # 1 → 2 → 3 → 4(results)
             "mode": "select",                  # "select" | "search"
             "keywords": "",
             "matches": PD.DataFrame(),
@@ -42,7 +43,10 @@ def _init_state():
             "demo_sub": None,
             "use_hybrid": True,
             "ai_enabled": True,
-            "results": {},
+            "busy_payload": None,              # temp inputs for results run
+            "results": {},                     # final results payload
+            "analysis_notes": {},              # per-question narratives (for download)
+            "analysis_overall": "",            # overall narrative (for download)
         }
 
 # ─────────────────────────────
@@ -217,7 +221,7 @@ def format_display_table_raw(df, category_in_play, dem_disp_map, scale_pairs) ->
     keep_cols = [c for c in keep_cols if c in out.columns]
     out = out[keep_cols].rename(columns=rename_map).copy()
 
-    # Drop answer columns that are entirely NA
+    # Drop answer columns entirely NA
     answer_label_cols = [v for v in rename_map.values() if v in out.columns]
     drop_all_na = [c for c in answer_label_cols if PD.to_numeric(out[c], errors="coerce").isna().all()]
     if drop_all_na:
@@ -688,7 +692,7 @@ def _detect_backend():
     return "csv"
 
 # ─────────────────────────────
-# UI Steps — Menu 1 presentation
+# UI — Shared banner/style
 # ─────────────────────────────
 def _banner_and_style():
     st.markdown(
@@ -712,6 +716,22 @@ def _banner_and_style():
         )
     return center  # return the middle column context
 
+def _back_to_start_button(where: str):
+    # shows on all pages
+    if st.button("↩️ Back to Start Search"):
+        ai_keep = st.session_state[WKEY]["ai_enabled"]
+        hy_keep = st.session_state[WKEY]["use_hybrid"]
+        st.session_state.pop(WKEY, None)
+        _init_state()
+        st.session_state[WKEY]["ai_enabled"] = ai_keep
+        st.session_state[WKEY]["use_hybrid"] = hy_keep
+        st.session_state[WKEY]["step"] = 1
+        st.experimental_set_query_params()
+        st.rerun()
+
+# ─────────────────────────────
+# UI Steps — 1/2/3 (search inputs)
+# ─────────────────────────────
 def _step1(center):
     with center:
         st.markdown('<div class="custom-header">🎯 Step 1 — Select questions or search by theme/keywords</div>', unsafe_allow_html=True)
@@ -734,7 +754,7 @@ def _step1(center):
         if st.session_state[WKEY]["mode"] == "select":
             st.markdown('<div class="field-label">Choose one or more survey questions</div>', unsafe_allow_html=True)
             options = qdf["display"].tolist()
-            default = [options[0]] if options else []
+            default = options[:1] if options else []
             chosen_disp = st.multiselect("Questions", options=options, default=default, label_visibility="collapsed",
                                          help="Tip: start typing a code like Q16 or a word to filter.")
             sel_codes = qdf[qdf["display"].isin(chosen_disp)]["code"].astype(str).tolist()
@@ -755,7 +775,7 @@ def _step1(center):
             matches_df = st.session_state[WKEY].get("matches", PD.DataFrame())
             diag = st.session_state[WKEY].get("diag", {})
 
-            # Present search feedback plainly (no code/JSON)
+            # Plain feedback
             if diag.get("path") in {"exact","embeddings","fallback"}:
                 if diag.get("path") == "exact":
                     st.caption("Search mode: exact whole-word match.")
@@ -772,7 +792,7 @@ def _step1(center):
                 if diag.get("path") == "embeddings" and expanded and (set(expanded) - set(terms)):
                     st.write("Semantic expansion used: " + ", ".join([t for t in expanded if t not in terms]))
 
-            # Checkbox multi-select of matches (top preselected)
+            # Checkbox multi-select
             selected_codes: List[str] = []
             if not matches_df.empty:
                 st.markdown("Select one or more related questions:")
@@ -790,13 +810,8 @@ def _step1(center):
         can_next = bool(st.session_state[WKEY]["selected_questions"])
         if b1.button("Next ▶", disabled=not can_next):
             st.session_state[WKEY]["step"] = 2
-        if b2.button("Reset"):
-            ai_keep = st.session_state[WKEY]["ai_enabled"]
-            hy_keep = st.session_state[WKEY]["use_hybrid"]
-            st.session_state.pop(WKEY, None)
-            _init_state()
-            st.session_state[WKEY]["ai_enabled"] = ai_keep
-            st.session_state[WKEY]["use_hybrid"] = hy_keep
+        with b2:
+            _back_to_start_button("step1")
 
 def _step2(center):
     with center:
@@ -820,6 +835,7 @@ def _step2(center):
             st.session_state[WKEY]["step"] = 1
         if b2.button("Next ▶", disabled=(len(st.session_state[WKEY]['years']) == 0)):
             st.session_state[WKEY]["step"] = 3
+        _back_to_start_button("step2")
 
 def _step3(center):
     with center:
@@ -839,7 +855,7 @@ def _step3(center):
         st.session_state[WKEY]["demo_category"] = cat
         st.session_state[WKEY]["demo_sub"] = sub
 
-        # Plain-language parameter summary (shown only now, before Run)
+        # Parameter summary (plain text)
         qdf = load_questions_metadata()
         qtxt = dict(zip(qdf["code"].astype(str), qdf["text"].astype(str)))
         chosen = st.session_state[WKEY]["selected_questions"]
@@ -854,20 +870,32 @@ def _step3(center):
         else:
             st.markdown(f"- **Demographic:** {cat}")
 
-        # Run
+        # Go to Results page (Step 4)
         if st.button("Run search ▶"):
-            _run_pipeline()
+            # stash inputs for run
+            st.session_state[WKEY]["busy_payload"] = {
+                "selected_questions": chosen,
+                "years": years,
+                "demo_category": cat,
+                "demo_sub": sub
+            }
+            st.session_state[WKEY]["step"] = 4
+            st.rerun()
 
         b1, _ = st.columns([1,1])
         if b1.button("◀ Back"):
             st.session_state[WKEY]["step"] = 2
+        _back_to_start_button("step3")
 
-def _run_pipeline():
+# ─────────────────────────────
+# RESULTS PAGE — Step 4 (spinner → results)
+# ─────────────────────────────
+def _run_pipeline(busy_payload):
     # Prepare demographic codes
     demo_df = load_demographics_metadata()
-    cat = st.session_state[WKEY]["demo_category"]
-    sub = st.session_state[WKEY]["demo_sub"]
-    years = st.session_state[WKEY]["years"]
+    cat = busy_payload["demo_category"]
+    sub = busy_payload["demo_sub"]
+    years = busy_payload["years"]
     demcodes, disp_map, category_in_play = resolve_demographic_codes_from_metadata(demo_df, cat, sub)
     if category_in_play and (None not in demcodes):
         demcodes = [None] + demcodes
@@ -882,10 +910,9 @@ def _run_pipeline():
     per_q_metric: Dict[str, Tuple[str, str, bool]] = {}
 
     qmeta = load_questions_metadata()
-    st.info("🔎 Searching…")
     with st.spinner("🔎 Searching…"):
-        status_line.caption(f"Matching scales • engine: {engine_guess} • 0.0s")
-        for qcode in st.session_state[WKEY]["selected_questions"]:
+        status_line.caption(f"Initializing • engine: {engine_guess} • 0.0s")
+        for qcode in busy_payload["selected_questions"]:
             qrow = qmeta[qmeta["code"] == qcode].head(1)
             qtext = (qrow["text"].iloc[0] if not qrow.empty else "")
             per_q_text[qcode] = str(qtext)
@@ -896,7 +923,6 @@ def _run_pipeline():
                     st.warning(f"Scales not found for {qcode}. Skipping.")
                     continue
 
-            status_line.caption(f"[{qcode}] Loading data • engine: {engine_guess} • {time.perf_counter() - t0_global:.1f}s")
             with prof.step(f"[{qcode}] Loading data", live=status_line, engine=engine_guess, t0_global=t0_global):
                 try:
                     df_raw = load_results2024_filtered(question_code=qcode, years=years, group_values=demcodes)  # type: ignore[arg-type]
@@ -912,11 +938,9 @@ def _run_pipeline():
             if df_raw is None or df_raw.empty:
                 continue
 
-            status_line.caption(f"[{qcode}] Cleaning values • engine: {engine_guess} • {time.perf_counter() - t0_global:.1f}s")
-            with prof.step(f"[{qcode}] 999/9999 → NA", live=status_line, engine=engine_guess, t0_global=t0_global):
+            with prof.step(f"[{qcode}] Cleaning values", live=status_line, engine=engine_guess, t0_global=t0_global):
                 df_raw = exclude_999_raw(df_raw)
 
-            status_line.caption(f"[{qcode}] Formatting table • engine: {engine_guess} • {time.perf_counter() - t0_global:.1f}s")
             with prof.step(f"[{qcode}] Sort & format", live=status_line, engine=engine_guess, t0_global=t0_global):
                 dem_map_clean = {None: "All respondents"}
                 try:
@@ -933,14 +957,11 @@ def _run_pipeline():
             decision = detect_metric_mode(df_disp, scale_pairs)
             per_q_metric[qcode] = (decision["metric_col"], decision["ui_label"], bool(decision.get("summary_allowed", False)))
 
-        with prof.step("Building cross-question summary", live=status_line, engine=engine_guess, t0_global=t0_global):
-            cross_summary = build_trend_summary_table  # placeholder to show stage
-            # Build a compact overview table combining questions (use same helper as Menu 2)
-        # Build cross-question summary using Menu 2 logic inline (to avoid import):
-        cross_summary = _build_cross_question_summary_inline(per_q_disp, category_in_play, years)
-
     total_s = time.perf_counter() - t0_global
     status_line.caption(f"Done • engine: {engine_guess} • {total_s:.1f}s")
+
+    # Cross-question compact overview
+    cross_summary = _build_cross_question_summary_inline(per_q_disp, category_in_play, years)
 
     st.session_state[WKEY]["results"] = dict(
         per_q_disp=per_q_disp,
@@ -1015,7 +1036,7 @@ def _render_results(center):
 
         tabs = st.tabs(["Overview"] + [f"{q} — Details" for q in per_q_disp.keys()])
 
-        # Overview (centered like Menu 1)
+        # Overview
         with tabs[0]:
             st.subheader("Overview")
             if per_q_text:
@@ -1026,13 +1047,20 @@ def _render_results(center):
 
             if cross_summary is not None and not cross_summary.empty:
                 st.dataframe(make_arrow_safe(cross_summary), use_container_width=True, hide_index=True)
+                # Download: Summary table (Excel)
+                xbuf = io.BytesIO()
+                with PD.ExcelWriter(xbuf, engine="xlsxwriter") as writer:
+                    cross_summary.to_excel(writer, sheet_name="Summary Overview", index=False)
+                st.download_button("⬇️ Download summary table (Excel)", xbuf.getvalue(),
+                                   file_name="PSES_Summary_Overview.xlsx",
+                                   mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
             else:
                 st.info("No summary available for the current selection.")
 
-            # AI analysis (optional)
+            # AI analysis (optional) — collect for download
+            perq_paras: List[str] = []
             if st.session_state[WKEY].get("ai_enabled", True):
                 st.markdown("### Analysis — Per question")
-                perq_paras: List[str] = []
                 for qcode, df_disp in per_q_disp.items():
                     metric_col, ui_label, _summary_allowed = per_q_metric.get(qcode, ("POSITIVE", "(% positive answers)", True))
                     qtext = per_q_text.get(qcode, "")
@@ -1046,7 +1074,7 @@ def _render_results(center):
                             metric_label=("% positive" if metric_col.lower()=="positive" else ("% agree" if metric_col.lower()=="agree" else metric_col)),
                         )
                     if para:
-                        perq_paras.append(f"{qcode}. {para}")
+                        perq_paras.append(f"**{qcode}.** {para}")
                         st.write(f"**{qcode}.** {para}")
                     else:
                         st.write(f"**{qcode}.** (AI analysis unavailable.)")
@@ -1058,7 +1086,26 @@ def _render_results(center):
                     model_used = (st.secrets.get("OPENAI_MODEL") or "gpt-4o-mini").strip()
                     st.write(overall + f"\n\n_Powered by OpenAI model {model_used}_")
                 else:
-                    st.info("Overall synthesis unavailable.")
+                    overall = ""
+
+                # Save narratives in session for download
+                st.session_state[WKEY]["analysis_notes"] = {q: txt for q, txt in zip(per_q_disp.keys(), [p for p in perq_paras])}
+                st.session_state[WKEY]["analysis_overall"] = overall
+
+                # Download: Summary analysis (Markdown)
+                md = []
+                md.append("# PSES Analysis Summary\n")
+                if perq_paras:
+                    md.append("## Per-question findings\n")
+                    for p in perq_paras:
+                        md.append(p)
+                if overall:
+                    md.append("\n## Overall theme\n")
+                    md.append(overall)
+                md_bytes = "\n\n".join(md).encode("utf-8")
+                st.download_button("⬇️ Download summary analysis (Markdown)", md_bytes,
+                                   file_name="PSES_Summary_Analysis.md",
+                                   mime="text/markdown")
             else:
                 st.caption("AI analysis is disabled (toggle in Step 1).")
 
@@ -1067,7 +1114,7 @@ def _render_results(center):
                 "(https://open.canada.ca/data/en/dataset/7f625e97-9d02-4c12-a756-1ddebb50e69f)"
             )
 
-        # Per-question tabs (Summary + Detailed, like Menu 1)
+        # Per-question tabs (Summary + Detailed, with downloads)
         idx = 1
         for qcode, df_disp in per_q_disp.items():
             with tabs[idx]:
@@ -1082,18 +1129,36 @@ def _render_results(center):
                 if summary_allowed and trend_df is not None and not trend_df.empty:
                     st.markdown(f"<div class='q-sub'>{qcode} — {qtext}</div><div class='tiny-note'>{ui_label}</div>", unsafe_allow_html=True)
                     st.dataframe(make_arrow_safe(trend_df), use_container_width=True, hide_index=True)
+                    # Download summary table (Excel)
+                    xbuf1 = io.BytesIO()
+                    with PD.ExcelWriter(xbuf1, engine="xlsxwriter") as writer:
+                        trend_df.to_excel(writer, sheet_name="Summary", index=False)
+                    st.download_button("⬇️ Download summary data (Excel)", xbuf1.getvalue(),
+                                       file_name=f"PSES_{qcode}_Summary.xlsx",
+                                       mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
                 else:
-                    st.info("Summary table is unavailable for this selection, please see detailed results below.")
+                    st.info("Summary table is unavailable for this selection.")
 
                 st.markdown("#### Detailed results")
                 df_pruned = _drop_all_na_columns_for_display(df_disp)
                 st.dataframe(make_arrow_safe(df_pruned), use_container_width=True)
+                # Download detailed table (Excel)
+                xbuf2 = io.BytesIO()
+                with PD.ExcelWriter(xbuf2, engine="xlsxwriter") as writer:
+                    df_pruned.to_excel(writer, sheet_name="Detailed", index=False)
+                st.download_button("⬇️ Download detailed data (Excel)", xbuf2.getvalue(),
+                                   file_name=f"PSES_{qcode}_Detailed.xlsx",
+                                   mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
 
                 st.markdown(
                     "Source: [2024 Public Service Employee Survey Results - Open Government Portal]"
                     "(https://open.canada.ca/data/en/dataset/7f625e97-9d02-4c12-a756-1ddebb50e69f)"
                 )
             idx += 1
+
+        # Back to Start Search (bottom of results)
+        st.divider()
+        _back_to_start_button("results")
 
 # ─────────────────────────────
 # Entry point
@@ -1124,11 +1189,19 @@ def run_wizard():
         _step2(center)
     elif step == 3:
         _step3(center)
-        # Render results (if any) below Step 3 after a run
-        payload = st.session_state[WKEY].get("results", {})
-        if payload and (payload.get("per_q_disp") or payload.get("cross_summary") is not None):
-            st.markdown("---")
-            _render_results(center)
+    elif step == 4:
+        # RESULTS page: show spinner/status then results
+        bp = st.session_state[WKEY].get("busy_payload")
+        if bp is None:
+            st.info("No search is in progress. Please start a new search.")
+            _back_to_start_button("no_payload")
+            return
+        # Run pipeline once per landing
+        _run_pipeline(bp)
+        # Reset busy payload to avoid re-running on re-render
+        st.session_state[WKEY]["busy_payload"] = None
+        st.markdown("---")
+        _render_results(center)
 
 if __name__ == "__main__":
     run_wizard()
