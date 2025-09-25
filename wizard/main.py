@@ -1,5 +1,5 @@
 # wizard/main.py — compact controller for the multi-step Search Wizard
-WIZARD_CONTROLLER_VERSION = "controller-v0.3-no-future"
+WIZARD_CONTROLLER_VERSION = "controller-v0.4-scope-fix"
 
 import importlib
 from dataclasses import dataclass
@@ -57,15 +57,18 @@ def _prev_step(current: str) -> Optional[str]:
     except ValueError:
         return None
 
+# —— FIXED: capture the exception message so the inner function can use it
 def _import_callable(module_name: str, fn_name: str):
     try:
         mod = importlib.import_module(module_name)
         return getattr(mod, fn_name)
-    except Exception as e:
-        def _placeholder(*args, **kwargs):
+    except Exception as err:
+        msg = f"{type(err).__name__}: {err}"
+        def _placeholder(*args, _msg=msg, **kwargs):
             st.info("This page isn’t implemented yet. We’ll add it next.")
             st.caption(f"Missing: `{module_name}.{fn_name}()`")
-            return StepResult(is_valid=False, message=str(e))
+            st.caption(_msg)
+            return StepResult(is_valid=False, message=_msg)
         return _placeholder
 
 def _render_step(step_key: str) -> StepResult:
