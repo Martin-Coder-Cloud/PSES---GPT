@@ -67,7 +67,7 @@ def load_questions_metadata() -> pd.DataFrame:
         qdf = qdf.rename(columns={"question": "code", "english": "text"})
     qdf["code"] = qdf["code"].astype(str).str.strip()
     qdf["qnum"] = qdf["code"].str.extract(r"Q?(\d+)", expand=False)
-    with pd.option_context("mode.chained_assignment", None):
+    with pd.concat.__self__ if False else pd.option_context("mode.chained_assignment", None):
         qdf["qnum"] = pd.to_numeric(qdf["qnum"], errors="coerce")
     qdf = qdf.sort_values(["qnum", "code"], na_position="last")
     qdf["display"] = qdf["code"] + " – " + qdf["text"].astype(str)
@@ -261,6 +261,33 @@ def make_arrow_safe(df: pd.DataFrame) -> pd.DataFrame:
         if pd.api.types.is_object_dtype(out[c]):
             out[c] = out[c].astype(str)
     return out
+
+# NEW: prune all-NA columns for detailed display (keep Year/Demographic)
+def _drop_all_na_columns_for_display(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Keep only columns that have at least one non-NA numeric value,
+    but always keep Year and Demographic if present. If a column is non-numeric,
+    keep it if it has any non-empty strings.
+    """
+    if df is None or df.empty:
+        return df
+    keep_always = {"Year", "Demographic"}
+    cols = []
+    for c in df.columns:
+        if c in keep_always:
+            cols.append(c); continue
+        s_num = pd.to_numeric(df[c], errors="coerce")
+        if s_num.notna().any():
+            cols.append(c)
+    if not cols:
+        cols = [c for c in df.columns if c in keep_always]
+        for c in df.columns:
+            if c in keep_always:
+                continue
+            sc = df[c].astype(str).str.strip()
+            if (sc != "").any():
+                cols.append(c)
+    return df[cols]
 
 
 # ─────────────────────────────
@@ -1010,6 +1037,12 @@ def run_menu2():
             prof = Profiler()
             t0_global = time.perf_counter()
 
+            # NEW: Show only the selected questions as chips while running
+            st.markdown("### Running query")
+            if selected_codes:
+                chips = " ".join([f"<span class='pill'>{c}</span>" for c in selected_codes])
+                st.markdown(chips, unsafe_allow_html=True)
+
             per_q_disp: Dict[str, pd.DataFrame] = {}
             per_q_text: Dict[str, str] = {}
             per_q_metric: Dict[str, Tuple[str, str, bool]] = {}
@@ -1070,6 +1103,10 @@ def run_menu2():
                 with prof.step("Build cross-question summary", live=status_line, engine=engine_guess, t0_global=t0_global):
                     cross_summary = build_cross_question_summary(per_q_disp, category_in_play, selected_years)
 
+            # NEW: show final elapsed time in status line
+            total_s = time.perf_counter() - t0_global
+            status_line.caption(f"Processing complete • engine: {engine_guess} • {total_s:.1f}s")
+
             # Stash payload for rendering
             st.session_state["menu2_ready_payload"] = dict(
                 per_q_disp=per_q_disp,
@@ -1097,7 +1134,15 @@ def run_menu2():
 
             # Overview
             with tabs[0]:
-                st.subheader("Cross-question summary")
+                st.subheader("Overview")
+
+                # NEW: list selected questions with code→text mapping
+                if per_q_text:
+                    st.markdown("**Selected questions**")
+                    for qcode in sorted(per_q_text.keys()):
+                        qtext = per_q_text.get(qcode, "")
+                        st.markdown(f"- **{qcode}** — {qtext}")
+
                 if cross_summary is not None and not cross_summary.empty:
                     st.dataframe(make_arrow_safe(cross_summary), use_container_width=True, hide_index=True)
                 else:
@@ -1159,7 +1204,9 @@ def run_menu2():
                         st.info("Summary table is unavailable for this selection, please see detailed results below.")
 
                     st.markdown("#### Detailed results")
-                    st.dataframe(make_arrow_safe(df_disp), use_container_width=True)
+                    # NEW: prune all-NA columns before showing the detailed table
+                    df_pruned = _drop_all_na_columns_for_display(df_disp)
+                    st.dataframe(make_arrow_safe(df_pruned), use_container_width=True)
 
                     st.markdown(
                         "Source: [2024 Public Service Employee Survey Results - Open Government Portal]"
