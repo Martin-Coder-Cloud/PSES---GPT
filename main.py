@@ -1,158 +1,120 @@
-# main.py — homepage (Wizard CTA; Menu 4 removed; Menu 1 & 2 in expander)
+# main.py — App entry & routing (Menu 1 default)
+from __future__ import annotations
+import os
+import time
 import streamlit as st
 
-# Keep prewarm imports
+# Page config early
+st.set_page_config(page_title="PSES AI Explorer", layout="wide")
+
+# ===== Warmup (metadata + PS-wide data) =====
 try:
-    from utils.data_loader import prewarm_fastpath, get_backend_info
-except Exception:
-    prewarm_fastpath = None
-    get_backend_info = None
+    from utils.data_loader import prewarm_all, get_backend_info
+    prewarm_all()  # cached; safe to call on every rerun
+    _backend = get_backend_info()
+except Exception as _e:
+    _backend = {"last_engine": "error", "inmem_mode": "none", "inmem_rows": 0, "metadata_counts": {}}
+    st.warning(f"Startup warmup encountered an issue: {type(_e).__name__}: {str(_e)}")
 
-st.set_page_config(layout="wide")
+# ===== Simple style =====
+st.markdown("""
+<style>
+  .banner-wrap { text-align:center; margin-bottom: 10px; }
+  .banner-wrap img { width: 75%; max-width: 740px; height: auto; }
+  .app-title { font-size: 26px; font-weight: 700; margin: 6px 0 2px; text-align:center; }
+  .app-sub  { font-size: 15px; color:#333; text-align:center; margin-bottom: 14px; }
+  .status    { font-size: 12px; color:#555; text-align:center; margin-top: 4px; }
+  .center-col { max-width: 880px; margin: 0 auto; }
+  .big-button button { font-size: 16px; padding: 0.7em 1.6em; }
+</style>
+""", unsafe_allow_html=True)
 
-def show_return_then_run(run_func):
-    run_func()
+# ===== Helpers =====
+def _status_ribbon():
+    mc = _backend.get("metadata_counts", {}) or {}
+    meta_txt = f"Q={mc.get('questions', 0)}, Scales={mc.get('scales', 0)}"
+    info = (
+        f"Engine: {_backend.get('last_engine','?')} • "
+        f"In-mem: {_backend.get('inmem_mode','none')} ({_backend.get('inmem_rows',0)} rows) • "
+        f"Meta: {meta_txt} • PS-wide only"
+    )
+    st.markdown(f"<div class='status'>{info}</div>", unsafe_allow_html=True)
+
+def _banner():
+    st.markdown(
+        "<div class='banner-wrap'>"
+        "<img src='https://raw.githubusercontent.com/Martin-Coder-Cloud/PSES---GPT/main/PSES%20Banner%20New.png'/>"
+        "</div>",
+        unsafe_allow_html=True,
+    )
+
+def _home():
+    _banner()
+    st.markdown("<div class='app-title'>PSES AI Explorer — Home</div>", unsafe_allow_html=True)
+    st.markdown(
+        "<div class='app-sub'>Use the button below to search Public Service–wide PSES results by survey question.</div>",
+        unsafe_allow_html=True,
+    )
+    _status_ribbon()
+    st.divider()
+    c = st.container()
+    with c:
+        col1, col2, col3 = st.columns([1,2,1])
+        with col2:
+            st.markdown("<div class='center-col'>", unsafe_allow_html=True)
+            # ✅ For testing: go straight to Menu 1
+            if st.button("🔎 Start your search", type="primary", use_container_width=True):
+                st.session_state.run_menu = "menu1"
+                st.rerun()
+            # Optional dev link to Wizard (won’t be used unless clicked)
+            with st.expander("Developer options"):
+                if st.button("🧪 Open Wizard (dev)"):
+                    st.session_state.run_menu = "wizard"
+                    st.rerun()
+            st.markdown("</div>", unsafe_allow_html=True)
+
+def show_return_then_run(run_callable):
+    """Render a sub-app then offer a Return button."""
+    try:
+        run_callable()
+    except Exception as e:
+        st.error(f"An error occurred running this module: {type(e).__name__}: {e}")
     st.markdown("---")
     if st.button("🔙 Return to Main Menu"):
         st.session_state.run_menu = None
-        st.experimental_set_query_params()
         st.rerun()
 
+# ===== Router =====
 def main():
+    # Initialize route flag once
     if "run_menu" not in st.session_state:
         st.session_state.run_menu = None
 
-    # ✅ Prewarm backend only on home page
-    if prewarm_fastpath is not None and st.session_state.run_menu is None:
-        with st.spinner("Preparing data backend (one-time)…"):
-            backend = prewarm_fastpath()
-        if get_backend_info is not None:
-            info = get_backend_info() or {}
-            store = info.get("store")
-            if backend == "memory_csv" or store == "in_memory_csv":
-                st.caption("🧠 In-memory data store is ready — queries will run from RAM.")
-            elif backend == "csv":
-                st.caption(f"⚠️ Using CSV fallback. Parquet unavailable. (CSV: {info.get('csv_path')})")
-            else:
-                parquet_dir = info.get("parquet_dir")
-                st.caption(f"✅ Parquet ready at: {parquet_dir}" if parquet_dir else "ℹ️ Data backend initialized.")
-
-    # ===== Routing (Wizard + legacy Menus 1 & 2 only) =====
-    if st.session_state.run_menu == "wizard":
-        from wizard.main import run_wizard
-        show_return_then_run(run_wizard)
-        return
-    elif st.session_state.run_menu == "1":
-        from menu1.main import run_menu1
+    # Menu selection
+    if st.session_state.run_menu == "menu1":
+        try:
+            from menu1.main import run_menu1
+        except Exception as e:
+            st.error(f"Could not import Menu 1: {type(e).__name__}: {e}")
+            st.session_state.run_menu = None
+            _home()
+            return
         show_return_then_run(run_menu1)
         return
-    elif st.session_state.run_menu == "2":
-        from menu2.main import run_menu2
-        show_return_then_run(run_menu2)
+
+    if st.session_state.run_menu == "wizard":
+        try:
+            from wizard.main import run_wizard
+        except Exception as e:
+            st.error(f"Could not import Wizard: {type(e).__name__}: {e}")
+            st.session_state.run_menu = None
+            _home()
+            return
+        show_return_then_run(run_wizard)
         return
 
-    # ===== Homepage styling =====
-    st.markdown("""
-        <style>
-            .block-container {
-                padding-top: 100px !important;
-                padding-left: 300px !important;
-                padding-bottom: 300px !important;
-                background-image: url('https://github.com/Martin-Coder-Cloud/PSES---GPT/blob/main/assets/Teams%20Background%20Tablet_EN.png?raw=true');
-                background-repeat: no-repeat;
-                background-size: cover;
-                background-position: center top;
-                color: white;
-            }
-            /* Content rail: keeps a shared left indent and max width for title, subtitle, and context */
-            .main-section {
-                margin-left: 200px;      /* ← shared left indent */
-                max-width: 820px;        /* width of the content rail */
-                text-align: left;        /* left-align all text in the rail */
-            }
-            .main-title {
-                font-size: 42px;
-                font-weight: 800;
-                margin-bottom: 16px;
-            }
-            .subtitle {
-                font-size: 22px;
-                line-height: 1.4;
-                margin-bottom: 18px;
-                opacity: 0.95;
-                max-width: 700px;       /* keep subtitle aligned & narrow */
-            }
-            .context {
-                font-size: 18px;
-                line-height: 1.55;
-                margin-top: 8px;
-                margin-bottom: 36px;
-                opacity: 0.95;
-                max-width: 700px;       /* prevent spill into center image */
-                text-align: left;       /* force left alignment */
-            }
-            .single-button { display: flex; flex-direction: column; gap: 16px; }
-            div.stButton > button {
-                background-color: rgba(255,255,255,0.08) !important;
-                color: white !important;
-                border: 2px solid rgba(255, 255, 255, 0.35) !important;
-                font-size: 30px !important; font-weight: 700 !important;
-                padding: 26px 34px !important;
-                width: 420px !important; min-height: 88px !important;
-                border-radius: 14px !important;
-                text-align: left !important;
-                backdrop-filter: blur(2px);
-            }
-            div.stButton > button:hover {
-                border-color: white !important;
-                background-color: rgba(255, 255, 255, 0.14) !important;
-            }
-            div[data-testid="stExpander"] > details > summary {
-                color: #fff; font-size: 16px;
-            }
-        </style>
-    """, unsafe_allow_html=True)
-
-    # ===== Homepage content =====
-    st.markdown("<div class='main-section'>", unsafe_allow_html=True)
-
-    st.markdown(
-        "<div class='main-title'>Welcome to the AI-powered Explorer of the Public Service Employee Survey (PSES)</div>",
-        unsafe_allow_html=True
-    )
-
-    st.markdown(
-        "<div class='subtitle'>This app provides Public Service-wide survey results and analysis for the previous 4 survey cycles (2019, 2020, 2022, and 2024)</div>",
-        unsafe_allow_html=True
-    )
-
-    st.markdown(
-        """
-        <div class='context'>
-        The 2024 Public Service Employee Survey (PSES) helps departments and agencies strengthen people management by highlighting areas such as employee engagement, equity and inclusion, anti-racism, and workplace well-being. It provides employees with a voice to share their experiences, supporting workplace improvements that benefit both public servants and Canadians. Results are tracked over time to guide and refine organizational action plans.
-        <br><br>
-        Each survey cycle combines recurring questions for trend analysis with new ones to reflect emerging priorities. In 2024, Employment Equity demographics were updated to advance diversity and inclusion, and hybrid work questions were streamlined to stay relevant post-pandemic. Statistics Canada, in partnership with the Office of the Chief Human Resources Officer, ran the survey from October 28 to December 31, 2024. The PSES will continue on a two-year cycle.
-        </div>
-        """,
-        unsafe_allow_html=True
-    )
-
-    # Primary CTA → Wizard
-    st.markdown("<div class='single-button'>", unsafe_allow_html=True)
-    if st.button("▶️ Start your search", key="menu_start_button"):
-        st.session_state.run_menu = "wizard"
-        st.rerun()
-    st.markdown("</div>", unsafe_allow_html=True)
-
-    # Legacy Menus 1 & 2 (for testing / fallback) — Menu 4 removed
-    with st.expander("Advanced: open classic menus (for testing / legacy flows)"):
-        c1, c2 = st.columns([1,1])
-        if c1.button("🔍 Menu 1 — Search by Question"):
-            st.session_state.run_menu = "1"; st.rerun()
-        if c2.button("🧩 Menu 2 — Search by Keywords/Theme"):
-            st.session_state.run_menu = "2"; st.rerun()
-
-    st.markdown("</div>", unsafe_allow_html=True)
+    # Default home
+    _home()
 
 if __name__ == "__main__":
     main()
