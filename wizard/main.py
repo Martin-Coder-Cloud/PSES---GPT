@@ -1,8 +1,6 @@
 # wizard/main.py — compact controller for the multi-step Search Wizard
-# Version tag for quick sanity check:
-WIZARD_CONTROLLER_VERSION = "controller-v0.2"
+WIZARD_CONTROLLER_VERSION = "controller-v0.3-no-future"
 
-from __future__ import annotations
 import importlib
 from dataclasses import dataclass
 from typing import Any, Dict, Optional
@@ -40,22 +38,12 @@ def _as_result(obj: Any) -> StepResult:
 
 def _ensure_state() -> None:
     if "wizard" not in st.session_state:
-        st.session_state.wizard = {
-            "question": None,
-            "years": [],
-            "demo": None,
-            "group": None,
-        }
+        st.session_state.wizard = {"question": None, "years": [], "demo": None, "group": None}
     if "wizard_page" not in st.session_state:
         st.session_state.wizard_page = "question"
 
 def _reset_to_start() -> None:
-    st.session_state.wizard = {
-        "question": None,
-        "years": [],
-        "demo": None,
-        "group": None,
-    }
+    st.session_state.wizard = {"question": None, "years": [], "demo": None, "group": None}
     st.session_state.wizard_page = "question"
 
 def _go_to(step_key: str) -> None:
@@ -90,7 +78,7 @@ def _render_step(step_key: str) -> StepResult:
     if step_key == "results":
         mod, fn = ("wizard.results", "render")
         render_results = _import_callable(mod, fn)
-        render_results(st.session_state.wizard)  # draws results page
+        render_results(st.session_state.wizard)  # draws the Results page
         return StepResult(is_valid=True)
 
     mod, fn = mapping.get(step_key, (None, None))
@@ -102,7 +90,7 @@ def _render_step(step_key: str) -> StepResult:
 
 def _header():
     st.markdown(
-        f"""
+        """
         <div style="padding:8px 0 16px 0;">
           <h2 style="margin:0;">PSES AI Explorer — Search Wizard</h2>
           <div style="opacity:.8;">
@@ -160,7 +148,7 @@ def render():
         _go_to(result.next_step)
         st.experimental_rerun()
 
-# Back-compat alias (OK to keep even if router imports render-as-run_wizard)
+# Back-compat alias for your router:
 def run_wizard():
     render()
 
