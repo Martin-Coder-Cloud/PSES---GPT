@@ -1,4 +1,4 @@
-# main.py — homepage (Menu 1 on click only; no router/state)
+# main.py — homepage (Menu 1 on click; proper page switch via state + rerun)
 from __future__ import annotations
 import streamlit as st
 
@@ -10,6 +10,11 @@ except Exception:
     get_backend_info = None
 
 st.set_page_config(layout="wide")
+
+# ── tiny nav helper ──────────────────────────────────────────────────────────
+def goto(page: str):
+    st.session_state["_nav"] = page
+    st.rerun()
 
 # ── Home background + typography (your original CSS) ─────────────────────────
 st.markdown("""
@@ -73,9 +78,9 @@ st.markdown("""
     </style>
 """, unsafe_allow_html=True)
 
-# ── Home view (always rendered first) ────────────────────────────────────────
+# ── Home view ────────────────────────────────────────────────────────────────
 def render_home():
-    # One-time warmup here (no routing state anywhere)
+    # One-time warmup here (only on Home)
     if prewarm_all is not None:
         try:
             with st.spinner("Preparing data backend (one-time)…"):
@@ -120,50 +125,58 @@ def render_home():
     )
 
     st.markdown("<div class='single-button'>", unsafe_allow_html=True)
-    open_menu1 = st.button("▶️ Start your search", key="menu_start_button")
+    if st.button("▶️ Start your search", key="menu_start_button"):
+        goto("menu1")  # ← switch page via state + rerun
     st.markdown("</div>", unsafe_allow_html=True)
 
-    # If clicked, render Menu 1 immediately (no rerun, no state)
-    if open_menu1:
-        render_menu1()
-    else:
-        # Optional: legacy menu links for testing
-        with st.expander("Advanced: open classic menus (for testing / legacy flows)"):
-            c1, c2 = st.columns([1,1])
-            if c1.button("🔍 Menu 1 — Search by Question"):
-                render_menu1()
-            if c2.button("🧩 Menu 2 — Search by Keywords/Theme"):
-                render_menu2()
+    # Optional: legacy links for testing that also switch pages
+    with st.expander("Advanced: open classic menus (for testing / legacy flows)"):
+        c1, c2 = st.columns([1,1])
+        if c1.button("🔍 Menu 1 — Search by Question"):
+            goto("menu1")
+        if c2.button("🧩 Menu 2 — Search by Keywords/Theme"):
+            goto("menu2")
 
     st.markdown("</div>", unsafe_allow_html=True)
 
-# ── Menu wrappers (called only when the user clicks) ─────────────────────────
+# ── Menu wrappers (rendered only when _nav says so) ──────────────────────────
 def render_menu1():
     try:
         from menu1.main import run_menu1
+        run_menu1()
     except Exception as e:
         st.error(f"Menu 1 is unavailable: {type(e).__name__}: {e}")
-        return
-    run_menu1()
     st.markdown("---")
     if st.button("🔙 Return to Main Menu"):
-        st.experimental_rerun()
+        goto("home")
 
 def render_menu2():
     try:
         from menu2.main import run_menu2
+        run_menu2()
     except Exception as e:
         st.error(f"Menu 2 is unavailable: {type(e).__name__}: {e}")
-        return
-    run_menu2()
     st.markdown("---")
     if st.button("🔙 Return to Main Menu", key="back2"):
-        st.experimental_rerun()
+        goto("home")
 
 # ── Entry ────────────────────────────────────────────────────────────────────
 def main():
-    # Important: do NOT read or write any routing keys; no query params either.
-    render_home()
+    # Ensure old router flags can't hijack navigation
+    if "run_menu" in st.session_state:
+        st.session_state.pop("run_menu")
+
+    # Default to Home
+    if "_nav" not in st.session_state:
+        st.session_state["_nav"] = "home"
+
+    page = st.session_state["_nav"]
+    if page == "menu1":
+        render_menu1()
+    elif page == "menu2":
+        render_menu2()
+    else:
+        render_home()
 
 if __name__ == "__main__":
     main()
