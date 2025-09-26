@@ -1,23 +1,26 @@
 # main.py — Home-first router; preload on app load; Home-only background;
-# Canada.ca link + white "Status" expander under CTA; no classic menus link.
+# Canada.ca link + white "Status" expander under CTA; robust loader imports.
 from __future__ import annotations
+import importlib
 import streamlit as st
 
 st.set_page_config(layout="wide")
 
-# Loader hooks (from utils/data_loader.py)
+# ── Import loader module once, pull functions via getattr so missing names don't break imports ──
+_loader_err = ""
+_dl = None
 try:
-    from utils.data_loader import (
-        prewarm_all,
-        get_backend_info,
-        preload_pswide_dataframe,   # for explicit in-memory verification
-        get_last_query_diag,        # optional: show last query stats if needed
-    )
-except Exception:
-    prewarm_all = None
-    get_backend_info = None
-    preload_pswide_dataframe = None
-    get_last_query_diag = None
+    _dl = importlib.import_module("utils.data_loader")
+except Exception as e:
+    _loader_err = f"{type(e).__name__}: {e}"
+
+def _fn(name, default=None):
+    return getattr(_dl, name, default) if _dl else default
+
+prewarm_all              = _fn("prewarm_all")
+get_backend_info         = _fn("get_backend_info")
+preload_pswide_dataframe = _fn("preload_pswide_dataframe")
+get_last_query_diag      = _fn("get_last_query_diag")
 
 # ── tiny nav helper ──────────────────────────────────────────────────────────
 def goto(page: str):
@@ -139,17 +142,28 @@ def render_home():
             st.markdown(f"- **Parquet directory:** `{info.get('parquet_dir')}`")
         if info.get("csv_path"):
             st.markdown(f"- **CSV path:** `{info.get('csv_path')}`")
-        st.markdown("</div>", unsafe_allow_html=True)
 
-        # ── TEMP DIAGNOSTICS (safe, cached) — helps you verify preload actually happened
+        # ── TEMP DIAGNOSTICS — confirm which functions actually imported
+        imported = {
+            "module_loaded": bool(_dl),
+            "prewarm_all": bool(prewarm_all),
+            "get_backend_info": bool(get_backend_info),
+            "preload_pswide_dataframe": bool(preload_pswide_dataframe),
+            "get_last_query_diag": bool(get_last_query_diag),
+            "module_error": _loader_err,
+        }
+        st.markdown("</div>", unsafe_allow_html=True)
+        st.markdown("<div class='status-subtle'>Imports:</div>", unsafe_allow_html=True)
+        st.json(imported)
+
+        # Live in-memory verification (safe/cached)
         st.markdown("<div class='status-subtle'>Diagnostics (temporary):</div>", unsafe_allow_html=True)
         try:
-            if preload_pswide_dataframe is not None:
+            if preload_pswide_dataframe:
                 df_mem = preload_pswide_dataframe()
                 mem_rows = 0 if df_mem is None else int(getattr(df_mem, "shape", [0])[0])
                 st.markdown(f"- In-memory DF rows (live check): **{mem_rows:,}**")
                 if df_mem is not None and not df_mem.empty:
-                    # quick, lightweight facts
                     try:
                         uq = df_mem["question_code"].nunique()
                         st.markdown(f"- Unique questions in memory: **{int(uq)}**")
@@ -162,21 +176,9 @@ def render_home():
                     except Exception:
                         pass
             else:
-                st.caption("• preload_pswide_dataframe() not available to import.")
+                st.caption("• preload_pswide_dataframe() not available.")
         except Exception as e:
             st.caption(f"• Preload verification failed: {type(e).__name__}: {e}")
-
-        # Optional: last query diagnostic (if you already ran a query in Menu 1)
-        try:
-            if get_last_query_diag is not None:
-                last = get_last_query_diag() or {}
-                if last:
-                    st.markdown("<div class='status-subtle'>Last query (if any):</div>", unsafe_allow_html=True)
-                    st.json(last)
-        except Exception:
-            pass
-
-    st.markdown("</div>", unsafe_allow_html=True)
 
 # ── Menu wrappers (no hero background) ───────────────────────────────────────
 def render_menu1():
@@ -208,13 +210,13 @@ def main():
         st.session_state.pop("run_menu")
 
     # Always preload on app load (first run shows spinner; cached afterwards)
-    if prewarm_all is not None:
+    if prewarm_all:
         if not st.session_state.get("_prewarmed", False):
             with st.spinner("Preparing data backend (one-time)…"):
                 prewarm_all()
             st.session_state["_prewarmed"] = True
         else:
-            prewarm_all()  # ensure cached resources available without spinner
+            prewarm_all()  # ensures cached resources available without spinner
 
     # Default to Home
     if "_nav" not in st.session_state:
