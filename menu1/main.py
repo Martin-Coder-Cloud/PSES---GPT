@@ -1,5 +1,5 @@
-# menu1/main.py — PSES AI Explorer (Menu 1: Search by Question)
-# PS-wide only. Big-file single-pass loader. All data read as TEXT. 999/9999 suppressed.
+# menu1/main.py — PSES Explorer Search (Menu 1)
+# PS-wide only. Supports Parquet/in-memory loader outputs (positive_pct etc.).
 from __future__ import annotations
 
 import io
@@ -7,7 +7,6 @@ import json
 import os
 import time
 from datetime import datetime
-from contextlib import contextmanager
 
 import pandas as pd
 import streamlit as st
@@ -16,12 +15,11 @@ import streamlit as st
 import utils.data_loader as _dl
 
 # Safe imports from loader: use only helpers that exist in your loader file
-# (get_backend_info + prewarm_fastpath are present; get_last_query_diag is NOT.)
 try:
     from utils.data_loader import (
         load_results2024_filtered,
-        get_results2024_schema,              # may or may not exist; we don't use it here
-        get_results2024_schema_inferred,     # may or may not exist; we don't use it here
+        get_results2024_schema,              # may or may not exist; not used
+        get_results2024_schema_inferred,     # may or may not exist; not used
     )
 except Exception:
     from utils.data_loader import load_results2024_filtered  # type: ignore
@@ -30,7 +28,7 @@ def get_results2024_schema_inferred(): return {}
 
 # ✅ Available in your loader (used for diagnostics + warmup)
 try:
-    from utils.data_loader import get_backend_info, prewarm_fastpath  # <-- exists in your loader
+    from utils.data_loader import get_backend_info, prewarm_fastpath
 except Exception:
     def get_backend_info(): return {}
     def prewarm_fastpath(): return "csv"
@@ -38,12 +36,8 @@ except Exception:
 # Ensure OpenAI key is available from Streamlit secrets (no hardcoding)
 os.environ.setdefault("OPENAI_API_KEY", st.secrets.get("OPENAI_API_KEY", ""))
 
-# ── Debug/diagnostic visibility toggle ─────────────────────────────────────────
-SHOW_DEBUG = False  # <- set to True to show parameters preview + diagnostics
-
-# Stable alias
+SHOW_DEBUG = False  # toggle diagnostics
 PD = pd
-
 
 # ─────────────────────────────
 # Cached metadata
@@ -73,14 +67,6 @@ def _normalize_qcode(s: str) -> str:
     s = s.upper()
     return "".join(ch for ch in s if ch.isalnum())
 
-def _norm_q(x: str) -> str:
-    if x is None:
-        return ""
-    s = str(x).upper().strip()
-    s = s.replace(" ", "").replace("_", "").replace("-", "").replace(".", "")
-    aliases = {"D571": "Q571", "D572": "Q572"}
-    return aliases.get(s, s)
-
 @st.cache_data(show_spinner=False)
 def load_scales_metadata() -> pd.DataFrame:
     primary = "metadata/Survey Scales.xlsx"
@@ -98,9 +84,13 @@ def load_scales_metadata() -> pd.DataFrame:
     if code_col is None:
         return sdf
 
-    sdf["__code_norm__"] = sdf[code_col].astype(str).map(_normalize_qcode)
-    return sdf
+    def _normalize_qcode_local(s: str) -> str:
+        s = "" if s is None else str(s)
+        s = s.upper()
+        return "".join(ch for ch in s if ch.isalnum())
 
+    sdf["__code_norm__"] = sdf[code_col].astype(str).map(_normalize_qcode_local)
+    return sdf
 
 # ─────────────────────────────
 # Helpers
@@ -161,7 +151,7 @@ def get_scale_labels(scales_df: pd.DataFrame, question_code: str):
     qnorm = _normalize_qcode(question_code)
     if "__code_norm__" not in scales_df.columns:
         return None
-    match = scales_df[sdf := (scales_df["__code_norm__"] == qnorm)]
+    match = scales_df[scales_df["__code_norm__"] == qnorm]
     if match.empty:
         return None
     row = match.iloc[0]
@@ -175,19 +165,17 @@ def get_scale_labels(scales_df: pd.DataFrame, question_code: str):
     return pairs if pairs else None
 
 def exclude_999_raw(df: pd.DataFrame) -> pd.DataFrame:
-    """
-    Replace 999/9999 with NA (do NOT drop rows), so partially valid rows remain.
-    """
     if df is None or df.empty:
         return df
     out = df.copy()
-    candidates = [f"answer{i}" for i in range(1, 7 + 1)] + ["POSITIVE", "NEUTRAL", "NEGATIVE", "ANSCOUNT", "AGREE", "YES",
-                                                             "positive_pct", "neutral_pct", "negative_pct", "n"]
+    candidates = [f"answer{i}" for i in range(1, 7 + 1)] + [
+        "POSITIVE", "NEUTRAL", "NEGATIVE", "ANSCOUNT", "AGREE", "YES",
+        "positive_pct", "neutral_pct", "negative_pct", "n"
+    ]
     present = [c for c in candidates if c in out.columns]
     for c in present:
         s = out[c].astype(str).str.strip()
         mask = (s == "999") | (s == "9999")
-        # also catch numeric 999/9999
         mask |= pd.to_numeric(out[c], errors="coerce").isin([999, 9999])
         out.loc[mask, c] = pd.NA
     return out
@@ -205,7 +193,6 @@ def format_display_table_raw(df, category_in_play, dem_disp_map, scale_pairs) ->
             if key == "":
                 return "All respondents"
             return dem_disp_map.get(key, str(code))
-        # DEMCODE in CSV fallback, group_value in Parquet
         dem_src = "DEMCODE" if "DEMCODE" in out.columns else "group_value"
         out["Demographic"] = out[dem_src].apply(to_label)
 
@@ -228,11 +215,10 @@ def format_display_table_raw(df, category_in_play, dem_disp_map, scale_pairs) ->
     if drop_all_na:
         out = out.drop(columns=drop_all_na)
 
-    # NEW: filter out rows where ALL core metrics are NA (after 9999→NA)
+    # Filter out rows where ALL key metrics are NA
     core_candidates = []
-    core_candidates += ["POSITIVE", "AGREE"]
+    core_candidates += [c for c in ["POSITIVE", "AGREE", "positive_pct"] if c in out.columns]
     core_candidates += [c for c in answer_label_cols if c in out.columns]
-    core_candidates = [c for c in core_candidates if c in out.columns]
     if core_candidates:
         mask_any = PD.Series(False, index=out.index)
         for c in core_candidates:
@@ -244,48 +230,52 @@ def format_display_table_raw(df, category_in_play, dem_disp_map, scale_pairs) ->
     out = out.sort_values(sort_cols, ascending=sort_asc, kind="mergesort").reset_index(drop=True)
     return out
 
-
 # ─────────────────────────────
-# Metric decision (matches requested rule)
+# Metric decision (Summary + AI)
 # ─────────────────────────────
 def detect_metric_mode(df_disp: pd.DataFrame, scale_pairs) -> dict:
     """
-    Choose metric for both Summary (if applicable) and AI analysis using the rule:
-      1) POSITIVE if it has data
-      2) else AGREE if it has data
-      3) else first Answer (Answer1..7 label) with data
-    Also returns a flag 'summary_allowed' which is True only if mode is POSITIVE or AGREE.
+    Rule (updated to support parquet/in-memory columns):
+      1) positive_pct if it has data  → summary allowed
+      2) POSITIVE if it has data      → summary allowed
+      3) AGREE   if it has data      → summary allowed
+      4) else first Answer label with data (summary not allowed)
     """
     cols_l = {c.lower(): c for c in df_disp.columns}
 
-    # POSITIVE
+    # 1) positive_pct (normalized parquet/in-memory)
+    if "positive_pct" in cols_l:
+        col = cols_l["positive_pct"]
+        if PD.to_numeric(df_disp[col], errors="coerce").notna().any():
+            return {"mode": "positive_pct", "metric_col": col, "ui_label": "(% positive answers)", "metric_label": "% positive", "summary_allowed": True}
+
+    # 2) POSITIVE (CSV/raw)
     if "positive" in cols_l:
         col = cols_l["positive"]
         if PD.to_numeric(df_disp[col], errors="coerce").notna().any():
-            return {"mode":"positive","metric_col":col,"ui_label":"(% positive answers)","metric_label":"% positive","summary_allowed":True}
+            return {"mode": "positive", "metric_col": col, "ui_label": "(% positive answers)", "metric_label": "% positive", "summary_allowed": True}
 
-    # AGREE
+    # 3) AGREE
     if "agree" in cols_l:
         col = cols_l["agree"]
         if PD.to_numeric(df_disp[col], errors="coerce").notna().any():
-            return {"mode":"agree","metric_col":col,"ui_label":"(% agree)","metric_label":"% agree","summary_allowed":True}
+            return {"mode": "agree", "metric_col": col, "ui_label": "(% agree)", "metric_label": "% agree", "summary_allowed": True}
 
-    # First answer label with data
+    # 4) First answer label with data
     if scale_pairs:
         for k, v in scale_pairs:
             label = v  # renamed label appearing in df_disp
             if label in df_disp.columns and PD.to_numeric(df_disp[label], errors="coerce").notna().any():
-                return {"mode":k.lower(),"metric_col":label,"ui_label":f"(% {label})","metric_label":f"% {label}","summary_allowed":False}
+                return {"mode": k.lower(), "metric_col": label, "ui_label": f"(% {label})", "metric_label": f"% {label}", "summary_allowed": False}
 
-    # Nothing found — default to POSITIVE but summary not allowed
-    return {"mode":"none","metric_col":cols_l.get("positive","POSITIVE"),"ui_label":"(% positive answers)","metric_label":"% positive","summary_allowed":False}
-
+    # Nothing found — default to positive label, summary not allowed
+    fallback_col = cols_l.get("positive_pct", cols_l.get("positive", "POSITIVE"))
+    return {"mode": "none", "metric_col": fallback_col, "ui_label": "(% positive answers)", "metric_label": "% positive", "summary_allowed": False}
 
 # ─────────────────────────────
 # Arrow-safe display helper
 # ─────────────────────────────
 def make_arrow_safe(df: pd.DataFrame) -> pd.DataFrame:
-    """Cast object/mixed columns to string for clean Arrow serialization."""
     if df is None or df.empty:
         return df
     out = df.copy()
@@ -293,7 +283,6 @@ def make_arrow_safe(df: pd.DataFrame) -> pd.DataFrame:
         if pd.api.types.is_object_dtype(out[c]):
             out[c] = out[c].astype(str)
     return out
-
 
 # ─────────────────────────────
 # AI helpers (compact)
@@ -376,7 +365,6 @@ def _ai_narrative_and_storytable(df_disp, question_code, question_text, category
     data = _ai_build_payload_single_metric(df_disp, question_code, question_text, category_in_play, metric_col)
     model_name = (st.secrets.get("OPENAI_MODEL") or "gpt-4o-mini").strip()
 
-    # Prompt change: "minimal ≤2" (was "normal ≤2")
     system = (
         "You are preparing insights for the Government of Canada’s Public Service Employee Survey (PSES).\n\n"
         "Context\n"
@@ -413,7 +401,8 @@ def _ai_narrative_and_storytable(df_disp, question_code, question_text, category
     st.session_state["last_ai_system"] = system
     st.session_state["last_ai_user"] = user
 
-    kwargs = dict(model=model_name, temperature=temperature, response_format={"type": "json_object"}, messages=[{"role": "system", "content": system}, {"role": "user", "content": user}])
+    kwargs = dict(model=model_name, temperature=temperature, response_format={"type": "json_object"},
+                  messages=[{"role": "system", "content": system}, {"role": "user", "content": user}])
     content, hint = _call_openai_with_retry(client, **kwargs)
     if not content: return {"narrative": "", "hint": hint or "no_content"}
     try:
@@ -425,45 +414,11 @@ def _ai_narrative_and_storytable(df_disp, question_code, question_text, category
 
     n = out.get("narrative", "")
     if isinstance(n, (dict, list)):
-        n = (n.get("text", "") if isinstance(n, dict) and "text" in n
-             else json.dumps(n, ensure_ascii=False))
+        n = (n.get("text", "") if isinstance(n, dict) and "text" in n else json.dumps(n, ensure_ascii=False))
     else:
         n = str(n)
 
     return {"narrative": n.strip(), "hint": ""}
-
-
-# ─────────────────────────────
-# 🔎 AI Health Check (auto, no button)
-# ─────────────────────────────
-def run_ai_health_check():
-    try:
-        from openai import OpenAI
-    except Exception:
-        return {"status": "error", "detail": "missing_sdk"}
-    key = os.environ.get("OPENAI_API_KEY", "").strip()
-    if not key:
-        return {"status": "warn", "detail": "missing_api_key"}
-    model_name = (st.secrets.get("OPENAI_MODEL") or "gpt-4o-mini").strip()
-    client = OpenAI()
-    system = "You are a minimal health check. Reply with exactly: OK."
-    user = "Say OK."
-    t0 = time.perf_counter()
-    try:
-        comp = client.chat.completions.create(model=model_name, messages=[{"role": "system", "content": system}, {"role": "user", "content": user}], temperature=0, timeout=10.0)
-        content = comp.choices[0].message.content.strip() if comp.choices else ""
-        dt_ms = int((time.perf_counter() - t0) * 1000)
-        if content.upper().startswith("OK"):
-            return {"status": "ok", "detail": f"model={model_name}, ~{dt_ms} ms"}
-        return {"status": "info", "detail": f"unexpected reply (~{dt_ms} ms): {content[:60]}"}
-    except Exception as e:
-        name = type(e).__name__.lower()
-        if "authentication" in name or "auth" in name: return {"status": "error", "detail": "invalid_api_key"}
-        if "timeout" in name or "timedout" in name:   return {"status": "error", "detail": "timeout"}
-        if "rate" in name and "limit" in name:        return {"status": "error", "detail": "rate_limit"}
-        if "connection" in name or "network" in name: return {"status": "error", "detail": "network_error"}
-        return {"status": "error", "detail": name or "unknown_error"}
-
 
 # ─────────────────────────────
 # Summary trend table builder
@@ -494,7 +449,6 @@ def build_trend_summary_table(df_disp, category_in_play, metric_col, selected_ye
         pivot[c] = out
     pivot = pivot.reset_index()
     return pivot[["Segment"] + years]
-
 
 # ─────────────────────────────
 # Report (PDF) builder
@@ -534,12 +488,18 @@ def build_pdf_report(question_code, question_text, selected_years, dem_display, 
         flow.append(Spacer(1, 10)); flow.append(Paragraph("Summary Table", h2))
         data = [df_summary.columns.tolist()] + df_summary.astype(str).values.tolist()
         tbl = Table(data, repeatRows=1)
-        tbl.setStyle(TableStyle([("BACKGROUND",(0,0),(-1,0),colors.HexColor("#F0F0F0")),("TEXTCOLOR",(0,0),(-1,0),colors.black),("ALIGN",(0,0),(-1,-1),"LEFT"),("FONTNAME",(0,0),(-1,0),"Helvetica-Bold"),("BOTTOMPADDING",(0,0),(-1,0),6),("GRID",(0,0),(-1,-1),0.25,colors.HexColor("#CCCCCC"))]))
+        tbl.setStyle(TableStyle([
+            ("BACKGROUND",(0,0),(-1,0),colors.HexColor("#F0F0F0")),
+            ("TEXTCOLOR",(0,0),(-1,0),colors.black),
+            ("ALIGN",(0,0),(-1,-1),"LEFT"),
+            ("FONTNAME",(0,0),(-1,0),"Helvetica-Bold"),
+            ("BOTTOMPADDING",(0,0),(-1,0),6),
+            ("GRID",(0,0),(-1,-1),0.25,colors.HexColor("#CCCCCC"))
+        ]))
         flow.append(tbl)
 
     doc.build(flow)
     return buf.getvalue()
-
 
 # ─────────────────────────────
 # Backend detect (soft)
@@ -554,7 +514,6 @@ def _detect_backend():
             return getattr(_dl, "BACKEND_IN_USE")
     except Exception:
         pass
-    # soft guess
     try:
         import pyarrow  # noqa
         if get_backend_info().get("parquet_ready"):
@@ -562,7 +521,6 @@ def _detect_backend():
     except Exception:
         pass
     return "csv"
-
 
 # ─────────────────────────────
 # Lightweight profiler
@@ -581,7 +539,6 @@ class Profiler:
         finally:
             dt = time.perf_counter() - t0
             self.steps.append((name, dt))
-
 
 # ─────────────────────────────
 # UI
@@ -602,14 +559,13 @@ def run_menu1():
         unsafe_allow_html=True,
     )
 
-    # 🔸 Optional one-time prewarm on first open of Menu 1
+    # One-time prewarm on first open of Menu 1
     if not st.session_state.get("prewarmed_once"):
         try:
             with st.spinner("⚡ Preparing fast path (one-time)…"):
-                prewarm_fastpath()  # builds Parquet if possible, else ensures CSV
+                prewarm_fastpath()
             st.session_state["prewarmed_once"] = True
         except Exception:
-            # Non-fatal: we still run on CSV fallback
             st.session_state["prewarmed_once"] = True
 
     demo_df = load_demographics_metadata()
@@ -618,7 +574,7 @@ def run_menu1():
 
     # Auto-run AI health check once per session
     if st.session_state.get("ai_health_checked") is None:
-        st.session_state["ai_health_result"] = run_ai_health_check()
+        st.session_state["ai_health_result"] = {"status": "skip"}  # optional: call a real check
         st.session_state["ai_health_checked"] = True
 
     left, center, right = st.columns([1, 2, 1])
@@ -628,8 +584,9 @@ def run_menu1():
             "src='https://raw.githubusercontent.com/Martin-Coder-Cloud/PSES---GPT/main/PSES%20Banner%20New.png'>",
             unsafe_allow_html=True,
         )
-        st.markdown('<div class="custom-header">🔍 Search by Survey Question</div>', unsafe_allow_html=True)
-        # Description (updated previously)
+        # 🔁 Title change here
+        st.markdown('<div class="custom-header">🔍 PSES Explorer Search</div>', unsafe_allow_html=True)
+
         st.markdown(
             '<div class="custom-instruction">Please select a question you are interested in, the survey year and, optionally, a demographic breakdown.<br>'
             'This application provides only Public Service-wide results. The output is a summary and a detailed results table with a short analysis.</div>',
@@ -689,7 +646,7 @@ def run_menu1():
         dem_display = ["All respondents" if c is None else str(c).strip() for c in demcodes]
 
         # ──────────────────────────────────────────────────────────────────
-        # Run query (single pass, cached big file)
+        # Run query
         # ──────────────────────────────────────────────────────────────────
         if st.button("🔎 Run query"):
             engine_guess = _detect_backend()
@@ -711,6 +668,7 @@ def run_menu1():
                 # 2) Load data
                 with prof.step("Load data", live=status_line, engine=engine_guess, t0_global=t0_global):
                     try:
+                        # some loaders accept group_values (list); fallback to one-by-one
                         df_raw = load_results2024_filtered(question_code=question_code, years=selected_years, group_values=demcodes)  # type: ignore[arg-type]
                     except TypeError:
                         parts = []
@@ -764,12 +722,12 @@ def run_menu1():
             # ---------------- Results ----------------
             st.subheader(f"{question_code} — {question_text}")
 
-            # Decide metric (POSITIVE → AGREE → first Answer)
+            # Decide metric (now supports positive_pct)
             decision = detect_metric_mode(df_disp, scale_pairs)
             metric_col = decision["metric_col"]; ui_label = decision["ui_label"]; metric_label = decision["metric_label"]
             summary_allowed = bool(decision.get("summary_allowed", False))
 
-            # Build trend summary only if allowed (POSITIVE/AGREE)
+            # Build trend summary only if allowed
             trend_t0 = time.perf_counter()
             trend_df = PD.DataFrame()
             if summary_allowed:
@@ -785,7 +743,6 @@ def run_menu1():
                     st.dataframe(make_arrow_safe(trend_df), use_container_width=True, hide_index=True)
                 else:
                     st.info("Summary table is unavailable for this selection, please see detailed results table.")
-                # Source link
                 st.markdown(
                     "Source: [2024 Public Service Employee Survey Results - Open Government Portal]"
                     "(https://open.canada.ca/data/en/dataset/7f625e97-9d02-4c12-a756-1ddebb50e69f)"
@@ -796,7 +753,7 @@ def run_menu1():
                 st.dataframe(df_disp_display, use_container_width=True)
                 st.caption(f"Backend engine: {engine_guess}")
 
-            # Narrative AFTER tabs with requested title — uses the same metric rule
+            # Narrative AFTER tabs — uses the same metric rule
             st.markdown("### Analysis Summary")
             st.markdown(f"<div class='q-sub'>{question_code} — {question_text}</div><div class='tiny-note'>{ui_label}</div>", unsafe_allow_html=True)
 
@@ -811,7 +768,7 @@ def run_menu1():
                         question_code=question_code,
                         question_text=question_text,
                         category_in_play=category_in_play,
-                        metric_col=metric_col,      # POSITIVE→AGREE→first Answer with data
+                        metric_col=metric_col,
                         metric_label=metric_label,
                         temperature=0.2
                     )
@@ -838,7 +795,7 @@ def run_menu1():
             else:
                 st.caption("AI analysis is disabled (toggle above).")
 
-            # Downloads (Summary sheet only when summary_allowed)
+            # Downloads
             with io.BytesIO() as xbuf:
                 with PD.ExcelWriter(xbuf, engine="xlsxwriter") as writer:
                     df_disp.to_excel(writer, sheet_name="Results", index=False)
@@ -880,7 +837,7 @@ def run_menu1():
             else:
                 st.caption("PDF export unavailable (install `reportlab` in requirements to enable).")
 
-            # ── Persist diagnostics for Diagnostics → Loading details tab
+            # Persist diagnostics
             try:
                 backend = get_backend_info() or {}
             except Exception:
