@@ -1,7 +1,6 @@
 # Menu1/main.py — PSES AI Explorer (Menu 1: PSES Explorer Search)
 # Multi-question support (max 5). Hybrid keyword search with threshold & up to 120 hits.
 # Persistent selection + visible "Selected questions" checklist.
-# FIX: Search results persist across reruns; selections from hits are retained.
 # NOTE: No changes to any AI prompt logic.
 
 import io
@@ -98,7 +97,7 @@ def run_menu1():
         )
 
         # Header + instructions (per Step 1)
-        st.markdown('<div class="custom-header">🔍 PSES Explorer Search</div>', unsafe_allow_html=True)
+        st.markdown('<div class="custom-header">PSES Explorer Search</div>', unsafe_allow_html=True)
         st.markdown("""
             <div class="custom-instruction">
                 Please use this menu to explore the survey results by questions.<br>
@@ -134,7 +133,7 @@ def run_menu1():
                 combined.append(c)
 
         # 2) Keyword/theme search (hybrid) with persistent results
-        with st.expander("🔎 Search by keywords or theme (optional)"):
+        with st.expander("Search by keywords or theme (optional)"):
             search_query = st.text_input("Enter keywords (e.g., harassment, recognition, onboarding)", key="menu1_kw_query")
             # Pressing this button stores hits in session_state, so they persist after reruns
             if st.button("Search questions", key="menu1_find_hits"):
@@ -156,8 +155,7 @@ def run_menu1():
                         if len(combined) < 5:
                             combined.append(code)
                         else:
-                            st.warning("Limit is 5 questions. Uncheck another question to add this one.", icon=⚠️")
-                            # Optionally force-uncheck if over-cap:
+                            st.warning("Limit is 5 questions. Uncheck another question to add this one.")
                             st.session_state[f"kwhit_{code}"] = False
                     if not checked and code in combined:
                         combined = [c for c in combined if c != code]
@@ -167,7 +165,7 @@ def run_menu1():
         # Enforce max 5
         if len(combined) > 5:
             combined = combined[:5]
-            st.warning("Limit is 5 questions; extra selections were ignored.", icon="⚠️")
+            st.warning("Limit is 5 questions; extra selections were ignored.")
 
         # Persist the selection
         st.session_state["menu1_selected_codes"] = combined
@@ -235,7 +233,7 @@ def run_menu1():
                     selected_years.append(yr)
         selected_years = sorted(selected_years)
         if not selected_years:
-            st.warning("⚠️ Please select at least one year.")
+            st.warning("Please select at least one year.")
             return
 
         # =========================
@@ -272,7 +270,7 @@ def run_menu1():
         with st.container():
             st.markdown('<div class="big-button">', unsafe_allow_html=True)
             disable_search = not bool(question_codes)
-            if st.button("🔎 Search", disabled=disable_search):
+            if st.button("Search", disabled=disable_search):
                 # 1) Resolve DEMCODE(s)
                 demcodes, disp_map, category_in_play = resolve_demographic_codes(demo_df, demo_selection, sub_selection)
 
@@ -404,7 +402,7 @@ def run_menu1():
                     data = buf.getvalue()
 
                 st.download_button(
-                    label="⬇️ Download Excel (Summary + all tabs)",
+                    label="Download Excel (Summary + all tabs)",
                     data=data,
                     file_name=f"PSES_multiQ_{'-'.join(map(str, selected_years))}.xlsx",
                     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
