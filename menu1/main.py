@@ -1,6 +1,7 @@
 # Menu1/main.py — PSES AI Explorer (Menu 1: PSES Explorer Search)
 # Multi-question support (max 5). Hybrid keyword search with threshold & up to 120 hits.
 # Persistent selection + visible "Selected questions" checklist.
+# Added: Auto-reset on entry (via last_active_menu) + "Reset all parameters" button.
 # NOTE: No changes to any AI prompt logic.
 
 import io
@@ -58,6 +59,36 @@ def load_scales_metadata() -> pd.DataFrame:
 
 
 # ─────────────────────────────
+# Reset helpers
+# ─────────────────────────────
+def _delete_keys(prefixes: List[str], exact_keys: List[str] = None):
+    exact_keys = exact_keys or []
+    for k in list(st.session_state.keys()):
+        if any(k.startswith(p) for p in prefixes) or (k in exact_keys):
+            try:
+                del st.session_state[k]
+            except Exception:
+                pass
+
+def reset_menu1_state():
+    # Clear all Menu 1 specific state, including dynamic checkboxes created for hits/selected items/years
+    year_keys = [f"year_{y}" for y in (2024, 2022, 2020, 2019)]
+    exact = [
+        "menu1_selected_codes",
+        "menu1_hits",
+        "menu1_kw_query",
+        "menu1_multi_questions",
+        "select_all_years",
+        "demo_main",
+        "question_dropdown",
+        "menu1_clear_sel",
+        "menu1_find_hits",
+    ] + year_keys
+    prefixes = ["kwhit_", "sel_", "sub_"]  # search-hit boxes, selected-list boxes, subgroup selectors
+    _delete_keys(prefixes, exact)
+
+
+# ─────────────────────────────
 # UI
 # ─────────────────────────────
 def run_menu1():
@@ -71,10 +102,18 @@ def run_menu1():
             .field-label { font-size: 18px !important; font-weight: 600 !important; margin-top: 12px !important; margin-bottom: 2px !important; color: #222 !important; }
             .big-button button { font-size: 18px !important; padding: 0.75em 2em !important; margin-top: 20px; }
             .pill { display:inline-block; padding:4px 8px; margin:2px 6px 2px 0; background:#f1f3f5; border-radius:999px; font-size:13px; }
+            .reset-row { display:flex; gap:8px; align-items:center; margin: 6px 0 16px 0; }
         </style>
     """, unsafe_allow_html=True)
 
-    # Session state for persistent question selection & hits
+    # ── Auto-reset on entry based on app-level router flag (if provided)
+    # If your main page sets st.session_state["last_active_menu"] when switching menus,
+    # this will reset every time you arrive on Menu 1 from elsewhere.
+    if st.session_state.get("last_active_menu") != "menu1":
+        reset_menu1_state()
+    st.session_state["last_active_menu"] = "menu1"
+
+    # Ensure base containers exist after possible reset
     if "menu1_selected_codes" not in st.session_state:
         st.session_state["menu1_selected_codes"] = []
     if "menu1_hits" not in st.session_state:
@@ -97,7 +136,7 @@ def run_menu1():
         )
 
         # Header + instructions (per Step 1)
-        st.markdown('<div class="custom-header">PSES Explorer Search</div>', unsafe_allow_html=True)
+        st.markdown('<div class="custom-header">🔍 PSES Explorer Search</div>', unsafe_allow_html=True)
         st.markdown("""
             <div class="custom-instruction">
                 Please use this menu to explore the survey results by questions.<br>
@@ -105,6 +144,13 @@ def run_menu1():
                 Select year(s) and optionally a demographic category and subgroup.
             </div>
         """, unsafe_allow_html=True)
+
+        # Reset-all control
+        st.markdown("<div class='reset-row'>", unsafe_allow_html=True)
+        if st.button("Reset all parameters"):
+            reset_menu1_state()
+            st.experimental_rerun()
+        st.markdown("</div>", unsafe_allow_html=True)
 
         # =========================
         # Question selection area
@@ -135,15 +181,13 @@ def run_menu1():
         # 2) Keyword/theme search (hybrid) with persistent results
         with st.expander("Search by keywords or theme (optional)"):
             search_query = st.text_input("Enter keywords (e.g., harassment, recognition, onboarding)", key="menu1_kw_query")
-            # Pressing this button stores hits in session_state, so they persist after reruns
             if st.button("Search questions", key="menu1_find_hits"):
                 hits_df = hybrid_question_search(qdf, search_query, top_k=120, min_score=0.40)
                 if hits_df.empty:
-                    st.session_state["menu1_hits"] = []  # no matches
+                    st.session_state["menu1_hits"] = []
                 else:
                     st.session_state["menu1_hits"] = hits_df[["code", "text"]].to_dict(orient="records")
 
-            # Always render whatever hits are stored (so they don't disappear)
             if st.session_state["menu1_hits"]:
                 st.write(f"Top {len(st.session_state['menu1_hits'])} matches meeting the quality threshold:")
                 for rec in st.session_state["menu1_hits"]:
@@ -181,14 +225,12 @@ def run_menu1():
                     keep = st.checkbox(label, value=True, key=f"sel_{code}")
                     if not keep:
                         updated = [c for c in updated if c != code]
-                        # Also uncheck in hits list if present
                         hit_key = f"kwhit_{code}"
                         if hit_key in st.session_state:
                             st.session_state[hit_key] = False
             clear = st.button("Clear all selected questions", key="menu1_clear_sel")
             if clear:
                 updated = []
-                # also clear all hit checkboxes
                 for rec in st.session_state.get("menu1_hits", []):
                     hk = f"kwhit_{rec['code']}"
                     if hk in st.session_state:
