@@ -1,10 +1,11 @@
-# main.py — Home-first router; preload on app load; Home-only background; status footer on Home
+# main.py — Home-first router; preload on app load; Home-only background;
+# Canada.ca link + white "Status" expander under CTA; no classic menus link.
 from __future__ import annotations
 import streamlit as st
 
 st.set_page_config(layout="wide")
 
-# Loader hooks (must exist in utils/data_loader.py per our latest loader)
+# Loader hooks (from utils/data_loader.py)
 try:
     from utils.data_loader import prewarm_all, get_backend_info
 except Exception:
@@ -31,44 +32,9 @@ def _clear_bg_css():
         </style>
     """, unsafe_allow_html=True)
 
-# ── compact status footer (Home page) ────────────────────────────────────────
-def _status_footer():
-    info = {}
-    try:
-        info = (get_backend_info() or {})
-    except Exception:
-        pass
-
-    mc = info.get("metadata_counts", {}) or {}
-    q = mc.get("questions", 0)
-    s = mc.get("scales", 0)
-    d = mc.get("demographics", 0)
-
-    engine = info.get("last_engine", "?")
-    inmem  = info.get("inmem_mode", "none")
-    rows   = info.get("inmem_rows", 0)
-    pswide = "Yes" if info.get("pswide_only") else "No"
-
-    st.markdown("---")
-    st.subheader("Status")
-    c1, c2 = st.columns([1, 1])
-    with c1:
-        st.markdown(f"**Engine:** `{engine}`")
-        st.markdown(f"**In-memory:** `{inmem}` — **{rows:,}** rows")
-        if info.get("parquet_dir"):
-            st.caption(f"Parquet: {info.get('parquet_dir')}")
-        if info.get("csv_path"):
-            st.caption(f"CSV: {info.get('csv_path')}")
-    with c2:
-        st.markdown("**Metadata**")
-        st.markdown(f"- Questions: **{q}**")
-        st.markdown(f"- Scales: **{s}**")
-        st.markdown(f"- Demographics: **{d}**")
-        st.caption(f"PS-wide only: {pswide}")
-
-# ── Home view (injects background CSS locally) ───────────────────────────────
+# ── Home view (hero background, CTA, Canada.ca link, Status expander) ────────
 def render_home():
-    # Home background + typography (scoped to this view only)
+    # Scoped styles for Home view
     st.markdown("""
         <style>
             .block-container {
@@ -94,12 +60,17 @@ def render_home():
                 border-radius: 14px !important; text-align: left !important; backdrop-filter: blur(2px);
             }
             div.stButton > button:hover { border-color: white !important; background-color: rgba(255, 255, 255, 0.14) !important; }
+            /* White expander summary like your "Advanced" look */
             div[data-testid="stExpander"] > details > summary { color: #fff; font-size: 16px; }
+            /* Make links readable on the hero background */
+            .main-section a { color: #fff !important; text-decoration: underline; }
+            .status-lines { font-size: 14px; line-height: 1.4; }
         </style>
     """, unsafe_allow_html=True)
 
     st.markdown("<div class='main-section'>", unsafe_allow_html=True)
 
+    # Title & intro
     st.markdown(
         "<div class='main-title'>Welcome to the AI-powered Explorer of the Public Service Employee Survey (PSES)</div>",
         unsafe_allow_html=True
@@ -125,17 +96,52 @@ def render_home():
         goto("menu1")
     st.markdown("</div>", unsafe_allow_html=True)
 
-    # Status footer (below the button)
-    _status_footer()
+    # Canada.ca link (directly under the CTA)
+    st.markdown(
+        "<div class='context'>"
+        "<a href='https://www.canada.ca/en/treasury-board-secretariat/services/innovation/public-service-employee-survey.html' target='_blank'>"
+        "Public Service Employee Survey - Canada.ca</a>"
+        "</div>",
+        unsafe_allow_html=True
+    )
 
-    # Optional: legacy/testing link
-    with st.expander("Advanced: open classic menus (for testing / legacy flows)"):
-        if st.button("🧩 Menu 2 — Search by Keywords/Theme"):
-            goto("menu2")
+    # White "Status" expander (one item per line)
+    with st.expander("Status", expanded=False):
+        info = {}
+        try:
+            info = (get_backend_info() or {})
+        except Exception:
+            info = {}
+
+        mc = info.get("metadata_counts", {}) or {}
+        q = mc.get("questions", 0)
+        s = mc.get("scales", 0)
+        d = mc.get("demographics", 0)
+
+        engine = info.get("last_engine", "?")
+        inmem  = info.get("inmem_mode", "none")
+        rows   = info.get("inmem_rows", 0)
+        pswide = "Yes" if info.get("pswide_only") else "No"
+        parquet_dir = info.get("parquet_dir")
+        csv_path    = info.get("csv_path")
+
+        st.markdown("<div class='status-lines'>", unsafe_allow_html=True)
+        st.markdown(f"- **Engine:** {engine}")
+        st.markdown(f"- **In-memory:** {inmem}")
+        st.markdown(f"- **Rows in memory:** {rows:,}")
+        st.markdown(f"- **PS-wide only:** {pswide}")
+        st.markdown(f"- **Questions (metadata):** {q}")
+        st.markdown(f"- **Scales (metadata):** {s}")
+        st.markdown(f"- **Demographics (metadata):** {d}")
+        if parquet_dir:
+            st.markdown(f"- **Parquet directory:** `{parquet_dir}`")
+        if csv_path:
+            st.markdown(f"- **CSV path:** `{csv_path}`")
+        st.markdown("</div>", unsafe_allow_html=True)
 
     st.markdown("</div>", unsafe_allow_html=True)
 
-# ── Menu wrappers (clear background before rendering) ────────────────────────
+# ── Menu wrappers (no hero background) ───────────────────────────────────────
 def render_menu1():
     _clear_bg_css()
     try:
@@ -164,15 +170,14 @@ def main():
     if "run_menu" in st.session_state:
         st.session_state.pop("run_menu")
 
-    # Always preload on app load (first run shows spinner; cached afterward)
+    # Always preload on app load (first run shows spinner; cached afterwards)
     if prewarm_all is not None:
         if not st.session_state.get("_prewarmed", False):
             with st.spinner("Preparing data backend (one-time)…"):
                 prewarm_all()
             st.session_state["_prewarmed"] = True
         else:
-            # No spinner, but ensure cached resources are available
-            prewarm_all()
+            prewarm_all()  # ensure cached resources available without spinner
 
     # Default to Home
     if "_nav" not in st.session_state:
