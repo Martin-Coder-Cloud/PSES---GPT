@@ -1,6 +1,7 @@
 # Menu1/main.py — PSES AI Explorer (Menu 1: PSES Explorer Search)
 # Multi-question support (max 5). Hybrid keyword search with threshold & up to 120 hits.
 # Persistent selection + visible "Selected questions" checklist.
+# FIX: Search results persist across reruns; selections from hits are retained.
 # NOTE: No changes to any AI prompt logic.
 
 import io
@@ -74,9 +75,11 @@ def run_menu1():
         </style>
     """, unsafe_allow_html=True)
 
-    # Session state for persistent question selection
+    # Session state for persistent question selection & hits
     if "menu1_selected_codes" not in st.session_state:
         st.session_state["menu1_selected_codes"] = []
+    if "menu1_hits" not in st.session_state:
+        st.session_state["menu1_hits"] = []  # list of dicts: {"code":..., "text":...}
 
     demo_df = load_demographics_metadata()
     qdf = load_questions_metadata()
@@ -119,44 +122,47 @@ def run_menu1():
             label_visibility="collapsed",
             key="menu1_multi_questions"
         )
-        # Translate back to codes and update selection
         codes_from_multi = [display_to_code[d] for d in multi_choices if d in display_to_code]
 
-        # Build final set with cap=5, preserving prior selections where possible
+        # Start building the combined list with prior selection, then overlay from multi-select
         combined = []
-        # start with previously selected (preserve order)
         for c in st.session_state["menu1_selected_codes"]:
             if c not in combined:
                 combined.append(c)
-        # then add from multi-select UI
         for c in codes_from_multi:
             if c not in combined:
                 combined.append(c)
 
-        # 2) Keyword/theme search (hybrid; up to 120 hits; threshold)
+        # 2) Keyword/theme search (hybrid) with persistent results
         with st.expander("🔎 Search by keywords or theme (optional)"):
             search_query = st.text_input("Enter keywords (e.g., harassment, recognition, onboarding)", key="menu1_kw_query")
-            if st.button("Find matching questions", key="menu1_find_hits"):
-                hits = hybrid_question_search(qdf, search_query, top_k=120, min_score=0.40)
-                if hits.empty:
-                    st.info("No matches found for your keywords.")
+            # Pressing this button stores hits in session_state, so they persist after reruns
+            if st.button("Search questions", key="menu1_find_hits"):
+                hits_df = hybrid_question_search(qdf, search_query, top_k=120, min_score=0.40)
+                if hits_df.empty:
+                    st.session_state["menu1_hits"] = []  # no matches
                 else:
-                    st.write(f"Top {len(hits)} matches meeting the quality threshold:")
-                    # Show hits with checkboxes reflecting persistent selection
-                    for _, row in hits.iterrows():
-                        code = row["code"]
-                        label = f"{row['code']} – {row['text']}"
-                        default_checked = code in combined
-                        # Use a stable key
-                        checked = st.checkbox(label, value=default_checked, key=f"kwhit_{code}")
-                        if checked and code not in combined:
-                            if len(combined) < 5:
-                                combined.append(code)
-                            else:
-                                # Cap reached
-                                st.warning("Limit is 5 questions. Uncheck another question to add this one.", icon="⚠️")
-                        if not checked and code in combined:
-                            combined = [c for c in combined if c != code]
+                    st.session_state["menu1_hits"] = hits_df[["code", "text"]].to_dict(orient="records")
+
+            # Always render whatever hits are stored (so they don't disappear)
+            if st.session_state["menu1_hits"]:
+                st.write(f"Top {len(st.session_state['menu1_hits'])} matches meeting the quality threshold:")
+                for rec in st.session_state["menu1_hits"]:
+                    code = rec["code"]; text = rec["text"]
+                    label = f"{code} – {text}"
+                    default_checked = code in combined
+                    checked = st.checkbox(label, value=default_checked, key=f"kwhit_{code}")
+                    if checked and code not in combined:
+                        if len(combined) < 5:
+                            combined.append(code)
+                        else:
+                            st.warning("Limit is 5 questions. Uncheck another question to add this one.", icon=⚠️")
+                            # Optionally force-uncheck if over-cap:
+                            st.session_state[f"kwhit_{code}"] = False
+                    if not checked and code in combined:
+                        combined = [c for c in combined if c != code]
+            else:
+                st.info("Enter keywords and click “Search questions” to see matches.")
 
         # Enforce max 5
         if len(combined) > 5:
@@ -174,14 +180,21 @@ def run_menu1():
             for idx, code in enumerate(st.session_state["menu1_selected_codes"]):
                 with cols[idx % len(cols)]:
                     label = code_to_display.get(code, code)
-                    # A checkbox representing "keep selected"
                     keep = st.checkbox(label, value=True, key=f"sel_{code}")
                     if not keep:
                         updated = [c for c in updated if c != code]
-            # Clear all
+                        # Also uncheck in hits list if present
+                        hit_key = f"kwhit_{code}"
+                        if hit_key in st.session_state:
+                            st.session_state[hit_key] = False
             clear = st.button("Clear all selected questions", key="menu1_clear_sel")
             if clear:
                 updated = []
+                # also clear all hit checkboxes
+                for rec in st.session_state.get("menu1_hits", []):
+                    hk = f"kwhit_{rec['code']}"
+                    if hk in st.session_state:
+                        st.session_state[hk] = False
             if updated != st.session_state["menu1_selected_codes"]:
                 st.session_state["menu1_selected_codes"] = updated
 
@@ -346,7 +359,6 @@ def run_menu1():
                 summary_rows = []
                 for qcode, df_disp in per_q_disp_tables.items():
                     t = df_disp.copy()
-                    # Average across demographics per year if present
                     if "Demographic" in t.columns:
                         grp = t.groupby("Year", as_index=False)["Positive"].mean(numeric_only=True)
                     else:
@@ -358,14 +370,11 @@ def run_menu1():
                 if summary_rows:
                     summary_df = pd.concat(summary_rows, ignore_index=True)
                     pivot = summary_df.pivot_table(index="Question", columns="Year", values="Positive", aggfunc="mean")
-                    # Keep user-selected order
                     pivot = pivot.reindex(index=[qc for qc in question_codes if qc in per_q_disp_tables])
-                    # Sort years ascending
                     pivot = pivot.reindex(sorted(pivot.columns), axis=1)
                     st.markdown("### Summary matrix (% Positive)")
                     st.dataframe(pivot.round(1).reset_index(), use_container_width=True)
 
-                    # Descriptive across-questions roll-up
                     st.markdown("#### Across selected questions (descriptive)")
                     means = pivot.mean(numeric_only=True).round(1)
                     trend_txt = ", ".join([f"{int(y)}: {v:.1f}%" for y, v in zip(pivot.columns, means)])
@@ -379,7 +388,7 @@ def run_menu1():
                             pivot_out.to_excel(writer, sheet_name="Summary_Matrix", index=False)
 
                         for qcode, df_disp in per_q_disp_tables.items():
-                            safe = qcode[:28]  # Excel sheet name <= 31 chars
+                            safe = qcode[:28]
                             df_disp.to_excel(writer, sheet_name=f"{safe}", index=False)
 
                         ctx = {
