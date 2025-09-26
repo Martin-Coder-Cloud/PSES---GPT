@@ -1,10 +1,9 @@
-# utils/data_loader.py — unified loader (metadata + PS-wide data, preloaded)
+# utils/data_loader.py — Parquet-first loader with CSV fallback + metadata + PS-wide in-memory preload
 from __future__ import annotations
 
 import os
-import csv
 import time
-from typing import Iterable, Optional, Dict, Any, List, Tuple
+from typing import Iterable, Optional
 
 import pandas as pd
 import streamlit as st
@@ -13,33 +12,21 @@ import streamlit as st
 # Configuration
 # =============================================================================
 
-# ---- Memory budget for in-memory dataframe (GB) ------------------------------
-# Heuristic: if estimated in-memory size of full PS-wide parquet > budget,
-# we preload only the *latest year* into RAM.
-MEMORY_BUDGET_GB = float(os.environ.get("PSES_INMEM_BUDGET_GB", "3.0"))
-
-# ---- Data locations ----------------------------------------------------------
-# Google Drive CSV.gz (set real ID in Streamlit secrets as RESULTS2024_FILE_ID)
-GDRIVE_FILE_ID_FALLBACK = "1VdMQQfEP-BNXle8GeD-Z_uPIGvc8"  # placeholder
+# Google Drive CSV (set real ID in Streamlit secrets as RESULTS2024_FILE_ID)
+GDRIVE_FILE_ID_FALLBACK = ""  # optional placeholder; prefer st.secrets["RESULTS2024_FILE_ID"]
 LOCAL_GZ_PATH = os.environ.get("PSES_RESULTS_GZ", "/tmp/Results2024.csv.gz")
 
-# Parquet dataset (PS-wide only) — persistent folder
-PARQUET_ROOTDIR = os.environ.get("PSES_PARQUET_DIR", "data/parquet/PSES_Results2024_PSWIDE")
+# Parquet dataset location (directory). Prefer a persistent folder.
+PARQUET_ROOTDIR = os.environ.get("PSES_PARQUET_DIR", "data/parquet/PSES_Results2024")
 PARQUET_FLAG = os.path.join(PARQUET_ROOTDIR, "_BUILD_OK")
 
-# Strict metadata paths (repo-only)
-META_DIR = "metadata"
-QUESTIONS_PATHS = [os.path.join(META_DIR, "Survey Questions.xlsx"),
-                   os.path.join(META_DIR, "Survey Questions.xls")]
-DEMOGRAPHICS_PATH = os.path.join(META_DIR, "Demographics.xlsx")
-SCALES_PATH = os.path.join(META_DIR, "Survey Scales.xlsx")
-
-# ---- Output schema (normalized) ----------------------------------------------
+# Output schema (normalized)
 OUT_COLS = [
     "year", "question_code", "group_value", "n",
     "positive_pct", "neutral_pct", "negative_pct",
     "answer1", "answer2", "answer3", "answer4", "answer5", "answer6", "answer7",
 ]
+
 DTYPES = {
     "year": "Int16",
     "question_code": "string",
@@ -52,16 +39,16 @@ DTYPES = {
     "answer4": "Float32", "answer5": "Float32", "answer6": "Float32", "answer7": "Float32",
 }
 
-# Minimal CSV read for building/query fallback (include LEVEL1ID for PS-wide)
+# Minimal column set to read from CSV (include LEVEL1ID for PS-wide filter)
 CSV_USECOLS = [
-    "LEVEL1ID",
+    "LEVEL1ID",  # may be missing in some exports; handled defensively
     "SURVEYR", "QUESTION", "DEMCODE",
     "ANSCOUNT", "POSITIVE", "NEUTRAL", "NEGATIVE",
     "answer1", "answer2", "answer3", "answer4", "answer5", "answer6", "answer7",
 ]
 
 # =============================================================================
-# Internal diagnostics
+# Internal diagnostics (visible in Menu 1 → Status footer / diagnostics)
 # =============================================================================
 _LAST_DIAG: dict = {}
 _LAST_ENGINE: str = "unknown"
@@ -71,7 +58,11 @@ def _set_diag(**kwargs):
     _LAST_DIAG.update(kwargs)
 
 def get_last_query_diag() -> dict:
-    """Diagnostics for the most recent load_results2024_filtered call."""
+    """
+    Returns diagnostics for the most recent load_results2024_filtered call:
+      { engine, elapsed_ms, rows, question_code, years, group_value,
+        parquet_dir, csv_path, parquet_error }
+    """
     return dict(_LAST_DIAG)
 
 # =============================================================================
@@ -79,104 +70,60 @@ def get_last_query_diag() -> dict:
 # =============================================================================
 def _duckdb_available() -> bool:
     try:
-        import duckdb  # noqa
+        import duckdb  # noqa: F401
         return True
     except Exception:
         return False
 
 def _pyarrow_available() -> bool:
     try:
-        import pyarrow  # noqa
-        import pyarrow.dataset as ds  # noqa
-        import pyarrow.parquet as pq  # noqa
+        import pyarrow  # noqa: F401
+        import pyarrow.dataset as ds  # noqa: F401
+        import pyarrow.parquet as pq  # noqa: F401
         return True
     except Exception:
         return False
 
 # =============================================================================
-# Metadata loaders (repo-only; strict)
-# =============================================================================
-@st.cache_data(show_spinner=False)
-def _load_questions_meta() -> pd.DataFrame:
-    path = next((p for p in QUESTIONS_PATHS if os.path.exists(p)), None)
-    if not path:
-        raise FileNotFoundError("Missing `metadata/Survey Questions.xlsx` (or `.xls`).")
-    df = pd.read_excel(path, dtype=str, engine=None)
-    cols = {c.lower().strip(): c for c in df.columns}
-    if "question" not in cols or "english" not in cols:
-        raise ValueError("`Survey Questions` must have columns 'Question' and 'English'.")
-    df = df.rename(columns={cols["question"]: "code", cols["english"]: "text"})
-    df["code"] = df["code"].astype(str).str.strip()
-    df["text"] = df["text"].astype(str).str.strip()
-    df["qnum"] = pd.to_numeric(df["code"].str.extract(r"(\d+)", expand=False), errors="coerce")
-    df["display"] = df["code"] + " – " + df["text"]
-    return df[["code", "text", "display", "qnum"]].sort_values(["qnum", "code"], na_position="last").reset_index(drop=True)
-
-@st.cache_data(show_spinner=False)
-def _load_demographics_meta() -> pd.DataFrame:
-    if not os.path.exists(DEMOGRAPHICS_PATH):
-        raise FileNotFoundError("Missing `metadata/Demographics.xlsx`.")
-    df = pd.read_excel(DEMOGRAPHICS_PATH, dtype=str, engine=None)
-    df.columns = [c.strip() for c in df.columns]
-    return df
-
-@st.cache_data(show_spinner=False)
-def _load_scales_meta() -> pd.DataFrame:
-    if not os.path.exists(SCALES_PATH):
-        raise FileNotFoundError("Missing `metadata/Survey Scales.xlsx`.")
-    sdf = pd.read_excel(SCALES_PATH, dtype=str, engine=None)
-    sdf.columns = sdf.columns.str.strip().str.lower()
-    code_col = "code" if "code" in sdf.columns else ("question" if "question" in sdf.columns else None)
-    if code_col is None:
-        raise ValueError("`Survey Scales.xlsx` must include a 'code' or 'question' column.")
-    def _norm(s: str) -> str:
-        s = "" if s is None else str(s)
-        return "".join(ch for ch in s.upper() if ch.isalnum())
-    sdf["__code_norm__"] = sdf[code_col].astype(str).map(_norm)
-    return sdf
-
-# Public getters for metadata
-def get_questions() -> pd.DataFrame:   return _load_questions_meta()
-def get_demographics() -> pd.DataFrame: return _load_demographics_meta()
-def get_scales() -> pd.DataFrame:      return _load_scales_meta()
-
-# =============================================================================
-# CSV presence (download)
+# CSV presence (cached)
 # =============================================================================
 @st.cache_resource(show_spinner="📥 Downloading Results2024.csv.gz…")
 def ensure_results2024_local(file_id: Optional[str] = None) -> str:
     import gdown
-    file_id = file_id or st.secrets.get("RESULTS2024_FILE_ID", GDRIVE_FILE_ID_FALLBACK)
-    if not file_id:
+    fid = file_id or st.secrets.get("RESULTS2024_FILE_ID", GDRIVE_FILE_ID_FALLBACK)
+    if not fid:
         raise RuntimeError("RESULTS2024_FILE_ID missing in .streamlit/secrets.toml")
 
     if os.path.exists(LOCAL_GZ_PATH) and os.path.getsize(LOCAL_GZ_PATH) > 0:
         return LOCAL_GZ_PATH
 
     os.makedirs(os.path.dirname(LOCAL_GZ_PATH), exist_ok=True)
-    url = f"https://drive.google.com/uc?id={file_id}"
+    url = f"https://drive.google.com/uc?id={fid}"
     gdown.download(url, LOCAL_GZ_PATH, quiet=False)
     if not os.path.exists(LOCAL_GZ_PATH) or os.path.getsize(LOCAL_GZ_PATH) == 0:
         raise RuntimeError("Download failed or produced an empty file.")
     return LOCAL_GZ_PATH
 
 # =============================================================================
-# Build Parquet (PS-wide only: LEVEL1ID=0)
+# Build Parquet one-time (filtered to PS-wide if LEVEL1ID exists)
 # =============================================================================
 def _build_parquet_with_duckdb(csv_path: str) -> None:
     import duckdb
     os.makedirs(PARQUET_ROOTDIR, exist_ok=True)
     con = duckdb.connect()
-    con.execute("""
+
+    # Build SELECT with optional LEVEL1ID==0 filter
+    # We keep DEMCODE values (demographic breakdowns) at the PS-wide level.
+    con.execute(f"""
         CREATE OR REPLACE TABLE pses AS
         SELECT
-          CAST(SURVEYR AS INT)                                  AS year,
-          CAST(QUESTION AS VARCHAR)                             AS question_code,
+          CAST(SURVEYR AS INT)                                 AS year,
+          CAST(QUESTION AS VARCHAR)                            AS question_code,
           COALESCE(NULLIF(TRIM(CAST(DEMCODE AS VARCHAR)), ''),'All') AS group_value,
-          CAST(ANSCOUNT AS INT)                                 AS n,
-          CAST(POSITIVE AS DOUBLE)                              AS positive_pct,
-          CAST(NEUTRAL  AS DOUBLE)                              AS neutral_pct,
-          CAST(NEGATIVE AS DOUBLE)                              AS negative_pct,
+          CAST(ANSCOUNT AS INT)                                AS n,
+          CAST(POSITIVE AS DOUBLE)                             AS positive_pct,
+          CAST(NEUTRAL  AS DOUBLE)                             AS neutral_pct,
+          CAST(NEGATIVE AS DOUBLE)                             AS negative_pct,
           CAST(answer1  AS DOUBLE) AS answer1,
           CAST(answer2  AS DOUBLE) AS answer2,
           CAST(answer3  AS DOUBLE) AS answer3,
@@ -185,25 +132,36 @@ def _build_parquet_with_duckdb(csv_path: str) -> None:
           CAST(answer6  AS DOUBLE) AS answer6,
           CAST(answer7  AS DOUBLE) AS answer7
         FROM read_csv_auto(?, header=true)
-        WHERE CAST(LEVEL1ID AS BIGINT) = 0  -- PS-wide only
-    """, [csv_path])
+        WHERE
+          -- If LEVEL1ID exists, keep PS-wide only; else include all rows.
+          COALESCE(try_cast(LEVEL1ID AS INT), 0) = 0
+          OR NOT EXISTS(SELECT 1 FROM (SELECT * FROM read_csv_auto(?, header=true) LIMIT 1) t WHERE TRUE) -- safeguard
+    """, [csv_path, csv_path])
 
     con.execute(f"""
         COPY pses TO '{PARQUET_ROOTDIR}'
         (FORMAT PARQUET, COMPRESSION 'ZSTD', ROW_GROUP_SIZE 1000000,
          PARTITION_BY (year, question_code));
     """)
-    con.close()
 
 def _build_parquet_with_pandas(csv_path: str) -> None:
     import pyarrow as pa
     import pyarrow.parquet as pq
 
-    df = pd.read_csv(csv_path, compression="gzip", usecols=CSV_USECOLS, low_memory=False)
+    df = pd.read_csv(csv_path, compression="gzip", usecols=[c for c in CSV_USECOLS if c != "LEVEL1ID"], low_memory=False)
+    # Try to bring LEVEL1ID if present even if not in usecols (robustness)
+    try:
+        cols = pd.read_csv(csv_path, compression="gzip", nrows=0).columns
+        if "LEVEL1ID" in cols and "LEVEL1ID" not in df.columns:
+            # re-read minimally to fetch LEVEL1ID for filtering
+            df2 = pd.read_csv(csv_path, compression="gzip", usecols=["LEVEL1ID"], low_memory=True)
+            df["LEVEL1ID"] = df2["LEVEL1ID"]
+    except Exception:
+        pass
 
-    # PS-wide filter first
-    lvl = pd.to_numeric(df["LEVEL1ID"], errors="coerce").fillna(1).astype("Int64")
-    df = df.loc[lvl.eq(0)].copy()
+    # Filter to PS-wide if LEVEL1ID is present
+    if "LEVEL1ID" in df.columns:
+        df = df[pd.to_numeric(df["LEVEL1ID"], errors="coerce").fillna(0).astype(int).eq(0)]
 
     out = pd.DataFrame({
         "year":          pd.to_numeric(df["SURVEYR"], errors="coerce").astype("Int64"),
@@ -221,6 +179,7 @@ def _build_parquet_with_pandas(csv_path: str) -> None:
         "answer6": pd.to_numeric(df.get("answer6"), errors="coerce"),
         "answer7": pd.to_numeric(df.get("answer7"), errors="coerce"),
     })
+    # Normalize group_value: empty/NA → "All"
     out["group_value"] = out["group_value"].fillna("All")
     out.loc[out["group_value"].astype("string").str.strip() == "", "group_value"] = "All"
 
@@ -233,9 +192,9 @@ def _build_parquet_with_pandas(csv_path: str) -> None:
         compression="zstd",
     )
 
-@st.cache_resource(show_spinner="🗂️ Preparing PS-wide Parquet (one-time)…")
+@st.cache_resource(show_spinner="🗂️ Preparing Parquet dataset (one-time)…")
 def ensure_parquet_dataset() -> str:
-    """Ensures a partitioned Parquet dataset (PS-wide only) exists and returns its root directory."""
+    """Ensures a partitioned Parquet dataset (PS-wide if LEVEL1ID present) exists and returns its root directory."""
     if not _pyarrow_available():
         raise RuntimeError("pyarrow is required for Parquet fast path.")
     csv_path = ensure_results2024_local()
@@ -244,6 +203,7 @@ def ensure_parquet_dataset() -> str:
         return PARQUET_ROOTDIR
 
     os.makedirs(PARQUET_ROOTDIR, exist_ok=True)
+
     if _duckdb_available():
         _build_parquet_with_duckdb(csv_path)
     else:
@@ -254,68 +214,142 @@ def ensure_parquet_dataset() -> str:
     return PARQUET_ROOTDIR
 
 # =============================================================================
-# In-memory preload (all years if budget allows; else latest year)
+# Metadata loaders (cached)
 # =============================================================================
-_INMEM_DF: Optional[pd.DataFrame] = None
-_INMEM_MODE: str = "none"     # "all" | "latest_year" | "none"
+def _path_candidate(*names: str) -> str | None:
+    for n in names:
+        if n and os.path.exists(n):
+            return n
+    return None
 
-def _estimate_parquet_size_bytes(root: str) -> int:
-    total = 0
-    for base, _dirs, files in os.walk(root):
-        for fn in files:
-            if fn.endswith(".parquet"):
-                total += os.path.getsize(os.path.join(base, fn))
-    return total
-
-@st.cache_resource(show_spinner="💾 Loading filtered database into memory…")
-def _load_inmemory_df() -> Tuple[pd.DataFrame, str]:
+@st.cache_resource(show_spinner=False)
+def load_questions_metadata() -> pd.DataFrame:
     """
-    Returns (df, mode). Mode is 'all' if we loaded all years; 'latest_year' otherwise.
+    Reads metadata/Survey Questions.xlsx
+    - 'question' column contains the question number/code (e.g., Q16)
+    - 'English' column contains the question text
     """
-    import pyarrow.dataset as ds
-    import pyarrow.compute as pc
+    path = _path_candidate("metadata/Survey Questions.xlsx", "/mnt/data/Survey Questions.xlsx")
+    if not path:
+        return pd.DataFrame(columns=["code", "text", "display"])
+    qdf = pd.read_excel(path)
+    cols = {c.lower(): c for c in qdf.columns}
+    def col(name: str) -> str | None:
+        return cols.get(name.lower())
+    code_col = col("question")
+    text_col = col("English")
+    if not code_col or not text_col:
+        return pd.DataFrame(columns=["code", "text", "display"])
+    out = pd.DataFrame({
+        "code": qdf[code_col].astype(str).str.strip(),
+        "text": qdf[text_col].astype(str),
+    })
+    out["qnum"] = out["code"].str.extract(r"Q?(\d+)", expand=False)
+    with pd.option_context("mode.chained_assignment", None):
+        out["qnum"] = pd.to_numeric(out["qnum"], errors="coerce")
+    out = out.sort_values(["qnum", "code"], na_position="last")
+    out["display"] = out["code"] + " – " + out["text"].astype(str)
+    return out[["code", "text", "display"]]
 
-    root = ensure_parquet_dataset()
-    dataset = ds.dataset(root, format="parquet")
+@st.cache_resource(show_spinner=False)
+def load_scales_metadata() -> pd.DataFrame:
+    path = _path_candidate("metadata/Survey Scales.xlsx", "/mnt/data/Survey Scales.xlsx")
+    if not path:
+        return pd.DataFrame()
+    sdf = pd.read_excel(path)
+    sdf.columns = sdf.columns.str.strip().str.lower()
+    # Compute a normalized join key for Q-code
+    def _normalize_qcode(s: str) -> str:
+        s = "" if s is None else str(s)
+        s = s.upper()
+        return "".join(ch for ch in s if ch.isalnum())
+    code_col = None
+    for c in ("code", "question"):
+        if c in sdf.columns:
+            code_col = c
+            break
+    if code_col:
+        sdf["__code_norm__"] = sdf[code_col].astype(str).map(_normalize_qcode)
+    return sdf
 
-    # Heuristic: if compressed Parquet size * 2.5 < budget → load ALL
-    parquet_bytes = _estimate_parquet_size_bytes(root)
-    est_inmem_bytes = int(parquet_bytes * 2.5)  # rough inflation factor
-    budget_bytes = int(MEMORY_BUDGET_GB * (1024**3))
-
-    cols = OUT_COLS
-
-    if est_inmem_bytes <= budget_bytes:
-        table = dataset.to_table(columns=cols)
-        df = table.to_pandas().astype({k: v for k, v in DTYPES.items() if k in cols})
-        return df, "all"
-
-    # Else: only latest year
-    years_tbl = dataset.to_table(columns=["year"])
-    years = pd.to_numeric(pd.Series(years_tbl.column("year").to_pylist()), errors="coerce").dropna().astype(int)
-    if years.empty:
-        return pd.DataFrame(columns=OUT_COLS), "none"
-    latest = int(years.max())
-
-    filt = (pc.field("year") == latest)
-    table = dataset.to_table(columns=cols, filter=filt)
-    df = table.to_pandas().astype({k: v for k, v in DTYPES.items() if k in cols})
-    return df, "latest_year"
-
-def _ensure_inmemory_ready():
-    global _INMEM_DF, _INMEM_MODE
-    if _INMEM_DF is None:
-        df, mode = _load_inmemory_df()
-        _INMEM_DF, _INMEM_MODE = df, mode
+@st.cache_resource(show_spinner=False)
+def load_demographics_metadata() -> pd.DataFrame:
+    path = _path_candidate("metadata/Demographics.xlsx", "/mnt/data/Demographics.xlsx")
+    if not path:
+        return pd.DataFrame()
+    df = pd.read_excel(path)
+    df.columns = [c.strip() for c in df.columns]
+    return df
 
 # =============================================================================
-# Query helpers (Parquet + CSV fallbacks)
+# In-memory PS-wide preload (LEVEL1ID==0; all DEMCODEs preserved)
 # =============================================================================
-def _parquet_query(
-    question_code: str,
-    years: Iterable[int | str],
-    group_values: Optional[List[Optional[str]]],
-) -> pd.DataFrame:
+@st.cache_resource(show_spinner="🧠 Loading PS-wide data into memory…")
+def preload_pswide_dataframe() -> pd.DataFrame:
+    """
+    Loads the PS-wide (LEVEL1ID==0) slice into memory with normalized OUT_COLS.
+    If Parquet exists, reads the entire Parquet dataset (already LEVEL1ID-filtered during build).
+    Else, streams the CSV and filters LEVEL1ID==0.
+    """
+    try:
+        if os.path.isdir(PARQUET_ROOTDIR) and os.path.exists(PARQUET_FLAG) and _pyarrow_available():
+            import pyarrow.dataset as ds
+            dataset = ds.dataset(PARQUET_ROOTDIR, format="parquet")
+            table = dataset.to_table(columns=OUT_COLS)
+            df = table.to_pandas(types_mapper=pd.ArrowDtype)
+        else:
+            # CSV streaming preload
+            path = ensure_results2024_local()
+            frames: list[pd.DataFrame] = []
+            for chunk in pd.read_csv(path, compression="gzip", usecols=CSV_USECOLS, chunksize=1_500_000, low_memory=True):
+                # Keep PS-wide rows only if LEVEL1ID exists
+                if "LEVEL1ID" in chunk.columns:
+                    mask_lvl = pd.to_numeric(chunk["LEVEL1ID"], errors="coerce").fillna(0).astype(int).eq(0)
+                    chunk = chunk.loc[mask_lvl, :]
+                sel = chunk  # all DEMCODEs preserved at PS-wide
+                out = pd.DataFrame({
+                    "year":          pd.to_numeric(sel["SURVEYR"], errors="coerce"),
+                    "question_code": sel["QUESTION"].astype("string"),
+                    "group_value":   sel["DEMCODE"].astype("string").fillna("All"),
+                    "n":             pd.to_numeric(sel["ANSCOUNT"], errors="coerce"),
+                    "positive_pct":  pd.to_numeric(sel["POSITIVE"], errors="coerce"),
+                    "neutral_pct":   pd.to_numeric(sel["NEUTRAL"],  errors="coerce"),
+                    "negative_pct":  pd.to_numeric(sel["NEGATIVE"], errors="coerce"),
+                    "answer1": pd.to_numeric(sel.get("answer1"), errors="coerce"),
+                    "answer2": pd.to_numeric(sel.get("answer2"), errors="coerce"),
+                    "answer3": pd.to_numeric(sel.get("answer3"), errors="coerce"),
+                    "answer4": pd.to_numeric(sel.get("answer4"), errors="coerce"),
+                    "answer5": pd.to_numeric(sel.get("answer5"), errors="coerce"),
+                    "answer6": pd.to_numeric(sel.get("answer6"), errors="coerce"),
+                    "answer7": pd.to_numeric(sel.get("answer7"), errors="coerce"),
+                })
+                out.loc[out["group_value"].astype("string").str.strip() == "", "group_value"] = "All"
+                frames.append(out)
+            df = (pd.concat(frames, ignore_index=True) if frames else pd.DataFrame(columns=OUT_COLS))
+
+        # Cast to friendly dtypes
+        if not df.empty:
+            df = df.reindex(columns=OUT_COLS)
+            df["year"] = pd.to_numeric(df["year"], errors="coerce").astype(DTYPES["year"])
+            df["n"]    = pd.to_numeric(df["n"], errors="coerce").astype(DTYPES["n"])
+            for c in ["positive_pct","neutral_pct","negative_pct",
+                      "answer1","answer2","answer3","answer4","answer5","answer6","answer7"]:
+                df[c] = pd.to_numeric(df[c], errors="coerce").astype(DTYPES[c])
+            df["question_code"] = df["question_code"].astype(DTYPES["question_code"])
+            df["group_value"]   = df["group_value"].astype(DTYPES["group_value"])
+        return df
+    except Exception:
+        return pd.DataFrame(columns=OUT_COLS)
+
+# Track in-memory status
+_INMEM_STATE: dict = {"mode": "none", "rows": 0}
+_META_CACHE: dict = {"counts": {}, "questions": None, "scales": None, "demographics": None}
+_PSWIDE_ONLY = True  # this app is PS-wide only by design
+
+# =============================================================================
+# Parquet query
+# =============================================================================
+def _parquet_query(question_code: str, years: Iterable[int | str], group_value: Optional[str]) -> pd.DataFrame:
     import pyarrow.dataset as ds
     import pyarrow.compute as pc
 
@@ -324,280 +358,290 @@ def _parquet_query(
 
     q = str(question_code).strip()
     years_int = [int(y) for y in years]
+    gv = None if (group_value is None or str(group_value).strip() == "" or str(group_value).strip().lower() == "all") else str(group_value).strip()
 
-    # Build filter
     filt = (pc.field("question_code") == q) & (pc.field("year").isin(years_int))
-    if group_values is not None:
-        want_overall = any(g is None for g in group_values)
-        gvals = [str(g).strip() for g in group_values if g is not None]
-        clauses = []
-        if gvals:
-            clauses.append(pc.field("group_value").isin(gvals))
-        if want_overall:
-            clauses.append(pc.field("group_value") == "All")
-        if clauses:
-            sub = clauses[0]
-            for c in clauses[1:]:
-                sub = pc.or_(sub, c)
-            filt = pc.and_(filt, sub)
+    if gv is None:
+        filt = filt & (pc.field("group_value") == "All")
     else:
-        # Default to overall when nothing is provided (matches previous behavior)
-        filt = pc.and_(filt, pc.field("group_value") == "All")
+        filt = filt & (pc.field("group_value") == gv)
 
     tbl = dataset.to_table(columns=OUT_COLS, filter=filt)
     df = tbl.to_pandas(types_mapper=pd.ArrowDtype)
 
     # Cast to friendly dtypes
-    df = df.reindex(columns=OUT_COLS)
-    df["year"] = pd.to_numeric(df["year"], errors="coerce").astype(DTYPES["year"])
-    df["n"]    = pd.to_numeric(df["n"], errors="coerce").astype(DTYPES["n"])
-    for c in ["positive_pct","neutral_pct","negative_pct",
-              "answer1","answer2","answer3","answer4","answer5","answer6","answer7"]:
-        df[c] = pd.to_numeric(df[c], errors="coerce").astype(DTYPES[c])
-    df["question_code"] = df["question_code"].astype(DTYPES["question_code"])
-    df["group_value"]   = df["group_value"].astype(DTYPES["group_value"])
+    if not df.empty:
+        df = df.reindex(columns=OUT_COLS)
+        df["year"] = pd.to_numeric(df["year"], errors="coerce").astype(DTYPES["year"])
+        df["n"]    = pd.to_numeric(df["n"], errors="coerce").astype(DTYPES["n"])
+        for c in ["positive_pct","neutral_pct","negative_pct",
+                  "answer1","answer2","answer3","answer4","answer5","answer6","answer7"]:
+            df[c] = pd.to_numeric(df[c], errors="coerce").astype(DTYPES[c])
+        df["question_code"] = df["question_code"].astype(DTYPES["question_code"])
+        df["group_value"]   = df["group_value"].astype(DTYPES["group_value"])
     return df
 
+# =============================================================================
+# CSV fallback (PS-wide filter if LEVEL1ID present)
+# =============================================================================
 def _csv_stream_filter(
     question_code: str,
     years: Iterable[int | str],
-    group_values: Optional[List[Optional[str]]],
+    group_value: Optional[str],
     chunksize: int = 1_500_000,
 ) -> pd.DataFrame:
     path = ensure_results2024_local()
     years_int = [int(y) for y in years]
-
-    want_overall = False
-    gvals: List[str] = []
-    if group_values is not None:
-        want_overall = any(g is None for g in group_values)
-        gvals = [str(g).strip() for g in group_values if g is not None]
-    else:
-        want_overall = True  # default overall when nothing provided
+    gv = None if (group_value is None or str(group_value).strip() == "" or str(group_value).strip().lower() == "all") else str(group_value).strip()
 
     frames: list[pd.DataFrame] = []
     for chunk in pd.read_csv(path, compression="gzip", usecols=CSV_USECOLS, chunksize=chunksize, low_memory=True):
-        # PS-wide filter first
-        lvl = pd.to_numeric(chunk["LEVEL1ID"], errors="coerce").fillna(1).astype("Int64")
-        mask = lvl.eq(0)
+        # PS-wide only if LEVEL1ID exists
+        if "LEVEL1ID" in chunk.columns:
+            mask_lvl = pd.to_numeric(chunk["LEVEL1ID"], errors="coerce").fillna(0).astype(int).eq(0)
+        else:
+            mask_lvl = pd.Series(True, index=chunk.index)
 
-        # Question + year filters
-        mask &= (chunk["QUESTION"].astype(str) == question_code)
-        mask &= (pd.to_numeric(chunk["SURVEYR"], errors="coerce").isin(years_int))
+        mask = (chunk["QUESTION"].astype(str) == question_code) & \
+               (pd.to_numeric(chunk["SURVEYR"], errors="coerce").isin(years_int)) & \
+               mask_lvl
 
-        # DEMCODE filter: gvals and/or overall (empty/NA)
-        if gvals and want_overall:
-            gv = chunk["DEMCODE"].astype(str).str.strip()
-            mask &= (gv.isin(gvals) | gv.eq("") | chunk["DEMCODE"].isna())
-        elif gvals:
-            mask &= chunk["DEMCODE"].astype(str).str.strip().isin(gvals)
-        elif want_overall:
-            gv = chunk["DEMCODE"].astype(str).str.strip()
-            mask &= (gv.eq("") | chunk["DEMCODE"].isna())
+        if gv is None:
+            gv_ser = chunk["DEMCODE"].astype(str).str.strip()
+            mask &= (gv_ser.eq("")) | (gv_ser.isna())
+        else:
+            mask &= (chunk["DEMCODE"].astype(str).str.strip() == gv)
 
-        if not mask.any():
-            continue
-
-        sel = chunk.loc[mask, :]
-        out = pd.DataFrame({
-            "year":          pd.to_numeric(sel["SURVEYR"], errors="coerce"),
-            "question_code": sel["QUESTION"].astype("string"),
-            "group_value":   sel["DEMCODE"].astype("string").fillna("All"),
-            "n":             pd.to_numeric(sel["ANSCOUNT"], errors="coerce"),
-            "positive_pct":  pd.to_numeric(sel["POSITIVE"], errors="coerce"),
-            "neutral_pct":   pd.to_numeric(sel["NEUTRAL"],  errors="coerce"),
-            "negative_pct":  pd.to_numeric(sel["NEGATIVE"], errors="coerce"),
-            "answer1": pd.to_numeric(sel.get("answer1"), errors="coerce"),
-            "answer2": pd.to_numeric(sel.get("answer2"), errors="coerce"),
-            "answer3": pd.to_numeric(sel.get("answer3"), errors="coerce"),
-            "answer4": pd.to_numeric(sel.get("answer4"), errors="coerce"),
-            "answer5": pd.to_numeric(sel.get("answer5"), errors="coerce"),
-            "answer6": pd.to_numeric(sel.get("answer6"), errors="coerce"),
-            "answer7": pd.to_numeric(sel.get("answer7"), errors="coerce"),
-        })
-        frames.append(out)
+        if mask.any():
+            sel = chunk.loc[mask, :]
+            out = pd.DataFrame({
+                "year":          pd.to_numeric(sel["SURVEYR"], errors="coerce"),
+                "question_code": sel["QUESTION"].astype("string"),
+                "group_value":   sel["DEMCODE"].astype("string").fillna("All"),
+                "n":             pd.to_numeric(sel["ANSCOUNT"], errors="coerce"),
+                "positive_pct":  pd.to_numeric(sel["POSITIVE"], errors="coerce"),
+                "neutral_pct":   pd.to_numeric(sel["NEUTRAL"],  errors="coerce"),
+                "negative_pct":  pd.to_numeric(sel["NEGATIVE"], errors="coerce"),
+                "answer1": pd.to_numeric(sel.get("answer1"), errors="coerce"),
+                "answer2": pd.to_numeric(sel.get("answer2"), errors="coerce"),
+                "answer3": pd.to_numeric(sel.get("answer3"), errors="coerce"),
+                "answer4": pd.to_numeric(sel.get("answer4"), errors="coerce"),
+                "answer5": pd.to_numeric(sel.get("answer5"), errors="coerce"),
+                "answer6": pd.to_numeric(sel.get("answer6"), errors="coerce"),
+                "answer7": pd.to_numeric(sel.get("answer7"), errors="coerce"),
+            })
+            frames.append(out)
 
     if not frames:
         return pd.DataFrame(columns=OUT_COLS)
 
     df = pd.concat(frames, ignore_index=True)
-    df["year"] = pd.to_numeric(df["year"], errors="coerce").astype(DTYPES["year"])
-    df["n"]    = pd.to_numeric(df["n"], errors="coerce").astype(DTYPES["n"])
-    for c in ["positive_pct","neutral_pct","negative_pct",
-              "answer1","answer2","answer3","answer4","answer5","answer6","answer7"]:
-        df[c] = pd.to_numeric(df[c], errors="coerce").astype(DTYPES[c])
-    df["question_code"] = df["question_code"].astype(DTYPES["question_code"])
-    df["group_value"]   = df["group_value"].astype(DTYPES["group_value"])
+    if not df.empty:
+        df["year"] = pd.to_numeric(df["year"], errors="coerce").astype(DTYPES["year"])
+        df["n"]    = pd.to_numeric(df["n"], errors="coerce").astype(DTYPES["n"])
+        for c in ["positive_pct","neutral_pct","negative_pct",
+                  "answer1","answer2","answer3","answer4","answer5","answer6","answer7"]:
+            df[c] = pd.to_numeric(df[c], errors="coerce").astype(DTYPES[c])
+        df["question_code"] = df["question_code"].astype(DTYPES["question_code"])
+        df["group_value"]   = df["group_value"].astype(DTYPES["group_value"])
     return df[OUT_COLS]
 
 # =============================================================================
-# Public API — in-memory → Parquet → CSV
+# Public API — prefers in-memory PS-wide preload; falls back to Parquet/CSV
 # =============================================================================
-def _query_inmemory(
-    question_code: str,
-    years: Iterable[int | str],
-    group_values: Optional[List[Optional[str]]],
-) -> Optional[pd.DataFrame]:
-    if _INMEM_DF is None or _INMEM_MODE == "none":
-        return None
-    df = _INMEM_DF
-    yrs = [int(y) for y in years]
-    sel = (df["question_code"].astype(str) == str(question_code)) & (df["year"].astype(int).isin(yrs))
-
-    if group_values is not None:
-        want_overall = any(g is None for g in group_values)
-        gvals = [str(g).strip() for g in group_values if g is not None]
-        mask_g = pd.Series(False, index=df.index)
-        if gvals:
-            mask_g = mask_g | df["group_value"].astype(str).isin(gvals)
-        if want_overall:
-            mask_g = mask_g | (df["group_value"] == "All")
-        sel = sel & mask_g
-    else:
-        # Default to overall
-        sel = sel & (df["group_value"] == "All")
-
-    out = df.loc[sel, OUT_COLS].copy()
-    return out
-
 @st.cache_data(show_spinner="🔎 Filtering results…")
 def load_results2024_filtered(
     question_code: str,
     years: Iterable[int | str],
     group_value: Optional[str] = None,
-    group_values: Optional[List[Optional[str]]] = None,
 ) -> pd.DataFrame:
     """
-    Returns a filtered slice at (question_code, years, group(s)) grain.
-    - Accepts *either* a single `group_value` or a list `group_values` (preferred).
-    - Preference order: in-memory → Parquet pushdown → CSV chunk scan.
-    - Records diagnostics for the UI.
+    Returns a filtered slice at (question_code, years, group_value) grain.
+    Prefers in-memory PS-wide preload (LEVEL1ID==0), then Parquet pushdown, then CSV streaming.
+    Records detailed diagnostics for the UI.
     """
     global _LAST_ENGINE
     parquet_error = None
     t0 = time.perf_counter()
 
-    # Normalize groups argument
-    groups_norm: Optional[List[Optional[str]]]
-    if group_values is not None:
-        groups_norm = list(group_values)
-    else:
-        groups_norm = [group_value] if group_value is not None else None
-
-    # In-memory
+    # Try in-memory PS-wide DataFrame first (fast & no I/O)
     try:
-        _ensure_inmemory_ready()
-        df = _query_inmemory(question_code, years, groups_norm)
-        if df is not None:
-            _LAST_ENGINE = f"inmem:{_INMEM_MODE}"
+        df_all = preload_pswide_dataframe()
+        if isinstance(df_all, pd.DataFrame) and not df_all.empty:
+            q = str(question_code).strip()
+            years_int = [int(y) for y in years]
+            gv_norm = None if (group_value is None or str(group_value).strip() == "" or str(group_value).strip().lower() == "all") else str(group_value).strip()
+            df = df_all[(df_all["question_code"] == q) & (df_all["year"].astype(int).isin(years_int))]
+            if gv_norm is None:
+                df = df[df["group_value"] == "All"]
+            else:
+                df = df[df["group_value"] == gv_norm]
+            _LAST_ENGINE = "inmem"
             rows = int(df.shape[0])
             elapsed_ms = int((time.perf_counter() - t0) * 1000)
             _set_diag(
-                engine=_LAST_ENGINE, elapsed_ms=elapsed_ms, rows=rows,
+                engine=_LAST_ENGINE,
+                elapsed_ms=elapsed_ms,
+                rows=rows,
                 question_code=str(question_code),
                 years=",".join(str(y) for y in years),
-                group_value=("multiple" if (groups_norm and len(groups_norm) > 1)
-                             else ("All" if (groups_norm is None or groups_norm == [None]) else str(groups_norm[0]))),
-                inmem_mode=_INMEM_MODE, parquet_dir=PARQUET_ROOTDIR, csv_path=LOCAL_GZ_PATH,
-                parquet_error=None
+                group_value=("All" if gv_norm is None else gv_norm),
+                parquet_dir=PARQUET_ROOTDIR,
+                csv_path=LOCAL_GZ_PATH,
+                parquet_error=None,
             )
             return df
     except Exception:
+        # fall through to Parquet/CSV
         pass
 
-    # Parquet
+    # Try Parquet pushdown next
     if _pyarrow_available():
         try:
-            df = _parquet_query(question_code, years, groups_norm)
+            df = _parquet_query(question_code, years, group_value)
             _LAST_ENGINE = "parquet"
             rows = int(df.shape[0])
             elapsed_ms = int((time.perf_counter() - t0) * 1000)
             _set_diag(
-                engine=_LAST_ENGINE, elapsed_ms=elapsed_ms, rows=rows,
+                engine=_LAST_ENGINE,
+                elapsed_ms=elapsed_ms,
+                rows=rows,
                 question_code=str(question_code),
                 years=",".join(str(y) for y in years),
-                group_value=("multiple" if (groups_norm and len(groups_norm) > 1)
-                             else ("All" if (groups_norm is None or groups_norm == [None]) else str(groups_norm[0]))),
-                inmem_mode=_INMEM_MODE, parquet_dir=PARQUET_ROOTDIR, csv_path=LOCAL_GZ_PATH,
-                parquet_error=None
+                group_value=("All" if group_value in (None, "", "all", "All") else str(group_value)),
+                parquet_dir=PARQUET_ROOTDIR,
+                csv_path=LOCAL_GZ_PATH,
+                parquet_error=None,
             )
             return df
         except Exception as e:
             parquet_error = str(e)
 
     # CSV fallback
-    df = _csv_stream_filter(question_code, years, groups_norm)
+    df = _csv_stream_filter(question_code, years, group_value)
     _LAST_ENGINE = "csv"
     rows = int(df.shape[0])
     elapsed_ms = int((time.perf_counter() - t0) * 1000)
     _set_diag(
-        engine=_LAST_ENGINE, elapsed_ms=elapsed_ms, rows=rows,
+        engine=_LAST_ENGINE,
+        elapsed_ms=elapsed_ms,
+        rows=rows,
         question_code=str(question_code),
         years=",".join(str(y) for y in years),
-        group_value=("multiple" if (groups_norm and len(groups_norm) > 1)
-                     else ("All" if (groups_norm is None or groups_norm == [None]) else str(groups_norm[0]))),
-        inmem_mode=_INMEM_MODE, parquet_dir=PARQUET_ROOTDIR, csv_path=LOCAL_GZ_PATH,
-        parquet_error=parquet_error
+        group_value=("All" if group_value in (None, "", "all", "All") else str(group_value)),
+        parquet_dir=PARQUET_ROOTDIR,
+        csv_path=LOCAL_GZ_PATH,
+        parquet_error=parquet_error,
     )
     return df
 
-# Convenience: explicit multi wrapper (kept for external callers if needed)
-@st.cache_data(show_spinner="🔎 Filtering multiple groups…")
-def load_results2024_filtered_multi(
-    question_code: str,
-    years: Iterable[int | str],
-    group_values: Optional[List[Optional[str]]] = None,
-) -> pd.DataFrame:
-    return load_results2024_filtered(question_code, years, group_values=group_values)
-
-# Optional schema helpers (compatibility with older imports)
-def get_results2024_schema() -> dict: return {}
-def get_results2024_schema_inferred() -> dict: return {}
-
 # =============================================================================
-# Backend info + prewarm (call once at app start)
+# Helpers for UI (Diagnostics / prewarm)
 # =============================================================================
-def get_backend_info() -> dict:
-    meta_counts = st.session_state.get("metadata_counts", {})
-    inmem_rows = int(_INMEM_DF.shape[0]) if isinstance(_INMEM_DF, pd.DataFrame) else 0
-    return {
-        "parquet_dir_exists": os.path.isdir(PARQUET_ROOTDIR),
-        "parquet_ready": os.path.exists(PARQUET_FLAG),
-        "parquet_dir": PARQUET_ROOTDIR,
-        "csv_path": LOCAL_GZ_PATH,
-        "last_engine": _LAST_ENGINE,
-        "inmem_mode": _INMEM_MODE,
-        "inmem_rows": inmem_rows,
-        "metadata_counts": meta_counts,
-        "pswide_only": True,
-        "level_filter": "LEVEL1ID=0",
-        "memory_budget_gb": MEMORY_BUDGET_GB,
-    }
+def _compute_pswide_rowcount_parquet() -> int:
+    try:
+        import pyarrow.dataset as ds
+        root = ensure_parquet_dataset()
+        dataset = ds.dataset(root, format="parquet")
+        # dataset already filtered to LEVEL1ID==0 at build; count all rows
+        return dataset.count_rows()
+    except Exception:
+        return 0
 
-@st.cache_resource(show_spinner="⚡ Preloading metadata…")
-def _prewarm_metadata() -> Dict[str, int]:
-    q = _load_questions_meta(); d = _load_demographics_meta(); s = _load_scales_meta()
-    counts = {"questions": int(q.shape[0]), "demographics": int(d.shape[0]), "scales": int(s.shape[0])}
-    st.session_state["metadata_counts"] = counts
-    return counts
+def _compute_pswide_rowcount_csv() -> int:
+    try:
+        path = ensure_results2024_local()
+        rows = 0
+        for chunk in pd.read_csv(
+            path, compression="gzip", usecols=CSV_USECOLS, chunksize=2_000_000, low_memory=True
+        ):
+            if "LEVEL1ID" in chunk.columns:
+                mask = pd.to_numeric(chunk["LEVEL1ID"], errors="coerce").fillna(0).astype(int).eq(0)
+            else:
+                # Fallback heuristic (no LEVEL1ID): treat blank DEMCODE "All" rows only
+                gv = chunk["DEMCODE"].astype(str).str.strip()
+                mask = (gv.eq("")) | (gv.isna())
+            rows += int(mask.sum())
+        return rows
+    except Exception:
+        return 0
 
-@st.cache_resource(show_spinner="⚡ Warming up data backend…")
-def prewarm_fastpath() -> str:
-    """Ensure CSV present and PS-wide Parquet dataset built (one-time)."""
+@st.cache_resource(show_spinner="⚡ Preloading metadata & PS-wide index…")
+def prewarm_all() -> dict:
+    """
+    Build/ensure backend (Parquet or CSV), load metadata into cache,
+    load the PS-wide DataFrame into memory, and return a summary for UI.
+    """
+    # Ensure raw results are present
     ensure_results2024_local()
+
+    # Prefer Parquet if available (and build if needed)
+    engine = "csv"
     try:
         ensure_parquet_dataset()
-        return "parquet"
+        engine = "parquet"
     except Exception:
-        return "csv"
+        engine = "csv"
 
-def prewarm_all() -> None:
+    # Metadata (cached)
+    qdf = load_questions_metadata()
+    sdf = load_scales_metadata()
+    ddf = load_demographics_metadata()
+    _META_CACHE["questions"] = qdf
+    _META_CACHE["scales"] = sdf
+    _META_CACHE["demographics"] = ddf
+    _META_CACHE["counts"] = {
+        "questions": int(qdf.shape[0]) if qdf is not None else 0,
+        "scales": int(sdf.shape[0]) if sdf is not None else 0,
+        "demographics": int(ddf.shape[0]) if ddf is not None else 0,
+    }
+
+    # In-memory PS-wide DataFrame (cached)
+    df_inmem = preload_pswide_dataframe()
+    _INMEM_STATE.update({
+        "mode": f"pswide_df({engine})",
+        "rows": int(df_inmem.shape[0]) if isinstance(df_inmem, pd.DataFrame) else 0
+    })
+
+    # Lift last-engine for UI
+    global _LAST_ENGINE
+    try:
+        _LAST_ENGINE = engine
+    except Exception:
+        pass
+
+    return {
+        "engine": engine,
+        "inmem_mode": _INMEM_STATE["mode"],
+        "inmem_rows": _INMEM_STATE["rows"],
+        "metadata_counts": dict(_META_CACHE["counts"]),
+        "pswide_only": True,
+        "parquet_dir": PARQUET_ROOTDIR,
+        "csv_path": LOCAL_GZ_PATH,
+    }
+
+# Back-compat API used by older main.py versions
+@st.cache_resource(show_spinner="⚡ Warming up data backend…")
+def prewarm_fastpath() -> str:
     """
-    Call this once at app start:
-      1) Metadata → cached
-      2) Data backend (Parquet) → ready
-      3) PS-wide filtered data → loaded into memory (all years or latest year)
+    Ensure CSV is present and Parquet dataset is built (one-time) and PS-wide is preloaded.
+    Returns 'parquet' if Parquet is ready, else 'csv'.
     """
-    _prewarm_metadata()
-    st.session_state["data_engine"] = prewarm_fastpath()
-    _ensure_inmemory_ready()
+    summary = prewarm_all()
+    return "parquet" if summary.get("engine") == "parquet" else "csv"
+
+def get_backend_info() -> dict:
+    # If prewarm_all() hasn't been called yet in this session, call it now (no-op if cached)
+    try:
+        summary = prewarm_all()
+    except Exception:
+        summary = {}
+    return {
+        "last_engine": summary.get("engine", _LAST_ENGINE),
+        "inmem_mode": summary.get("inmem_mode", _INMEM_STATE["mode"]),
+        "inmem_rows": int(summary.get("inmem_rows", _INMEM_STATE["rows"] or 0)),
+        "metadata_counts": summary.get("metadata_counts", _META_CACHE.get("counts", {})),
+        "pswide_only": summary.get("pswide_only", True),
+        "parquet_dir": PARQUET_ROOTDIR,
+        "csv_path": LOCAL_GZ_PATH,
+    }
