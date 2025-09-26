@@ -1,4 +1,4 @@
-# main.py — homepage (Menu 1 on click; proper page switch via state + rerun)
+# main.py — homepage (Menu 1 on click; Home bg only; clear bg on Menu pages)
 from __future__ import annotations
 import streamlit as st
 
@@ -16,70 +16,70 @@ def goto(page: str):
     st.session_state["_nav"] = page
     st.rerun()
 
-# ── Home background + typography (your original CSS) ─────────────────────────
-st.markdown("""
-    <style>
-        .block-container {
-            padding-top: 100px !important;
-            padding-left: 300px !important;
-            padding-bottom: 300px !important;
-            background-image: url('https://github.com/Martin-Coder-Cloud/PSES---GPT/blob/main/assets/Teams%20Background%20Tablet_EN.png?raw=true');
-            background-repeat: no-repeat;
-            background-size: cover;
-            background-position: center top;
-            color: white;
-        }
-        /* Content rail */
-        .main-section {
-            margin-left: 200px;      /* shared left indent */
-            max-width: 820px;        /* content width */
-            text-align: left;        /* left-align text */
-        }
-        .main-title {
-            font-size: 42px;
-            font-weight: 800;
-            margin-bottom: 16px;
-        }
-        .subtitle {
-            font-size: 22px;
-            line-height: 1.4;
-            margin-bottom: 18px;
-            opacity: 0.95;
-            max-width: 700px;
-        }
-        .context {
-            font-size: 18px;
-            line-height: 1.55;
-            margin-top: 8px;
-            margin-bottom: 36px;
-            opacity: 0.95;
-            max-width: 700px;
-            text-align: left;
-        }
-        .single-button { display: flex; flex-direction: column; gap: 16px; }
-        div.stButton > button {
-            background-color: rgba(255,255,255,0.08) !important;
-            color: white !important;
-            border: 2px solid rgba(255, 255, 255, 0.35) !important;
-            font-size: 30px !important; font-weight: 700 !important;
-            padding: 26px 34px !important;
-            width: 420px !important; min-height: 88px !important;
-            border-radius: 14px !important;
-            text-align: left !important;
-            backdrop-filter: blur(2px);
-        }
-        div.stButton > button:hover {
-            border-color: white !important;
-            background-color: rgba(255, 255, 255, 0.14) !important;
-        }
-        div[data-testid="stExpander"] > details > summary {
-            color: #fff; font-size: 16px;
-        }
-    </style>
-""", unsafe_allow_html=True)
-
-# ── Home view ────────────────────────────────────────────────────────────────
+# ── Home view (injects background CSS locally) ───────────────────────────────
 def render_home():
+    # Home background + typography (scoped to this view only)
+    st.markdown("""
+        <style>
+            .block-container {
+                padding-top: 100px !important;
+                padding-left: 300px !important;
+                padding-bottom: 300px !important;
+                background-image: url('https://github.com/Martin-Coder-Cloud/PSES---GPT/blob/main/assets/Teams%20Background%20Tablet_EN.png?raw=true');
+                background-repeat: no-repeat;
+                background-size: cover;
+                background-position: center top;
+                color: white;
+            }
+            /* Content rail */
+            .main-section {
+                margin-left: 200px;      /* shared left indent */
+                max-width: 820px;        /* content width */
+                text-align: left;        /* left-align text */
+            }
+            .main-title {
+                font-size: 42px;
+                font-weight: 800;
+                margin-bottom: 16px;
+            }
+            .subtitle {
+                font-size: 22px;
+                line-height: 1.4;
+                margin-bottom: 18px;
+                opacity: 0.95;
+                max-width: 700px;
+            }
+            .context {
+                font-size: 18px;
+                line-height: 1.55;
+                margin-top: 8px;
+                margin-bottom: 36px;
+                opacity: 0.95;
+                max-width: 700px;
+                text-align: left;
+            }
+            .single-button { display: flex; flex-direction: column; gap: 16px; }
+            div.stButton > button {
+                background-color: rgba(255,255,255,0.08) !important;
+                color: white !important;
+                border: 2px solid rgba(255, 255, 255, 0.35) !important;
+                font-size: 30px !important; font-weight: 700 !important;
+                padding: 26px 34px !important;
+                width: 420px !important; min-height: 88px !important;
+                border-radius: 14px !important;
+                text-align: left !important;
+                backdrop-filter: blur(2px);
+            }
+            div.stButton > button:hover {
+                border-color: white !important;
+                background-color: rgba(255, 255, 255, 0.14) !important;
+            }
+            div[data-testid="stExpander"] > details > summary {
+                color: #fff; font-size: 16px;
+            }
+        </style>
+    """, unsafe_allow_html=True)
+
     # One-time warmup here (only on Home)
     if prewarm_all is not None:
         try:
@@ -126,10 +126,10 @@ def render_home():
 
     st.markdown("<div class='single-button'>", unsafe_allow_html=True)
     if st.button("▶️ Start your search", key="menu_start_button"):
-        goto("menu1")  # ← switch page via state + rerun
+        goto("menu1")  # switch to menu 1 and rerun
     st.markdown("</div>", unsafe_allow_html=True)
 
-    # Optional: legacy links for testing that also switch pages
+    # Optional: legacy links for testing
     with st.expander("Advanced: open classic menus (for testing / legacy flows)"):
         c1, c2 = st.columns([1,1])
         if c1.button("🔍 Menu 1 — Search by Question"):
@@ -139,8 +139,24 @@ def render_home():
 
     st.markdown("</div>", unsafe_allow_html=True)
 
-# ── Menu wrappers (rendered only when _nav says so) ──────────────────────────
+# ── Menu wrappers (clear background before rendering) ────────────────────────
+def _clear_bg_css():
+    # Explicitly remove/override the Home background & white text
+    st.markdown("""
+        <style>
+            .block-container {
+                background-image: none !important;
+                background: none !important;
+                color: inherit !important;
+                padding-top: 1.25rem !important;
+                padding-left: 1.25rem !important;
+                padding-bottom: 2rem !important;
+            }
+        </style>
+    """, unsafe_allow_html=True)
+
 def render_menu1():
+    _clear_bg_css()
     try:
         from menu1.main import run_menu1
         run_menu1()
@@ -151,6 +167,7 @@ def render_menu1():
         goto("home")
 
 def render_menu2():
+    _clear_bg_css()
     try:
         from menu2.main import run_menu2
         run_menu2()
