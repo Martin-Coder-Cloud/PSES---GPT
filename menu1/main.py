@@ -1,6 +1,7 @@
-# Menu1/main.py — PSES AI Explorer (Menu 1: Search by Question + Keyword/Theme)
-# Multi-question support (max 5). Hybrid keyword search. Summary matrix + per-question tabs.
-# NOTE: Keeps existing narrative prompt/wording logic untouched (no AI prompt changes here).
+# Menu1/main.py — PSES AI Explorer (Menu 1: PSES Explorer Search)
+# Multi-question support (max 5). Hybrid keyword search with threshold & up to 120 hits.
+# Persistent selection + visible "Selected questions" checklist.
+# NOTE: No changes to any AI prompt logic.
 
 import io
 from datetime import datetime
@@ -12,7 +13,7 @@ import streamlit as st
 # Loader: reads Drive .csv.gz in chunks and filters on QUESTION/YEAR/DEMCODE
 from utils.data_loader import load_results2024_filtered
 
-# Helpers extracted to keep this file short (no logic changes)
+# Helpers extracted (no logic changes)
 from utils.menu1_helpers import (
     resolve_demographic_codes,
     get_scale_labels,
@@ -22,7 +23,7 @@ from utils.menu1_helpers import (
     build_positive_only_narrative,
 )
 
-# Hybrid search utility (exact + substring + token-overlap)
+# Hybrid search utility
 from utils.hybrid_search import hybrid_question_search
 
 
@@ -69,25 +70,36 @@ def run_menu1():
             .custom-instruction { font-size: 16px !important; line-height: 1.4; margin-bottom: 10px; color: #333; }
             .field-label { font-size: 18px !important; font-weight: 600 !important; margin-top: 12px !important; margin-bottom: 2px !important; color: #222 !important; }
             .big-button button { font-size: 18px !important; padding: 0.75em 2em !important; margin-top: 20px; }
+            .pill { display:inline-block; padding:4px 8px; margin:2px 6px 2px 0; background:#f1f3f5; border-radius:999px; font-size:13px; }
         </style>
     """, unsafe_allow_html=True)
+
+    # Session state for persistent question selection
+    if "menu1_selected_codes" not in st.session_state:
+        st.session_state["menu1_selected_codes"] = []
 
     demo_df = load_demographics_metadata()
     qdf = load_questions_metadata()
     sdf = load_scales_metadata()
 
+    # Helper maps
+    code_to_display = dict(zip(qdf["code"], qdf["display"]))
+    display_to_code = {v: k for k, v in code_to_display.items()}
+
     left, center, right = st.columns([1, 3, 1])
     with center:
-        # Banner + header (unchanged)
+        # Banner — unchanged/original
         st.markdown(
             "<img class='menu-banner' src='https://raw.githubusercontent.com/Martin-Coder-Cloud/PSES---GPT/refs/heads/main/PSES%20email%20banner.png'>",
             unsafe_allow_html=True
         )
-        st.markdown('<div class="custom-header">🔍 Search by Question</div>', unsafe_allow_html=True)
+
+        # Header + instructions (per Step 1)
+        st.markdown('<div class="custom-header">🔍 PSES Explorer Search</div>', unsafe_allow_html=True)
         st.markdown("""
             <div class="custom-instruction">
-                Use this menu to explore results for survey questions.<br>
-                You may select up to <b>5 questions</b> from the list and/or find questions via the keyword/theme search.
+                Please use this menu to explore the survey results by questions.<br>
+                You may select from the drop down menu below up to five questions or find questions via the keyword/theme search.
                 Select year(s) and optionally a demographic category and subgroup.
             </div>
         """, unsafe_allow_html=True)
@@ -97,49 +109,85 @@ def run_menu1():
         # =========================
         st.markdown('<div class="field-label">Pick up to 5 survey questions:</div>', unsafe_allow_html=True)
 
-        # 1) Multi-select from official list
+        # 1) Multi-select from official list (defaults reflect current session selection)
+        current_displays = [code_to_display[c] for c in st.session_state["menu1_selected_codes"] if c in code_to_display]
         multi_choices = st.multiselect(
             "Choose one or more from the official list",
             qdf["display"].tolist(),
-            default=[],
+            default=current_displays,
             max_selections=5,
             label_visibility="collapsed",
             key="menu1_multi_questions"
         )
-        codes_from_multi = qdf.loc[qdf["display"].isin(multi_choices), "code"].tolist()
+        # Translate back to codes and update selection
+        codes_from_multi = [display_to_code[d] for d in multi_choices if d in display_to_code]
 
-        # 2) Keyword/theme search (hybrid)
+        # Build final set with cap=5, preserving prior selections where possible
+        combined = []
+        # start with previously selected (preserve order)
+        for c in st.session_state["menu1_selected_codes"]:
+            if c not in combined:
+                combined.append(c)
+        # then add from multi-select UI
+        for c in codes_from_multi:
+            if c not in combined:
+                combined.append(c)
+
+        # 2) Keyword/theme search (hybrid; up to 120 hits; threshold)
         with st.expander("🔎 Search by keywords or theme (optional)"):
             search_query = st.text_input("Enter keywords (e.g., harassment, recognition, onboarding)", key="menu1_kw_query")
-            hits = pd.DataFrame()
             if st.button("Find matching questions", key="menu1_find_hits"):
-                hits = hybrid_question_search(qdf, search_query, top_k=50)
+                hits = hybrid_question_search(qdf, search_query, top_k=120, min_score=0.40)
                 if hits.empty:
                     st.info("No matches found for your keywords.")
                 else:
-                    st.write(f"Top {len(hits)} matches (select any, total across both pickers limited to 5):")
-                    # Checkbox pick area
-                    sel = []
-                    for i, row in hits.iterrows():
+                    st.write(f"Top {len(hits)} matches meeting the quality threshold:")
+                    # Show hits with checkboxes reflecting persistent selection
+                    for _, row in hits.iterrows():
+                        code = row["code"]
                         label = f"{row['code']} – {row['text']}"
-                        if st.checkbox(label, key=f"kwpick_{row['code']}"):
-                            sel.append(row["code"])
-                    st.session_state["menu1_kw_selected_codes"] = sel
+                        default_checked = code in combined
+                        # Use a stable key
+                        checked = st.checkbox(label, value=default_checked, key=f"kwhit_{code}")
+                        if checked and code not in combined:
+                            if len(combined) < 5:
+                                combined.append(code)
+                            else:
+                                # Cap reached
+                                st.warning("Limit is 5 questions. Uncheck another question to add this one.", icon="⚠️")
+                        if not checked and code in combined:
+                            combined = [c for c in combined if c != code]
 
-        codes_from_kw = st.session_state.get("menu1_kw_selected_codes", []) or []
-
-        # Combine & enforce max=5
-        question_codes: List[str] = []
-        for c in codes_from_multi + codes_from_kw:
-            if c not in question_codes:
-                question_codes.append(c)
-        if len(question_codes) > 5:
-            question_codes = question_codes[:5]
+        # Enforce max 5
+        if len(combined) > 5:
+            combined = combined[:5]
             st.warning("Limit is 5 questions; extra selections were ignored.", icon="⚠️")
 
-        # Backward-compatibility: single-select fallback if none picked yet
+        # Persist the selection
+        st.session_state["menu1_selected_codes"] = combined
+
+        # 3) Show a “Selected questions” checklist (like Years UI) so users can review/remove
+        if st.session_state["menu1_selected_codes"]:
+            st.markdown('<div class="field-label">Selected questions:</div>', unsafe_allow_html=True)
+            cols = st.columns(min(5, len(st.session_state["menu1_selected_codes"])))
+            updated = list(st.session_state["menu1_selected_codes"])
+            for idx, code in enumerate(st.session_state["menu1_selected_codes"]):
+                with cols[idx % len(cols)]:
+                    label = code_to_display.get(code, code)
+                    # A checkbox representing "keep selected"
+                    keep = st.checkbox(label, value=True, key=f"sel_{code}")
+                    if not keep:
+                        updated = [c for c in updated if c != code]
+            # Clear all
+            clear = st.button("Clear all selected questions", key="menu1_clear_sel")
+            if clear:
+                updated = []
+            if updated != st.session_state["menu1_selected_codes"]:
+                st.session_state["menu1_selected_codes"] = updated
+
+        # Backward-compatibility: single-select fallback when nothing selected
         fallback_code = None
-        if not question_codes:
+        if not st.session_state["menu1_selected_codes"]:
             st.markdown('<div class="field-label">Or select a single question:</div>', unsafe_allow_html=True)
             question_options = qdf["display"].tolist()
             selected_label = st.selectbox(
@@ -148,14 +196,16 @@ def run_menu1():
                 key="question_dropdown",
                 label_visibility="collapsed"
             )
-            fallback_code = qdf.loc[qdf["display"] == selected_label, "code"].values[0]
+            fallback_code = display_to_code.get(selected_label)
 
-        if not question_codes:
-            if fallback_code:
-                question_codes = [fallback_code]
-            else:
-                st.info("Please choose at least one question (via multi-select, keyword hits, or the single select).")
-                return
+        # Final question list
+        if st.session_state["menu1_selected_codes"]:
+            question_codes: List[str] = st.session_state["menu1_selected_codes"]
+        elif fallback_code:
+            question_codes = [fallback_code]
+        else:
+            st.info("Please choose at least one question (via multi-select, keyword hits, or the single select).")
+            return
 
         # =========================
         # Years
@@ -204,12 +254,13 @@ def run_menu1():
                 sub_selection = None
 
         # =========================
-        # Search
+        # Search button (disabled if nothing selected)
         # =========================
         with st.container():
             st.markdown('<div class="big-button">', unsafe_allow_html=True)
-            if st.button("🔎 Search"):
-                # 1) Resolve DEMCODE(s) via metadata
+            disable_search = not bool(question_codes)
+            if st.button("🔎 Search", disabled=disable_search):
+                # 1) Resolve DEMCODE(s)
                 demcodes, disp_map, category_in_play = resolve_demographic_codes(demo_df, demo_selection, sub_selection)
 
                 # 2) Pull & prepare per-question results
@@ -218,7 +269,7 @@ def run_menu1():
                 per_q_scale_labels: Dict[str, list[tuple[str, str]]] = {}
 
                 for qcode in question_codes:
-                    # Get question text for display
+                    # Question text
                     if (qdf["code"] == qcode).any():
                         qtext = qdf.loc[qdf["code"] == qcode, "text"].values[0]
                     else:
@@ -301,14 +352,13 @@ def run_menu1():
                     else:
                         grp = t[["Year", "Positive"]].copy()
                     grp["Question"] = qcode
-                    # Ensure Year numeric for ordering, keep display as int
                     grp["Year"] = pd.to_numeric(grp["Year"], errors="coerce").astype("Int64")
                     summary_rows.append(grp[["Question", "Year", "Positive"]])
 
                 if summary_rows:
                     summary_df = pd.concat(summary_rows, ignore_index=True)
                     pivot = summary_df.pivot_table(index="Question", columns="Year", values="Positive", aggfunc="mean")
-                    # Keep user-selected question order
+                    # Keep user-selected order
                     pivot = pivot.reindex(index=[qc for qc in question_codes if qc in per_q_disp_tables])
                     # Sort years ascending
                     pivot = pivot.reindex(sorted(pivot.columns), axis=1)
@@ -324,17 +374,14 @@ def run_menu1():
                 # 5) Excel: Summary + one sheet per question + Context
                 with io.BytesIO() as buf:
                     with pd.ExcelWriter(buf, engine="xlsxwriter") as writer:
-                        # Summary sheet
                         if summary_rows:
                             pivot_out = pivot.round(1).reset_index()
                             pivot_out.to_excel(writer, sheet_name="Summary_Matrix", index=False)
 
-                        # Per-question sheets
                         for qcode, df_disp in per_q_disp_tables.items():
                             safe = qcode[:28]  # Excel sheet name <= 31 chars
                             df_disp.to_excel(writer, sheet_name=f"{safe}", index=False)
 
-                        # Context
                         ctx = {
                             "Questions": ", ".join(question_codes),
                             "Years": ", ".join(map(str, selected_years)),
