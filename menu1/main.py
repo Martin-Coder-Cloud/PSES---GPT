@@ -1,20 +1,31 @@
-# Menu1/main.py — PSES AI Explorer (Menu 1: PSES Explorer Search)
-# Multi-question support (max 5). Hybrid keyword search (threshold & up to 120 hits).
-# Persistent selections across UI elements; rock-solid updates.
-# Reset behavior: button at bottom + auto-reset on entry when coming from another menu (via last_active_menu).
-# AI analysis toggle restored (state key: menu1_ai_toggle). No changes to your AI prompt logic here.
+# menu1/main.py — PSES Explorer Search (Menu 1)
+# Multi-question (max 5) + hybrid keyword search + summary matrix + per-question tabs.
+# AI analysis toggle (red slide) under the title; per-question + overall narratives use your exact system prompt.
+# Reset-on-entry via last_active_menu + "Reset all parameters" beside Search.
+from __future__ import annotations
 
 import io
+import json
+import os
+import time
 from datetime import datetime
-from typing import List, Dict, Set
+from typing import List, Dict, Set, Tuple, Optional
 
 import pandas as pd
 import streamlit as st
 
-# Loader: reads Drive .csv.gz in chunks and filters on QUESTION/YEAR/DEMCODE
-from utils.data_loader import load_results2024_filtered
+# -----------------------------
+# External utilities (your repo)
+# -----------------------------
+# Robust import with fallbacks so this file runs even if diagnostics helpers are absent.
+import utils.data_loader as _dl
+try:
+    from utils.data_loader import load_results2024_filtered, get_backend_info, prewarm_fastpath
+except Exception:
+    from utils.data_loader import load_results2024_filtered  # type: ignore
+    def get_backend_info(): return {}
+    def prewarm_fastpath(): return "csv"
 
-# Helpers (no logic changes)
 from utils.menu1_helpers import (
     resolve_demographic_codes,
     get_scale_labels,
@@ -24,12 +35,19 @@ from utils.menu1_helpers import (
     build_positive_only_narrative,
 )
 
-# Hybrid search utility
 from utils.hybrid_search import hybrid_question_search
+
+# Ensure OpenAI key sourced from Streamlit secrets (do not hardcode)
+OPENAI_API_KEY = st.secrets.get("OPENAI_API_KEY", "") or os.environ.get("OPENAI_API_KEY", "")
+OPENAI_MODEL = st.secrets.get("OPENAI_MODEL", "gpt-4o-mini")  # change in secrets if needed
+
+# Global controls
+SHOW_DEBUG = False  # set True to render tiny diagnostics panel
+PD = pd
 
 
 # ─────────────────────────────
-# Metadata loaders (cached)
+# Cached metadata
 # ─────────────────────────────
 @st.cache_data(show_spinner=False)
 def load_demographics_metadata() -> pd.DataFrame:
@@ -44,7 +62,8 @@ def load_questions_metadata() -> pd.DataFrame:
     # Expect "question" (code) and "english" (text)
     if "question" in qdf.columns and "english" in qdf.columns:
         qdf = qdf.rename(columns={"question": "code", "english": "text"})
-    qdf["qnum"] = qdf["code"].astype(str).str.extract(r'Q?(\d+)', expand=False)
+    qdf["code"] = qdf["code"].astype(str)
+    qdf["qnum"] = qdf["code"].str.extract(r"Q?(\d+)", expand=False)
     with pd.option_context("mode.chained_assignment", None):
         qdf["qnum"] = pd.to_numeric(qdf["qnum"], errors="coerce")
     qdf = qdf.sort_values(["qnum", "code"], na_position="last")
@@ -71,7 +90,6 @@ def _delete_keys(prefixes: List[str], exact_keys: List[str] = None):
                 pass
 
 def reset_menu1_state():
-    # Clear all Menu 1 specific state, including dynamic checkboxes and widgets.
     year_keys = [f"year_{y}" for y in (2024, 2022, 2020, 2019)]
     exact = [
         "menu1_selected_codes",
@@ -86,11 +104,152 @@ def reset_menu1_state():
     ] + year_keys
     prefixes = ["kwhit_", "sel_", "sub_"]
     _delete_keys(prefixes, exact)
-    # Ensure search box is empty after reset
+    # Explicit resets for text/arrays/toggles
     st.session_state["menu1_kw_query"] = ""
     st.session_state["menu1_hits"] = []
     st.session_state["menu1_selected_codes"] = []
     st.session_state["menu1_multi_questions"] = []
+    st.session_state["menu1_ai_toggle"] = False
+
+
+# ─────────────────────────────
+# AI helpers: prompts + call
+# ─────────────────────────────
+# Prompt change: "minimal ≤2" (was "normal ≤2")
+AI_SYSTEM_PROMPT = (
+    "You are preparing insights for the Government of Canada’s Public Service Employee Survey (PSES).\n\n"
+    "Context\n"
+    "- The PSES provides information to improve people management practices in the federal public service.\n"
+    "- Results help departments and agencies identify strengths and concerns in areas such as employee engagement, anti-racism, equity and inclusion, and workplace well-being.\n"
+    "- The survey tracks progress over time to refine action plans. Employees’ voices guide improvements to workplace quality, which leads to better results for the public service and Canadians.\n"
+    "- Each cycle includes recurring questions (for tracking trends) and new/modified questions reflecting evolving priorities (e.g., updated Employment Equity questions and streamlined hybrid-work items in 2024).\n"
+    "- Statistics Canada administers the survey with the Treasury Board of Canada Secretariat. Confidentiality is guaranteed under the Statistics Act (grouped reporting; results for groups <10 are suppressed).\n\n"
+    "Data-use rules (hard constraints)\n"
+    "- Use ONLY the provided JSON payload/table. DO NOT invent, assume, extrapolate, infer, or generalize beyond the numbers present. No speculation or hypotheses.\n"
+    "- Public Service–wide scope ONLY; do not reference specific departments unless present in the payload.\n"
+    "- Express percentages as whole numbers (e.g., “75%”). Use “points” for differences/changes.\n\n"
+    "Analysis rules\n"
+    "- Begin with the 2024 result for the selected question (metric_label).\n"
+    "- Describe trend over time: compare 2024 with the earliest year available, using thresholds:\n"
+    "  • stable ≤1 point\n"
+    "  • slight >1–2 points\n"
+    "  • notable >2 points\n"
+    "- Compare demographic groups in 2024:\n"
+    "  • Focus on the most relevant comparisons (largest gap(s), or those crossing thresholds).\n"
+    "  • Report gaps in points and classify them: minimal ≤2, notable >2–5, important >5.\n"
+    "- If multiple groups are present, highlight only the most meaningful contrasts instead of exhaustively listing all.\n"
+    "- Mention whether gaps observed in 2024 have widened, narrowed, or remained stable compared with earlier years.\n"
+    "- Conclude with a concise overall statement (e.g., “Overall, results have remained steady and demographic gaps are unchanged”).\n\n"
+    "Style & output\n"
+    "- Professional, concise, neutral. Narrative style (1–3 short paragraphs, no lists).\n"
+    "- Output VALID JSON with exactly one key: \"narrative\".\n"
+)
+
+def _format_series_for_ai(year_pos: pd.DataFrame) -> List[Dict[str, float]]:
+    rows = []
+    for _, r in year_pos.iterrows():
+        try:
+            y = int(r["Year"])
+        except Exception:
+            y = r["Year"]
+        rows.append({"year": y, "positive": float(r["Positive"]) if pd.notna(r["Positive"]) else None})
+    return rows
+
+def _build_user_prompt_per_question(qcode: str, qtext: str, df_disp: pd.DataFrame, category_in_play: bool) -> str:
+    # Build a compact JSON payload to ground the AI.
+    # Use only Positive series by year (averaged across demographics if present).
+    t = df_disp.copy()
+    if "Demographic" in t.columns:
+        series = t.groupby("Year", as_index=False)["Positive"].mean(numeric_only=True)
+    else:
+        series = t[["Year", "Positive"]].copy()
+    series = series.dropna(subset=["Year"]).sort_values("Year")
+    series_json = _format_series_for_ai(series)
+
+    group_info = []
+    if category_in_play and "Demographic" in t.columns:
+        latest_year = pd.to_numeric(t["Year"], errors="coerce").max()
+        g = t[pd.to_numeric(t["Year"], errors="coerce") == latest_year][["Demographic", "Positive"]].dropna()
+        g = g.sort_values("Positive", ascending=False)
+        if not g.empty:
+            top = g.iloc[0].to_dict()
+            bot = g.iloc[-1].to_dict()
+            group_info = [
+                {"demographic": str(top["Demographic"]), "positive": float(top["Positive"]) if pd.notna(top["Positive"]) else None},
+                {"demographic": str(bot["Demographic"]), "positive": float(bot["Positive"]) if pd.notna(bot["Positive"]) else None},
+            ]
+
+    payload = {
+        "question_code": qcode,
+        "question_text": qtext,
+        "series_positive_by_year": series_json,
+        "latest_year_group_snapshot": group_info,
+        "notes": "Summarize trends and gaps using the classification thresholds provided in the system prompt."
+    }
+    return json.dumps(payload, ensure_ascii=False)
+
+def _build_user_prompt_overall(selected_codes: List[str], pivot: pd.DataFrame) -> str:
+    # pivot: index=Question (codes), columns=Year, values=Positive (averaged)
+    items = []
+    for q in pivot.index.tolist():
+        row = {"question_code": str(q), "positive_by_year": {}}
+        for y in pivot.columns.tolist():
+            val = pivot.loc[q, y]
+            if pd.notna(val):
+                row["positive_by_year"][int(y)] = float(val)
+        items.append(row)
+    payload = {
+        "questions": items,
+        "notes": "Synthesize the overall pattern across questions using the classification thresholds."
+    }
+    return json.dumps(payload, ensure_ascii=False)
+
+def _call_openai_json(system: str, user: str, model: str = OPENAI_MODEL, temperature: float = 0.3, max_retries: int = 2) -> Tuple[str, Optional[str]]:
+    """
+    Calls OpenAI chat models and returns (content_text, error_hint).
+    On error, returns ("", hint).
+    """
+    if not OPENAI_API_KEY:
+        return "", "no_api_key"
+
+    # Support both old and new SDKs gracefully.
+    try:
+        from openai import OpenAI  # new SDK
+        client = OpenAI(api_key=OPENAI_API_KEY)
+        for attempt in range(max_retries + 1):
+            try:
+                resp = client.chat.completions.create(
+                    model=model,
+                    temperature=temperature,
+                    response_format={"type": "json_object"},
+                    messages=[{"role": "system", "content": system}, {"role": "user", "content": user}],
+                )
+                content = resp.choices[0].message.content or ""
+                return content, None
+            except Exception as e:
+                hint = f"openai_err_{attempt+1}: {type(e).__name__}"
+                time.sleep(0.8 * (attempt + 1))
+        return "", hint
+    except Exception:
+        # Fallback to legacy 'openai' package if available
+        try:
+            import openai
+            openai.api_key = OPENAI_API_KEY
+            for attempt in range(max_retries + 1):
+                try:
+                    resp = openai.ChatCompletion.create(
+                        model=model,
+                        temperature=temperature,
+                        messages=[{"role": "system", "content": system}, {"role": "user", "content": user}],
+                    )
+                    content = resp["choices"][0]["message"]["content"] or ""
+                    return content, None
+                except Exception as e:
+                    hint = f"openai_legacy_err_{attempt+1}: {type(e).__name__}"
+                    time.sleep(0.8 * (attempt + 1))
+            return "", hint
+        except Exception:
+            return "", "no_openai_sdk"
 
 
 # ─────────────────────────────
@@ -102,44 +261,55 @@ def run_menu1():
             body { background-image: none !important; background-color: white !important; }
             .block-container { padding-top: 1rem !important; }
             .menu-banner { width: 100%; height: auto; display: block; margin-top: 0px; margin-bottom: 20px; }
-            .custom-header { font-size: 30px !important; font-weight: 700; margin-bottom: 10px; }
+            .custom-header { font-size: 30px !important; font-weight: 700; margin-bottom: 6px; }
             .custom-instruction { font-size: 16px !important; line-height: 1.4; margin-bottom: 10px; color: #333; }
             .field-label { font-size: 18px !important; font-weight: 600 !important; margin-top: 12px !important; margin-bottom: 2px !important; color: #222 !important; }
             .big-button button { font-size: 18px !important; padding: 0.75em 2em !important; margin-top: 20px; }
             .pill { display:inline-block; padding:4px 8px; margin:2px 6px 2px 0; background:#f1f3f5; border-radius:999px; font-size:13px; }
             .action-row { display:flex; gap:10px; align-items:center; }
+            /* Make st.toggle ON track red */
+            [data-testid="stSwitch"] div[role="switch"][aria-checked="true"] { background-color: #e03131 !important; }
+            [data-testid="stSwitch"] div[role="switch"] { box-shadow: inset 0 0 0 1px rgba(0,0,0,0.1); }
         </style>
     """, unsafe_allow_html=True)
 
-    # Auto-reset on entry if navigating from another menu (requires router to set last_active_menu)
+    # Auto-reset on entry when coming from another page (router must set last_active_menu)
     if st.session_state.get("last_active_menu") != "menu1":
         reset_menu1_state()
     st.session_state["last_active_menu"] = "menu1"
 
-    # Ensure base containers exist after possible reset
+    # Ensure base state exists (after possible reset)
     st.session_state.setdefault("menu1_selected_codes", [])
     st.session_state.setdefault("menu1_hits", [])
     st.session_state.setdefault("menu1_kw_query", "")
+    st.session_state.setdefault("menu1_multi_questions", [])
     st.session_state.setdefault("menu1_ai_toggle", False)
 
     demo_df = load_demographics_metadata()
     qdf = load_questions_metadata()
     sdf = load_scales_metadata()
 
-    # Helper maps
     code_to_display = dict(zip(qdf["code"], qdf["display"]))
     display_to_code = {v: k for k, v in code_to_display.items()}
 
     left, center, right = st.columns([1, 3, 1])
     with center:
-        # Banner — original
+        # Banner (original asset)
         st.markdown(
             "<img class='menu-banner' src='https://raw.githubusercontent.com/Martin-Coder-Cloud/PSES---GPT/refs/heads/main/PSES%20email%20banner.png'>",
             unsafe_allow_html=True
         )
 
-        # Header + instructions
+        # Title + AI toggle (red switch)
         st.markdown('<div class="custom-header">PSES Explorer Search</div>', unsafe_allow_html=True)
+        ai_enabled = st.toggle(
+            "🧠 Enable AI analysis",
+            value=st.session_state.get("menu1_ai_toggle", False),
+            key="menu1_ai_toggle",
+            help="Include the AI-generated analysis alongside the tables."
+        )
+
+        # Instructions
         st.markdown("""
             <div class="custom-instruction">
                 Please use this menu to explore the survey results by questions.<br>
@@ -148,38 +318,28 @@ def run_menu1():
             </div>
         """, unsafe_allow_html=True)
 
-        # =========================
-        # Question selection area
-        # =========================
+        # ---------- Question selection ----------
         st.markdown('<div class="field-label">Pick up to 5 survey questions:</div>', unsafe_allow_html=True)
 
-        # 1) Multi-select from official list (authoritative source for dropdown selection)
-        # Use & update st.session_state["menu1_multi_questions"] so deselects stick.
+        # 1) Multi-select from list (authoritative)
         all_displays = qdf["display"].tolist()
-        st.session_state.setdefault("menu1_multi_questions", [])
         multi_choices = st.multiselect(
             "Choose one or more from the official list",
             all_displays,
             default=st.session_state["menu1_multi_questions"],
             max_selections=5,
             label_visibility="collapsed",
-            key="menu1_multi_questions"
+            key="menu1_multi_questions",
         )
         selected_from_multi: Set[str] = set(display_to_code[d] for d in multi_choices if d in display_to_code)
 
-        # 2) Keyword/theme search (hybrid) with persistent results
+        # 2) Keyword/theme search (persistent)
         with st.expander("Search by keywords or theme (optional)"):
-            # Bind to session so resets truly clear the text
-            search_query = st.text_input(
-                "Enter keywords (e.g., harassment, recognition, onboarding)",
-                key="menu1_kw_query"
-            )
-            # Button to compute hits and store persistently
+            search_query = st.text_input("Enter keywords (e.g., harassment, recognition, onboarding)", key="menu1_kw_query")
             if st.button("Search questions", key="menu1_find_hits"):
                 hits_df = hybrid_question_search(qdf, search_query, top_k=120, min_score=0.40)
                 st.session_state["menu1_hits"] = hits_df[["code", "text"]].to_dict(orient="records") if not hits_df.empty else []
 
-            # Always render stored hits with independent checkboxes
             selected_from_hits: Set[str] = set()
             if st.session_state["menu1_hits"]:
                 st.write(f"Top {len(st.session_state['menu1_hits'])} matches meeting the quality threshold:")
@@ -187,35 +347,31 @@ def run_menu1():
                     code = rec["code"]; text = rec["text"]
                     label = f"{code} – {text}"
                     key = f"kwhit_{code}"
-                    # Checked if previously checked, or if code is in dropdown selection
                     default_checked = st.session_state.get(key, False) or (code in selected_from_multi)
                     checked = st.checkbox(label, value=default_checked, key=key)
                     if checked:
                         selected_from_hits.add(code)
             else:
-                st.info("Enter keywords and click “Search questions” to see matches.")
+                st.info('Enter keywords and click "Search questions" to see matches.')
 
-        # Combine sources: dropdown (authoritative) + search hits
-        combined_order = []
-        # Start with the order of the dropdown list to keep UX intuitive
+        # Merge sources: dropdown (ordered) + search hits
+        combined_order: List[str] = []
         for d in st.session_state["menu1_multi_questions"]:
             c = display_to_code.get(d)
             if c and c not in combined_order:
                 combined_order.append(c)
-        # Then add any hit selections (that aren’t already in dropdown)
         for c in selected_from_hits:
             if c not in combined_order:
                 combined_order.append(c)
 
-        # Enforce max 5
+        # Cap at 5
         if len(combined_order) > 5:
             combined_order = combined_order[:5]
             st.warning("Limit is 5 questions; extra selections were ignored.")
 
-        # Persist the current combined selection
         st.session_state["menu1_selected_codes"] = combined_order
 
-        # “Selected questions” checklist to allow quick removal
+        # Selected questions checklist (for quick removal)
         if st.session_state["menu1_selected_codes"]:
             st.markdown('<div class="field-label">Selected questions:</div>', unsafe_allow_html=True)
             updated = list(st.session_state["menu1_selected_codes"])
@@ -225,34 +381,26 @@ def run_menu1():
                     label = code_to_display.get(code, code)
                     keep = st.checkbox(label, value=True, key=f"sel_{code}")
                     if not keep:
-                        # Remove from combined
                         updated = [c for c in updated if c != code]
-                        # Also uncheck the hit checkbox if it exists
-                        hit_key = f"kwhit_{code}"
-                        if hit_key in st.session_state:
-                            st.session_state[hit_key] = False
-                        # Also remove from multiselect widget state
+                        # Uncheck hit checkbox if exists
+                        hk = f"kwhit_{code}"
+                        if hk in st.session_state:
+                            st.session_state[hk] = False
+                        # Remove from dropdown state
                         disp = code_to_display.get(code)
-                        if disp and "menu1_multi_questions" in st.session_state:
-                            st.session_state["menu1_multi_questions"] = [
-                                d for d in st.session_state["menu1_multi_questions"] if d != disp
-                            ]
+                        if disp:
+                            st.session_state["menu1_multi_questions"] = [d for d in st.session_state["menu1_multi_questions"] if d != disp]
             if updated != st.session_state["menu1_selected_codes"]:
                 st.session_state["menu1_selected_codes"] = updated
 
-        # Final question list to use
+        # Final list
         question_codes: List[str] = st.session_state["menu1_selected_codes"]
-        if not question_codes:
-            st.info("Please choose at least one question (via multi-select and/or keyword hits).")
-            # Continue rendering rest of page to allow year/demo pre-selection if desired
 
-        # =========================
-        # Years
-        # =========================
+        # ---------- Years ----------
         st.markdown('<div class="field-label">Select survey year(s):</div>', unsafe_allow_html=True)
         all_years = [2024, 2022, 2020, 2019]
         select_all = st.checkbox("All years", value=True, key="select_all_years")
-        selected_years = []
+        selected_years: List[int] = []
         year_cols = st.columns(len(all_years))
         for idx, yr in enumerate(all_years):
             with year_cols[idx]:
@@ -261,68 +409,52 @@ def run_menu1():
                     selected_years.append(yr)
         selected_years = sorted(selected_years)
 
-        # =========================
-        # Demographics
-        # =========================
+        # ---------- Demographics ----------
         st.markdown('<div class="field-label">Select a demographic category (optional):</div>', unsafe_allow_html=True)
         DEMO_CAT_COL = "DEMCODE Category"
         LABEL_COL = "DESCRIP_E"
         demo_categories = ["All respondents"] + sorted(demo_df[DEMO_CAT_COL].dropna().astype(str).unique().tolist())
-        demo_selection = st.selectbox(
-            "Demographic category",
-            demo_categories,
-            key="demo_main",
-            label_visibility="collapsed"
-        )
+        demo_selection = st.selectbox("Demographic category", demo_categories, key="demo_main", label_visibility="collapsed")
 
         sub_selection = None
         if demo_selection != "All respondents":
             st.markdown(f'<div class="field-label">Subgroup ({demo_selection}) (optional):</div>', unsafe_allow_html=True)
             sub_items = demo_df.loc[demo_df[DEMO_CAT_COL] == demo_selection, LABEL_COL].dropna().astype(str).unique().tolist()
             sub_items = sorted(sub_items)
-            sub_selection = st.selectbox(
-                "(leave blank to include all subgroups in this category)",
-                [""] + sub_items,
-                key=f"sub_{demo_selection.replace(' ', '_')}",
-                label_visibility="collapsed"
-            )
+            sub_selection = st.selectbox("(leave blank to include all subgroups in this category)", [""] + sub_items, key=f"sub_{demo_selection.replace(' ', '_')}", label_visibility="collapsed")
             if sub_selection == "":
                 sub_selection = None
 
-        # =========================
-        # AI analysis toggle (restored)
-        # =========================
-        st.session_state["menu1_ai_toggle"] = st.checkbox("Enable AI analysis", value=st.session_state["menu1_ai_toggle"], key="menu1_ai_toggle")
-
-        # =========================
-        # Action row: Search + Reset side by side
-        # =========================
+        # ---------- Action row ----------
         st.markdown("<div class='action-row'>", unsafe_allow_html=True)
         colA, colB = st.columns([1, 1])
         with colA:
             disable_search = (not question_codes) or (not selected_years)
             if st.button("Search", disabled=disable_search):
+                # Prep backends (no-op if not provided)
+                try:
+                    prewarm_fastpath()
+                except Exception:
+                    pass
+                backend = {}
+                try:
+                    backend = get_backend_info()
+                except Exception:
+                    pass
+
                 # Resolve DEMCODE(s)
                 demcodes, disp_map, category_in_play = resolve_demographic_codes(demo_df, demo_selection, sub_selection)
 
                 # Pull & prepare per-question results
                 per_q_disp_tables: Dict[str, pd.DataFrame] = {}
                 per_q_texts: Dict[str, str] = {}
-                per_q_scale_labels: Dict[str, list[tuple[str, str]]] = {}
-
                 for qcode in question_codes:
                     qtext = qdf.loc[qdf["code"] == qcode, "text"].values[0] if (qdf["code"] == qcode).any() else ""
-                    scale_pairs = get_scale_labels(sdf, qcode)
-                    per_q_scale_labels[qcode] = scale_pairs
                     per_q_texts[qcode] = qtext
 
                     parts = []
                     for code in demcodes:
-                        df_part = load_results2024_filtered(
-                            question_code=qcode,
-                            years=selected_years,
-                            group_value=code
-                        )
+                        df_part = load_results2024_filtered(question_code=qcode, years=selected_years, group_value=code)
                         if not df_part.empty:
                             parts.append(df_part)
                     if not parts:
@@ -331,6 +463,7 @@ def run_menu1():
                     df_all = pd.concat(parts, ignore_index=True)
                     df_all = normalize_results_columns(df_all)
 
+                    # Strict guards
                     qmask = df_all["question_code"].astype(str).str.strip().str.upper() == str(qcode).strip().upper()
                     ymask = pd.to_numeric(df_all["year"], errors="coerce").astype("Int64").isin(selected_years)
                     if demo_selection == "All respondents":
@@ -343,12 +476,9 @@ def run_menu1():
                     if df_all.empty:
                         continue
 
-                    df_disp = format_table_for_display(
-                        df_slice=df_all,
-                        dem_disp_map=disp_map,
-                        category_in_play=category_in_play,
-                        scale_pairs=scale_pairs
-                    )
+                    # Scales → display labels
+                    scale_pairs = get_scale_labels(sdf, qcode)
+                    df_disp = format_table_for_display(df_slice=df_all, dem_disp_map=disp_map, category_in_play=category_in_play, scale_pairs=scale_pairs)
                     per_q_disp_tables[qcode] = df_disp
 
                 if not per_q_disp_tables:
@@ -366,16 +496,32 @@ def run_menu1():
                             st.subheader(f"{qcode} — {qtext}")
                             st.dataframe(df_disp, use_container_width=True)
 
-                            # Summary (Positive only) — unchanged narrative style
+                            # Non-AI summary (kept)
                             st.markdown("#### Summary (Positive only)")
                             summary = build_positive_only_narrative(df_disp, category_in_play)
                             st.write(summary)
 
-                            # NOTE: Your existing AI prompt/logic can hook into st.session_state["menu1_ai_toggle"]
-                            # if st.session_state["menu1_ai_toggle"]:
-                            #     ... run your unchanged AI narrative with df_disp / context ...
+                            # AI per-question narrative
+                            if ai_enabled:
+                                try:
+                                    user_payload = _build_user_prompt_per_question(qcode, qtext, df_disp, category_in_play)
+                                    content, hint = _call_openai_json(system=AI_SYSTEM_PROMPT, user=user_payload, model=OPENAI_MODEL, temperature=0.2)
+                                    if content:
+                                        try:
+                                            j = json.loads(content)
+                                            if isinstance(j, dict) and j.get("narrative"):
+                                                st.markdown("#### AI analysis")
+                                                st.write(j["narrative"])
+                                            else:
+                                                st.caption("AI returned no narrative.")
+                                        except Exception:
+                                            st.caption("AI returned non-JSON content.")
+                                    else:
+                                        st.caption(f"AI unavailable ({hint}).")
+                                except Exception as e:
+                                    st.caption(f"AI error: {type(e).__name__}")
 
-                    # Summary matrix
+                    # Summary matrix across questions
                     summary_rows = []
                     for qcode, df_disp in per_q_disp_tables.items():
                         t = df_disp.copy()
@@ -392,6 +538,7 @@ def run_menu1():
                         pivot = summary_df.pivot_table(index="Question", columns="Year", values="Positive", aggfunc="mean")
                         pivot = pivot.reindex(index=[qc for qc in question_codes if qc in per_q_disp_tables])
                         pivot = pivot.reindex(sorted(pivot.columns), axis=1)
+
                         st.markdown("### Summary matrix (% Positive)")
                         st.dataframe(pivot.round(1).reset_index(), use_container_width=True)
 
@@ -400,7 +547,27 @@ def run_menu1():
                         trend_txt = ", ".join([f"{int(y)}: {v:.1f}%" for y, v in zip(pivot.columns, means)])
                         st.write(f"Average % Positive across selected questions by year → {trend_txt}.")
 
-                        # Excel
+                        # AI overall narrative across questions
+                        if ai_enabled:
+                            try:
+                                user_payload = _build_user_prompt_overall(question_codes, pivot)
+                                content, hint = _call_openai_json(system=AI_SYSTEM_PROMPT, user=user_payload, model=OPENAI_MODEL, temperature=0.2)
+                                if content:
+                                    try:
+                                        j = json.loads(content)
+                                        if isinstance(j, dict) and j.get("narrative"):
+                                            st.markdown("#### AI overall analysis")
+                                            st.write(j["narrative"])
+                                        else:
+                                            st.caption("AI returned no narrative.")
+                                    except Exception:
+                                        st.caption("AI returned non-JSON content.")
+                                else:
+                                    st.caption(f"AI unavailable ({hint}).")
+                            except Exception as e:
+                                st.caption(f"AI error: {type(e).__name__}")
+
+                        # Excel download (Summary + one sheet per question + Context)
                         with io.BytesIO() as buf:
                             with pd.ExcelWriter(buf, engine="xlsxwriter") as writer:
                                 pivot.round(1).reset_index().to_excel(writer, sheet_name="Summary_Matrix", index=False)
@@ -428,6 +595,17 @@ def run_menu1():
                 reset_menu1_state()
                 st.experimental_rerun()
         st.markdown("</div>", unsafe_allow_html=True)
+
+        # Small diagnostics (optional)
+        if SHOW_DEBUG:
+            st.markdown("---")
+            st.caption("Diagnostics")
+            st.json({
+                "selected_codes": st.session_state.get("menu1_selected_codes"),
+                "kw_query": st.session_state.get("menu1_kw_query"),
+                "hits_count": len(st.session_state.get("menu1_hits", [])),
+                "ai_enabled": st.session_state.get("menu1_ai_toggle"),
+            })
 
 
 if __name__ == "__main__":
