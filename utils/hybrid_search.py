@@ -16,11 +16,19 @@ def _norm(s: str) -> str:
 def _tokset(s: str) -> set[str]:
     return {t for t in _norm(s).split() if t}
 
-def hybrid_question_search(qdf: pd.DataFrame, query: str, top_k: int = 50) -> pd.DataFrame:
+def hybrid_question_search(
+    qdf: pd.DataFrame,
+    query: str,
+    top_k: int = 120,
+    min_score: float = 0.40
+) -> pd.DataFrame:
     """
     Search the question metadata (qdf) by keyword or code.
     Returns a DataFrame of matches with columns: score, hit_type, code, text, display.
     Expects qdf to have columns: code, text, display.
+
+    - top_k: return at most this many rows (default 120)
+    - min_score: filter out weak hits below this score (default 0.40)
     """
     if not query or not query.strip():
         return qdf.head(0)
@@ -49,15 +57,16 @@ def hybrid_question_search(qdf: pd.DataFrame, query: str, top_k: int = 50) -> pd
                 union = len(q_tok | tset)
                 jt = inter / union if union else 0.0
 
-        # Scoring heuristic
+        # Scoring heuristic (exact >> substring >> token overlap)
         score = (3.0 if exact_code else 0.0) \
               + (1.0 if in_code else 0.0) \
               + (1.5 if in_text else 0.0) \
               + jt
-        hit_type = "exact" if exact_code else "substring" if (in_code or in_text) else "semantic"
+        if score < min_score:
+            continue
 
-        if score > 0:
-            rows.append((score, hit_type, code, text, disp))
+        hit_type = "exact" if exact_code else "substring" if (in_code or in_text) else "semantic"
+        rows.append((score, hit_type, code, text, disp))
 
     if not rows:
         return qdf.head(0)
