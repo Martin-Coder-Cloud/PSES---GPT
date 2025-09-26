@@ -48,10 +48,23 @@ CSV_USECOLS = [
 ]
 
 # =============================================================================
-# Internal diagnostics (visible in Menu 1 → Status footer / diagnostics)
+# Internal diagnostics & compatibility
 # =============================================================================
 _LAST_DIAG: dict = {}
 _LAST_ENGINE: str = "unknown"
+
+# Optional debug notes (you can display them in a Status panel)
+_DEBUG_NOTES: list[str] = []
+
+# Back-compat names some older code may read
+LAST_BACKEND: str = "unknown"
+BACKEND_IN_USE: str = "unknown"
+
+def _note(msg: str) -> None:
+    try:
+        _DEBUG_NOTES.append(str(msg))
+    except Exception:
+        pass
 
 def _set_diag(**kwargs):
     _LAST_DIAG.clear()
@@ -64,6 +77,10 @@ def get_last_query_diag() -> dict:
         parquet_dir, csv_path, parquet_error }
     """
     return dict(_LAST_DIAG)
+
+def get_last_backend() -> str:
+    """Compatibility shim for menu code that probes last backend name."""
+    return _LAST_ENGINE or LAST_BACKEND or BACKEND_IN_USE or "unknown"
 
 # =============================================================================
 # Capability checks
@@ -114,7 +131,7 @@ def _build_parquet_with_duckdb(csv_path: str) -> None:
 
     # Build SELECT with optional LEVEL1ID==0 filter
     # We keep DEMCODE values (demographic breakdowns) at the PS-wide level.
-    con.execute(f"""
+    con.execute("""
         CREATE OR REPLACE TABLE pses AS
         SELECT
           CAST(SURVEYR AS INT)                                 AS year,
@@ -135,7 +152,7 @@ def _build_parquet_with_duckdb(csv_path: str) -> None:
         WHERE
           -- If LEVEL1ID exists, keep PS-wide only; else include all rows.
           COALESCE(try_cast(LEVEL1ID AS INT), 0) = 0
-          OR NOT EXISTS(SELECT 1 FROM (SELECT * FROM read_csv_auto(?, header=true) LIMIT 1) t WHERE TRUE) -- safeguard
+          OR NOT EXISTS(SELECT 1 FROM (SELECT * FROM read_csv_auto(?, header=true) LIMIT 1) t WHERE TRUE)
     """, [csv_path, csv_path])
 
     con.execute(f"""
@@ -206,8 +223,10 @@ def ensure_parquet_dataset() -> str:
 
     if _duckdb_available():
         _build_parquet_with_duckdb(csv_path)
+        _note("Parquet built with DuckDB.")
     else:
         _build_parquet_with_pandas(csv_path)
+        _note("Parquet built with pandas/pyarrow.")
 
     with open(PARQUET_FLAG, "w") as f:
         f.write("ok")
@@ -231,6 +250,7 @@ def load_questions_metadata() -> pd.DataFrame:
     """
     path = _path_candidate("metadata/Survey Questions.xlsx", "/mnt/data/Survey Questions.xlsx")
     if not path:
+        _note("Questions metadata not found.")
         return pd.DataFrame(columns=["code", "text", "display"])
     qdf = pd.read_excel(path)
     cols = {c.lower(): c for c in qdf.columns}
@@ -239,6 +259,7 @@ def load_questions_metadata() -> pd.DataFrame:
     code_col = col("question")
     text_col = col("English")
     if not code_col or not text_col:
+        _note("Questions metadata missing required columns (question/English).")
         return pd.DataFrame(columns=["code", "text", "display"])
     out = pd.DataFrame({
         "code": qdf[code_col].astype(str).str.strip(),
@@ -255,6 +276,7 @@ def load_questions_metadata() -> pd.DataFrame:
 def load_scales_metadata() -> pd.DataFrame:
     path = _path_candidate("metadata/Survey Scales.xlsx", "/mnt/data/Survey Scales.xlsx")
     if not path:
+        _note("Scales metadata not found.")
         return pd.DataFrame()
     sdf = pd.read_excel(path)
     sdf.columns = sdf.columns.str.strip().str.lower()
@@ -270,12 +292,15 @@ def load_scales_metadata() -> pd.DataFrame:
             break
     if code_col:
         sdf["__code_norm__"] = sdf[code_col].astype(str).map(_normalize_qcode)
+    else:
+        _note("Scales metadata has no code/question column.")
     return sdf
 
 @st.cache_resource(show_spinner=False)
 def load_demographics_metadata() -> pd.DataFrame:
     path = _path_candidate("metadata/Demographics.xlsx", "/mnt/data/Demographics.xlsx")
     if not path:
+        _note("Demographics metadata not found.")
         return pd.DataFrame()
     df = pd.read_excel(path)
     df.columns = [c.strip() for c in df.columns]
@@ -297,6 +322,7 @@ def preload_pswide_dataframe() -> pd.DataFrame:
             dataset = ds.dataset(PARQUET_ROOTDIR, format="parquet")
             table = dataset.to_table(columns=OUT_COLS)
             df = table.to_pandas(types_mapper=pd.ArrowDtype)
+            _note("PS-wide in-memory loaded from Parquet.")
         else:
             # CSV streaming preload
             path = ensure_results2024_local()
@@ -326,6 +352,7 @@ def preload_pswide_dataframe() -> pd.DataFrame:
                 out.loc[out["group_value"].astype("string").str.strip() == "", "group_value"] = "All"
                 frames.append(out)
             df = (pd.concat(frames, ignore_index=True) if frames else pd.DataFrame(columns=OUT_COLS))
+            _note("PS-wide in-memory loaded from CSV stream.")
 
         # Cast to friendly dtypes
         if not df.empty:
@@ -338,7 +365,8 @@ def preload_pswide_dataframe() -> pd.DataFrame:
             df["question_code"] = df["question_code"].astype(DTYPES["question_code"])
             df["group_value"]   = df["group_value"].astype(DTYPES["group_value"])
         return df
-    except Exception:
+    except Exception as e:
+        _note(f"PS-wide preload failed: {type(e).__name__}: {e}")
         return pd.DataFrame(columns=OUT_COLS)
 
 # Track in-memory status
@@ -491,9 +519,9 @@ def load_results2024_filtered(
                 parquet_error=None,
             )
             return df
-    except Exception:
+    except Exception as e:
+        _note(f"In-memory filter failed: {type(e).__name__}: {e}")
         # fall through to Parquet/CSV
-        pass
 
     # Try Parquet pushdown next
     if _pyarrow_available():
@@ -516,6 +544,7 @@ def load_results2024_filtered(
             return df
         except Exception as e:
             parquet_error = str(e)
+            _note(f"Parquet query failed: {parquet_error}")
 
     # CSV fallback
     df = _csv_stream_filter(question_code, years, group_value)
@@ -572,16 +601,21 @@ def prewarm_all() -> dict:
     Build/ensure backend (Parquet or CSV), load metadata into cache,
     load the PS-wide DataFrame into memory, and return a summary for UI.
     """
+    _DEBUG_NOTES.clear()
+
     # Ensure raw results are present
     ensure_results2024_local()
+    _note(f"CSV ready at {LOCAL_GZ_PATH}")
 
     # Prefer Parquet if available (and build if needed)
     engine = "csv"
     try:
         ensure_parquet_dataset()
         engine = "parquet"
-    except Exception:
+        _note(f"Parquet dataset ready at {PARQUET_ROOTDIR}")
+    except Exception as e:
         engine = "csv"
+        _note(f"Parquet unavailable, using CSV: {type(e).__name__}: {e}")
 
     # Metadata (cached)
     qdf = load_questions_metadata()
@@ -595,6 +629,8 @@ def prewarm_all() -> dict:
         "scales": int(sdf.shape[0]) if sdf is not None else 0,
         "demographics": int(ddf.shape[0]) if ddf is not None else 0,
     }
+    _note(f"Metadata counts — Q={_META_CACHE['counts']['questions']}, "
+          f"Scales={_META_CACHE['counts']['scales']}, Demos={_META_CACHE['counts']['demographics']}")
 
     # In-memory PS-wide DataFrame (cached)
     df_inmem = preload_pswide_dataframe()
@@ -602,13 +638,13 @@ def prewarm_all() -> dict:
         "mode": f"pswide_df({engine})",
         "rows": int(df_inmem.shape[0]) if isinstance(df_inmem, pd.DataFrame) else 0
     })
+    _note(f"In-memory rows: {_INMEM_STATE['rows']:,}")
 
-    # Lift last-engine for UI
-    global _LAST_ENGINE
-    try:
-        _LAST_ENGINE = engine
-    except Exception:
-        pass
+    # Lift last-engine for UI/compat
+    global _LAST_ENGINE, LAST_BACKEND, BACKEND_IN_USE
+    _LAST_ENGINE = engine
+    LAST_BACKEND = engine
+    BACKEND_IN_USE = engine
 
     return {
         "engine": engine,
@@ -618,6 +654,7 @@ def prewarm_all() -> dict:
         "pswide_only": True,
         "parquet_dir": PARQUET_ROOTDIR,
         "csv_path": LOCAL_GZ_PATH,
+        "debug": {"notes": list(_DEBUG_NOTES)},
     }
 
 # Back-compat API used by older main.py versions
@@ -644,4 +681,5 @@ def get_backend_info() -> dict:
         "pswide_only": summary.get("pswide_only", True),
         "parquet_dir": PARQUET_ROOTDIR,
         "csv_path": LOCAL_GZ_PATH,
+        "debug": summary.get("debug", {"notes": list(_DEBUG_NOTES)}),
     }
