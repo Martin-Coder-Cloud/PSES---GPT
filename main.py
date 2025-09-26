@@ -1,10 +1,10 @@
-# main.py — Home-first router; uses utils.data_loader.prewarm_all + get_backend_info
+# main.py — Home-first router; preload on app load; Home-only background; status footer on Home
 from __future__ import annotations
 import streamlit as st
 
 st.set_page_config(layout="wide")
 
-# Loader hooks (match your utils/data_loader.py)
+# Loader hooks (must exist in utils/data_loader.py per our latest loader)
 try:
     from utils.data_loader import prewarm_all, get_backend_info
 except Exception:
@@ -16,28 +16,55 @@ def goto(page: str):
     st.session_state["_nav"] = page
     st.rerun()
 
-# ── shared: compact status ribbon (uses get_backend_info) ────────────────────
-def _status_ribbon():
+# ── background reset for non-Home pages ──────────────────────────────────────
+def _clear_bg_css():
+    st.markdown("""
+        <style>
+            .block-container {
+                background-image: none !important;
+                background: none !important;
+                color: inherit !important;
+                padding-top: 1.25rem !important;
+                padding-left: 1.25rem !important;
+                padding-bottom: 2rem !important;
+            }
+        </style>
+    """, unsafe_allow_html=True)
+
+# ── compact status footer (Home page) ────────────────────────────────────────
+def _status_footer():
     info = {}
     try:
         info = (get_backend_info() or {})
     except Exception:
         pass
+
     mc = info.get("metadata_counts", {}) or {}
-    q = mc.get("questions", 0); s = mc.get("scales", 0); d = mc.get("demographics", 0)
+    q = mc.get("questions", 0)
+    s = mc.get("scales", 0)
+    d = mc.get("demographics", 0)
+
     engine = info.get("last_engine", "?")
     inmem  = info.get("inmem_mode", "none")
     rows   = info.get("inmem_rows", 0)
     pswide = "Yes" if info.get("pswide_only") else "No"
-    st.markdown(
-        f"""
-        <div style="text-align:center; font-size:12px; color:#f5f5f5; margin-top:10px; opacity:.95;">
-          Engine: <b>{engine}</b> • In-mem: <b>{inmem}</b> ({rows:,} rows) •
-          Meta: Q={q}, Scales={s}, Demos={d} • PS-wide only: <b>{pswide}</b>
-        </div>
-        """,
-        unsafe_allow_html=True
-    )
+
+    st.markdown("---")
+    st.subheader("Status")
+    c1, c2 = st.columns([1, 1])
+    with c1:
+        st.markdown(f"**Engine:** `{engine}`")
+        st.markdown(f"**In-memory:** `{inmem}` — **{rows:,}** rows")
+        if info.get("parquet_dir"):
+            st.caption(f"Parquet: {info.get('parquet_dir')}")
+        if info.get("csv_path"):
+            st.caption(f"CSV: {info.get('csv_path')}")
+    with c2:
+        st.markdown("**Metadata**")
+        st.markdown(f"- Questions: **{q}**")
+        st.markdown(f"- Scales: **{s}**")
+        st.markdown(f"- Demographics: **{d}**")
+        st.caption(f"PS-wide only: {pswide}")
 
 # ── Home view (injects background CSS locally) ───────────────────────────────
 def render_home():
@@ -71,14 +98,6 @@ def render_home():
         </style>
     """, unsafe_allow_html=True)
 
-    # One-time warmup here (metadata + PS-wide in-memory)
-    if prewarm_all is not None:
-        try:
-            with st.spinner("Preparing data backend (one-time)…"):
-                prewarm_all()
-        except Exception as e:
-            st.warning(f"Warmup notice: {type(e).__name__}: {e}")
-
     st.markdown("<div class='main-section'>", unsafe_allow_html=True)
 
     st.markdown(
@@ -100,14 +119,16 @@ def render_home():
         unsafe_allow_html=True
     )
 
-    _status_ribbon()
-
+    # Primary CTA → Menu 1
     st.markdown("<div class='single-button'>", unsafe_allow_html=True)
     if st.button("▶️ Start your search", key="menu_start_button"):
         goto("menu1")
     st.markdown("</div>", unsafe_allow_html=True)
 
-    # Optional: legacy link for Menu 2
+    # Status footer (below the button)
+    _status_footer()
+
+    # Optional: legacy/testing link
     with st.expander("Advanced: open classic menus (for testing / legacy flows)"):
         if st.button("🧩 Menu 2 — Search by Keywords/Theme"):
             goto("menu2")
@@ -115,20 +136,6 @@ def render_home():
     st.markdown("</div>", unsafe_allow_html=True)
 
 # ── Menu wrappers (clear background before rendering) ────────────────────────
-def _clear_bg_css():
-    st.markdown("""
-        <style>
-            .block-container {
-                background-image: none !important;
-                background: none !important;
-                color: inherit !important;
-                padding-top: 1.25rem !important;
-                padding-left: 1.25rem !important;
-                padding-bottom: 2rem !important;
-            }
-        </style>
-    """, unsafe_allow_html=True)
-
 def render_menu1():
     _clear_bg_css()
     try:
@@ -153,12 +160,25 @@ def render_menu2():
 
 # ── Entry ────────────────────────────────────────────────────────────────────
 def main():
-    # Ensure old router flags can't hijack navigation
+    # Remove legacy router flags, if present
     if "run_menu" in st.session_state:
         st.session_state.pop("run_menu")
+
+    # Always preload on app load (first run shows spinner; cached afterward)
+    if prewarm_all is not None:
+        if not st.session_state.get("_prewarmed", False):
+            with st.spinner("Preparing data backend (one-time)…"):
+                prewarm_all()
+            st.session_state["_prewarmed"] = True
+        else:
+            # No spinner, but ensure cached resources are available
+            prewarm_all()
+
+    # Default to Home
     if "_nav" not in st.session_state:
         st.session_state["_nav"] = "home"
 
+    # Route
     page = st.session_state["_nav"]
     if page == "menu1":
         render_menu1()
