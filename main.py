@@ -1,20 +1,43 @@
-# main.py — homepage (Menu 1 on click; Home bg only; clear bg on Menu pages)
+# main.py — Home-first router; uses utils.data_loader.prewarm_all + get_backend_info
 from __future__ import annotations
 import streamlit as st
 
-# Optional: prewarm metadata + PS-wide data only on the home view
+st.set_page_config(layout="wide")
+
+# Loader hooks (match your utils/data_loader.py)
 try:
     from utils.data_loader import prewarm_all, get_backend_info
 except Exception:
     prewarm_all = None
     get_backend_info = None
 
-st.set_page_config(layout="wide")
-
 # ── tiny nav helper ──────────────────────────────────────────────────────────
 def goto(page: str):
     st.session_state["_nav"] = page
     st.rerun()
+
+# ── shared: compact status ribbon (uses get_backend_info) ────────────────────
+def _status_ribbon():
+    info = {}
+    try:
+        info = (get_backend_info() or {})
+    except Exception:
+        pass
+    mc = info.get("metadata_counts", {}) or {}
+    q = mc.get("questions", 0); s = mc.get("scales", 0); d = mc.get("demographics", 0)
+    engine = info.get("last_engine", "?")
+    inmem  = info.get("inmem_mode", "none")
+    rows   = info.get("inmem_rows", 0)
+    pswide = "Yes" if info.get("pswide_only") else "No"
+    st.markdown(
+        f"""
+        <div style="text-align:center; font-size:12px; color:#f5f5f5; margin-top:10px; opacity:.95;">
+          Engine: <b>{engine}</b> • In-mem: <b>{inmem}</b> ({rows:,} rows) •
+          Meta: Q={q}, Scales={s}, Demos={d} • PS-wide only: <b>{pswide}</b>
+        </div>
+        """,
+        unsafe_allow_html=True
+    )
 
 # ── Home view (injects background CSS locally) ───────────────────────────────
 def render_home():
@@ -31,75 +54,28 @@ def render_home():
                 background-position: center top;
                 color: white;
             }
-            /* Content rail */
-            .main-section {
-                margin-left: 200px;      /* shared left indent */
-                max-width: 820px;        /* content width */
-                text-align: left;        /* left-align text */
-            }
-            .main-title {
-                font-size: 42px;
-                font-weight: 800;
-                margin-bottom: 16px;
-            }
-            .subtitle {
-                font-size: 22px;
-                line-height: 1.4;
-                margin-bottom: 18px;
-                opacity: 0.95;
-                max-width: 700px;
-            }
-            .context {
-                font-size: 18px;
-                line-height: 1.55;
-                margin-top: 8px;
-                margin-bottom: 36px;
-                opacity: 0.95;
-                max-width: 700px;
-                text-align: left;
-            }
+            .main-section { margin-left: 200px; max-width: 820px; text-align: left; }
+            .main-title { font-size: 42px; font-weight: 800; margin-bottom: 16px; }
+            .subtitle { font-size: 22px; line-height: 1.4; margin-bottom: 18px; opacity: 0.95; max-width: 700px; }
+            .context { font-size: 18px; line-height: 1.55; margin-top: 8px; margin-bottom: 36px; opacity: 0.95; max-width: 700px; text-align: left; }
             .single-button { display: flex; flex-direction: column; gap: 16px; }
             div.stButton > button {
-                background-color: rgba(255,255,255,0.08) !important;
-                color: white !important;
+                background-color: rgba(255,255,255,0.08) !important; color: white !important;
                 border: 2px solid rgba(255, 255, 255, 0.35) !important;
                 font-size: 30px !important; font-weight: 700 !important;
-                padding: 26px 34px !important;
-                width: 420px !important; min-height: 88px !important;
-                border-radius: 14px !important;
-                text-align: left !important;
-                backdrop-filter: blur(2px);
+                padding: 26px 34px !important; width: 420px !important; min-height: 88px !important;
+                border-radius: 14px !important; text-align: left !important; backdrop-filter: blur(2px);
             }
-            div.stButton > button:hover {
-                border-color: white !important;
-                background-color: rgba(255, 255, 255, 0.14) !important;
-            }
-            div[data-testid="stExpander"] > details > summary {
-                color: #fff; font-size: 16px;
-            }
+            div.stButton > button:hover { border-color: white !important; background-color: rgba(255, 255, 255, 0.14) !important; }
+            div[data-testid="stExpander"] > details > summary { color: #fff; font-size: 16px; }
         </style>
     """, unsafe_allow_html=True)
 
-    # One-time warmup here (only on Home)
+    # One-time warmup here (metadata + PS-wide in-memory)
     if prewarm_all is not None:
         try:
             with st.spinner("Preparing data backend (one-time)…"):
                 prewarm_all()
-            if get_backend_info is not None:
-                info = get_backend_info() or {}
-                engine = info.get("last_engine", "unknown")
-                inmem = info.get("inmem_mode", "none")
-                inmem_rows = info.get("inmem_rows", 0)
-                parquet_dir = info.get("parquet_dir")
-                csv_path = info.get("csv_path")
-                if engine.startswith("inmem"):
-                    st.caption(f"🧠 In-memory store ready ({inmem}, {inmem_rows:,} rows).")
-                elif engine == "parquet":
-                    st.caption(f"✅ Parquet ready at: {parquet_dir}" if parquet_dir else "✅ Parquet backend initialized.")
-                elif engine == "csv":
-                    st.caption(f"⚠️ Using CSV fallback. (CSV: {csv_path})")
-                else:
-                    st.caption("ℹ️ Data backend initialized.")
         except Exception as e:
             st.warning(f"Warmup notice: {type(e).__name__}: {e}")
 
@@ -124,24 +100,22 @@ def render_home():
         unsafe_allow_html=True
     )
 
+    _status_ribbon()
+
     st.markdown("<div class='single-button'>", unsafe_allow_html=True)
     if st.button("▶️ Start your search", key="menu_start_button"):
-        goto("menu1")  # switch to menu 1 and rerun
+        goto("menu1")
     st.markdown("</div>", unsafe_allow_html=True)
 
-    # Optional: legacy links for testing
+    # Optional: legacy link for Menu 2
     with st.expander("Advanced: open classic menus (for testing / legacy flows)"):
-        c1, c2 = st.columns([1,1])
-        if c1.button("🔍 Menu 1 — Search by Question"):
-            goto("menu1")
-        if c2.button("🧩 Menu 2 — Search by Keywords/Theme"):
+        if st.button("🧩 Menu 2 — Search by Keywords/Theme"):
             goto("menu2")
 
     st.markdown("</div>", unsafe_allow_html=True)
 
 # ── Menu wrappers (clear background before rendering) ────────────────────────
 def _clear_bg_css():
-    # Explicitly remove/override the Home background & white text
     st.markdown("""
         <style>
             .block-container {
@@ -182,8 +156,6 @@ def main():
     # Ensure old router flags can't hijack navigation
     if "run_menu" in st.session_state:
         st.session_state.pop("run_menu")
-
-    # Default to Home
     if "_nav" not in st.session_state:
         st.session_state["_nav"] = "home"
 
