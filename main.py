@@ -7,10 +7,17 @@ st.set_page_config(layout="wide")
 
 # Loader hooks (from utils/data_loader.py)
 try:
-    from utils.data_loader import prewarm_all, get_backend_info
+    from utils.data_loader import (
+        prewarm_all,
+        get_backend_info,
+        preload_pswide_dataframe,   # for explicit in-memory verification
+        get_last_query_diag,        # optional: show last query stats if needed
+    )
 except Exception:
     prewarm_all = None
     get_backend_info = None
+    preload_pswide_dataframe = None
+    get_last_query_diag = None
 
 # ── tiny nav helper ──────────────────────────────────────────────────────────
 def goto(page: str):
@@ -65,6 +72,7 @@ def render_home():
             /* Make links readable on the hero background */
             .main-section a { color: #fff !important; text-decoration: underline; }
             .status-lines { font-size: 14px; line-height: 1.4; }
+            .status-subtle { font-size: 13px; opacity: 0.9; }
         </style>
     """, unsafe_allow_html=True)
 
@@ -105,7 +113,7 @@ def render_home():
         unsafe_allow_html=True
     )
 
-    # White "Status" expander (one item per line)
+    # White "Status" expander (with richer diagnostics)
     with st.expander("Status", expanded=False):
         info = {}
         try:
@@ -114,30 +122,59 @@ def render_home():
             info = {}
 
         mc = info.get("metadata_counts", {}) or {}
-        q = mc.get("questions", 0)
-        s = mc.get("scales", 0)
-        d = mc.get("demographics", 0)
-
         engine = info.get("last_engine", "?")
         inmem  = info.get("inmem_mode", "none")
-        rows   = info.get("inmem_rows", 0)
+        rows   = int(info.get("inmem_rows", 0) or 0)
         pswide = "Yes" if info.get("pswide_only") else "No"
-        parquet_dir = info.get("parquet_dir")
-        csv_path    = info.get("csv_path")
 
         st.markdown("<div class='status-lines'>", unsafe_allow_html=True)
         st.markdown(f"- **Engine:** {engine}")
         st.markdown(f"- **In-memory:** {inmem}")
         st.markdown(f"- **Rows in memory:** {rows:,}")
         st.markdown(f"- **PS-wide only:** {pswide}")
-        st.markdown(f"- **Questions (metadata):** {q}")
-        st.markdown(f"- **Scales (metadata):** {s}")
-        st.markdown(f"- **Demographics (metadata):** {d}")
-        if parquet_dir:
-            st.markdown(f"- **Parquet directory:** `{parquet_dir}`")
-        if csv_path:
-            st.markdown(f"- **CSV path:** `{csv_path}`")
+        st.markdown(f"- **Questions (metadata):** {int(mc.get('questions', 0))}")
+        st.markdown(f"- **Scales (metadata):** {int(mc.get('scales', 0))}")
+        st.markdown(f"- **Demographics (metadata):** {int(mc.get('demographics', 0))}")
+        if info.get("parquet_dir"):
+            st.markdown(f"- **Parquet directory:** `{info.get('parquet_dir')}`")
+        if info.get("csv_path"):
+            st.markdown(f"- **CSV path:** `{info.get('csv_path')}`")
         st.markdown("</div>", unsafe_allow_html=True)
+
+        # ── TEMP DIAGNOSTICS (safe, cached) — helps you verify preload actually happened
+        st.markdown("<div class='status-subtle'>Diagnostics (temporary):</div>", unsafe_allow_html=True)
+        try:
+            if preload_pswide_dataframe is not None:
+                df_mem = preload_pswide_dataframe()
+                mem_rows = 0 if df_mem is None else int(getattr(df_mem, "shape", [0])[0])
+                st.markdown(f"- In-memory DF rows (live check): **{mem_rows:,}**")
+                if df_mem is not None and not df_mem.empty:
+                    # quick, lightweight facts
+                    try:
+                        uq = df_mem["question_code"].nunique()
+                        st.markdown(f"- Unique questions in memory: **{int(uq)}**")
+                    except Exception:
+                        pass
+                    try:
+                        ymin = int(df_mem["year"].min())
+                        ymax = int(df_mem["year"].max())
+                        st.markdown(f"- Year range in memory: **{ymin}–{ymax}**")
+                    except Exception:
+                        pass
+            else:
+                st.caption("• preload_pswide_dataframe() not available to import.")
+        except Exception as e:
+            st.caption(f"• Preload verification failed: {type(e).__name__}: {e}")
+
+        # Optional: last query diagnostic (if you already ran a query in Menu 1)
+        try:
+            if get_last_query_diag is not None:
+                last = get_last_query_diag() or {}
+                if last:
+                    st.markdown("<div class='status-subtle'>Last query (if any):</div>", unsafe_allow_html=True)
+                    st.json(last)
+        except Exception:
+            pass
 
     st.markdown("</div>", unsafe_allow_html=True)
 
