@@ -17,7 +17,6 @@ import streamlit as st
 # -----------------------------
 # External utilities (your repo)
 # -----------------------------
-# Robust import with fallbacks so this file runs even if diagnostics helpers are absent.
 import utils.data_loader as _dl
 try:
     from utils.data_loader import load_results2024_filtered, get_backend_info, prewarm_fastpath
@@ -37,14 +36,12 @@ from utils.menu1_helpers import (
 
 from utils.hybrid_search import hybrid_question_search
 
-# Ensure OpenAI key sourced from Streamlit secrets (do not hardcode)
+# Ensure OpenAI key from secrets/env
 OPENAI_API_KEY = st.secrets.get("OPENAI_API_KEY", "") or os.environ.get("OPENAI_API_KEY", "")
-OPENAI_MODEL = st.secrets.get("OPENAI_MODEL", "gpt-4o-mini")  # change in secrets if needed
+OPENAI_MODEL = st.secrets.get("OPENAI_MODEL", "gpt-4o-mini")
 
-# Global controls
-SHOW_DEBUG = False  # set True to render tiny diagnostics panel
+SHOW_DEBUG = False
 PD = pd
-
 
 # ─────────────────────────────
 # Cached metadata
@@ -59,7 +56,6 @@ def load_demographics_metadata() -> pd.DataFrame:
 def load_questions_metadata() -> pd.DataFrame:
     qdf = pd.read_excel("metadata/Survey Questions.xlsx")
     qdf.columns = [c.strip().lower() for c in qdf.columns]
-    # Expect "question" (code) and "english" (text)
     if "question" in qdf.columns and "english" in qdf.columns:
         qdf = qdf.rename(columns={"question": "code", "english": "text"})
     qdf["code"] = qdf["code"].astype(str)
@@ -73,9 +69,8 @@ def load_questions_metadata() -> pd.DataFrame:
 @st.cache_data(show_spinner=False)
 def load_scales_metadata() -> pd.DataFrame:
     sdf = pd.read_excel("metadata/Survey Scales.xlsx")
-    sdf.columns = [c.strip().lower() for c in sdf.columns]
+    sdf.columns = [c.strip().lower() for c in df.columns] if (df := sdf) is not None else []
     return sdf
-
 
 # ─────────────────────────────
 # Reset helpers
@@ -104,18 +99,15 @@ def reset_menu1_state():
     ] + year_keys
     prefixes = ["kwhit_", "sel_", "sub_"]
     _delete_keys(prefixes, exact)
-    # Explicit resets for text/arrays/toggles
     st.session_state["menu1_kw_query"] = ""
     st.session_state["menu1_hits"] = []
     st.session_state["menu1_selected_codes"] = []
     st.session_state["menu1_multi_questions"] = []
     st.session_state["menu1_ai_toggle"] = False
 
-
 # ─────────────────────────────
-# AI helpers: prompts + call
+# AI helpers: your exact system prompt + call
 # ─────────────────────────────
-# Prompt change: "minimal ≤2" (was "normal ≤2")
 AI_SYSTEM_PROMPT = (
     "You are preparing insights for the Government of Canada’s Public Service Employee Survey (PSES).\n\n"
     "Context\n"
@@ -156,8 +148,6 @@ def _format_series_for_ai(year_pos: pd.DataFrame) -> List[Dict[str, float]]:
     return rows
 
 def _build_user_prompt_per_question(qcode: str, qtext: str, df_disp: pd.DataFrame, category_in_play: bool) -> str:
-    # Build a compact JSON payload to ground the AI.
-    # Use only Positive series by year (averaged across demographics if present).
     t = df_disp.copy()
     if "Demographic" in t.columns:
         series = t.groupby("Year", as_index=False)["Positive"].mean(numeric_only=True)
@@ -189,7 +179,6 @@ def _build_user_prompt_per_question(qcode: str, qtext: str, df_disp: pd.DataFram
     return json.dumps(payload, ensure_ascii=False)
 
 def _build_user_prompt_overall(selected_codes: List[str], pivot: pd.DataFrame) -> str:
-    # pivot: index=Question (codes), columns=Year, values=Positive (averaged)
     items = []
     for q in pivot.index.tolist():
         row = {"question_code": str(q), "positive_by_year": {}}
@@ -198,21 +187,12 @@ def _build_user_prompt_overall(selected_codes: List[str], pivot: pd.DataFrame) -
             if pd.notna(val):
                 row["positive_by_year"][int(y)] = float(val)
         items.append(row)
-    payload = {
-        "questions": items,
-        "notes": "Synthesize the overall pattern across questions using the classification thresholds."
-    }
+    payload = {"questions": items, "notes": "Synthesize the overall pattern across questions using the classification thresholds."}
     return json.dumps(payload, ensure_ascii=False)
 
 def _call_openai_json(system: str, user: str, model: str = OPENAI_MODEL, temperature: float = 0.3, max_retries: int = 2) -> Tuple[str, Optional[str]]:
-    """
-    Calls OpenAI chat models and returns (content_text, error_hint).
-    On error, returns ("", hint).
-    """
     if not OPENAI_API_KEY:
         return "", "no_api_key"
-
-    # Support both old and new SDKs gracefully.
     try:
         from openai import OpenAI  # new SDK
         client = OpenAI(api_key=OPENAI_API_KEY)
@@ -231,7 +211,6 @@ def _call_openai_json(system: str, user: str, model: str = OPENAI_MODEL, tempera
                 time.sleep(0.8 * (attempt + 1))
         return "", hint
     except Exception:
-        # Fallback to legacy 'openai' package if available
         try:
             import openai
             openai.api_key = OPENAI_API_KEY
@@ -251,6 +230,31 @@ def _call_openai_json(system: str, user: str, model: str = OPENAI_MODEL, tempera
         except Exception:
             return "", "no_openai_sdk"
 
+# ─────────────────────────────
+# Column resolution helper (robust to naming)
+# ─────────────────────────────
+def _first_col(df: pd.DataFrame, candidates: List[str]) -> Optional[str]:
+    for c in candidates:
+        if c in df.columns:
+            return c
+    return None
+
+# ─────────────────────────────
+# Try to get the in-memory PS-wide DF (fastpath)
+# ─────────────────────────────
+def _get_pswide_df() -> Optional[pd.DataFrame]:
+    try:
+        if hasattr(_dl, "preload_pswide_dataframe"):
+            df = _dl.preload_pswide_dataframe()
+            if isinstance(df, pd.DataFrame):
+                return df
+        if hasattr(_dl, "pswide_df"):
+            df = getattr(_dl, "pswide_df")
+            if isinstance(df, pd.DataFrame):
+                return df
+    except Exception:
+        pass
+    return None
 
 # ─────────────────────────────
 # UI
@@ -267,7 +271,6 @@ def run_menu1():
             .big-button button { font-size: 18px !important; padding: 0.75em 2em !important; margin-top: 20px; }
             .pill { display:inline-block; padding:4px 8px; margin:2px 6px 2px 0; background:#f1f3f5; border-radius:999px; font-size:13px; }
             .action-row { display:flex; gap:10px; align-items:center; }
-            /* Make st.toggle ON track red */
             [data-testid="stSwitch"] div[role="switch"][aria-checked="true"] { background-color: #e03131 !important; }
             [data-testid="stSwitch"] div[role="switch"] { box-shadow: inset 0 0 0 1px rgba(0,0,0,0.1); }
         </style>
@@ -294,7 +297,7 @@ def run_menu1():
 
     left, center, right = st.columns([1, 3, 1])
     with center:
-        # Banner (original asset)
+        # Banner
         st.markdown(
             "<img class='menu-banner' src='https://raw.githubusercontent.com/Martin-Coder-Cloud/PSES---GPT/refs/heads/main/PSES%20email%20banner.png'>",
             unsafe_allow_html=True
@@ -382,11 +385,9 @@ def run_menu1():
                     keep = st.checkbox(label, value=True, key=f"sel_{code}")
                     if not keep:
                         updated = [c for c in updated if c != code]
-                        # Uncheck hit checkbox if exists
                         hk = f"kwhit_{code}"
                         if hk in st.session_state:
                             st.session_state[hk] = False
-                        # Remove from dropdown state
                         disp = code_to_display.get(code)
                         if disp:
                             st.session_state["menu1_multi_questions"] = [d for d in st.session_state["menu1_multi_questions"] if d != disp]
@@ -431,54 +432,85 @@ def run_menu1():
         with colA:
             disable_search = (not question_codes) or (not selected_years)
             if st.button("Search", disabled=disable_search):
-                # Prep backends (no-op if not provided)
-                try:
-                    prewarm_fastpath()
-                except Exception:
-                    pass
-                backend = {}
-                try:
-                    backend = get_backend_info()
-                except Exception:
-                    pass
+                # Use in-memory PS-wide DF if available; fallback to chunked loader otherwise
+                df_ps = _get_pswide_df()
 
                 # Resolve DEMCODE(s)
                 demcodes, disp_map, category_in_play = resolve_demographic_codes(demo_df, demo_selection, sub_selection)
 
-                # Pull & prepare per-question results
                 per_q_disp_tables: Dict[str, pd.DataFrame] = {}
                 per_q_texts: Dict[str, str] = {}
+
                 for qcode in question_codes:
                     qtext = qdf.loc[qdf["code"] == qcode, "text"].values[0] if (qdf["code"] == qcode).any() else ""
                     per_q_texts[qcode] = qtext
 
-                    parts = []
-                    for code in demcodes:
-                        df_part = load_results2024_filtered(question_code=qcode, years=selected_years, group_value=code)
-                        if not df_part.empty:
-                            parts.append(df_part)
-                    if not parts:
-                        continue
+                    if isinstance(df_ps, pd.DataFrame) and not df_ps.empty:
+                        # -------- Fastpath: filter in-memory PS-wide DF ----------
+                        df_all = df_ps.copy()
 
-                    df_all = pd.concat(parts, ignore_index=True)
-                    df_all = normalize_results_columns(df_all)
+                        # Resolve columns robustly
+                        qcol = _first_col(df_all, ["question_code", "QUESTION", "Question"])
+                        ycol = _first_col(df_all, ["year", "Year", "SURVEYR"])
+                        gcol = _first_col(df_all, ["group_value", "DEMCODE", "Group", "group"])
 
-                    # Strict guards
-                    qmask = df_all["question_code"].astype(str).str.strip().str.upper() == str(qcode).strip().upper()
-                    ymask = pd.to_numeric(df_all["year"], errors="coerce").astype("Int64").isin(selected_years)
-                    if demo_selection == "All respondents":
-                        gmask = df_all["group_value"].isna() | (df_all["group_value"].astype(str).str.strip() == "")
+                        # Apply filters
+                        if qcol is None or ycol is None:
+                            continue
+                        qmask = df_all[qcol].astype(str).str.strip().str.upper() == str(qcode).strip().upper()
+                        ymask = pd.to_numeric(df_all[ycol], errors="coerce").astype("Int64").isin(selected_years)
+
+                        if gcol is None:
+                            gmask = True  # PS-wide only
+                        else:
+                            if demo_selection == "All respondents":
+                                gv = df_all[gcol].astype(str).fillna("").str.strip()
+                                gmask = gv.isin(["", "All", "ALL", "All respondents", "ALL RESPONDENTS"])
+                            else:
+                                gmask = df_all[gcol].astype(str).isin([str(c) for c in demcodes])
+
+                        df_all = df_all[qmask & ymask & gmask].copy()
+                        if df_all.empty:
+                            continue
+
+                        # Normalize columns to standard names expected downstream
+                        df_all = normalize_results_columns(df_all)
+                        df_all = drop_na_999(df_all)
+                        if df_all.empty:
+                            continue
+
                     else:
-                        gmask = df_all["group_value"].astype(str).isin([str(c) for c in demcodes])
-                    df_all = df_all[qmask & ymask & gmask].copy()
-
-                    df_all = drop_na_999(df_all)
-                    if df_all.empty:
-                        continue
+                        # -------- Fallback: chunked loader path (per-demcode) ----------
+                        parts = []
+                        for code in demcodes:
+                            df_part = load_results2024_filtered(question_code=qcode, years=selected_years, group_value=code)
+                            if not df_part.empty:
+                                parts.append(df_part)
+                        if not parts:
+                            continue
+                        df_all = pd.concat(parts, ignore_index=True)
+                        df_all = normalize_results_columns(df_all)
+                        # Guard after normalization
+                        qmask = df_all["question_code"].astype(str).str.strip().str.upper() == str(qcode).strip().upper()
+                        ymask = pd.to_numeric(df_all["year"], errors="coerce").astype("Int64").isin(selected_years)
+                        if demo_selection == "All respondents":
+                            gv = df_all["group_value"].astype(str).fillna("").str.strip()
+                            gmask = gv.isin(["", "All", "ALL", "All respondents", "ALL RESPONDENTS"])
+                        else:
+                            gmask = df_all["group_value"].astype(str).isin([str(c) for c in demcodes])
+                        df_all = df_all[qmask & ymask & gmask].copy()
+                        df_all = drop_na_999(df_all)
+                        if df_all.empty:
+                            continue
 
                     # Scales → display labels
                     scale_pairs = get_scale_labels(sdf, qcode)
-                    df_disp = format_table_for_display(df_slice=df_all, dem_disp_map=disp_map, category_in_play=category_in_play, scale_pairs=scale_pairs)
+                    df_disp = format_table_for_display(
+                        df_slice=df_all,
+                        dem_disp_map=disp_map,
+                        category_in_play=category_in_play,
+                        scale_pairs=scale_pairs
+                    )
                     per_q_disp_tables[qcode] = df_disp
 
                 if not per_q_disp_tables:
@@ -496,13 +528,13 @@ def run_menu1():
                             st.subheader(f"{qcode} — {qtext}")
                             st.dataframe(df_disp, use_container_width=True)
 
-                            # Non-AI summary (kept)
+                            # Non-AI summary
                             st.markdown("#### Summary (Positive only)")
                             summary = build_positive_only_narrative(df_disp, category_in_play)
                             st.write(summary)
 
                             # AI per-question narrative
-                            if ai_enabled:
+                            if st.session_state.get("menu1_ai_toggle", False):
                                 try:
                                     user_payload = _build_user_prompt_per_question(qcode, qtext, df_disp, category_in_play)
                                     content, hint = _call_openai_json(system=AI_SYSTEM_PROMPT, user=user_payload, model=OPENAI_MODEL, temperature=0.2)
@@ -547,8 +579,8 @@ def run_menu1():
                         trend_txt = ", ".join([f"{int(y)}: {v:.1f}%" for y, v in zip(pivot.columns, means)])
                         st.write(f"Average % Positive across selected questions by year → {trend_txt}.")
 
-                        # AI overall narrative across questions
-                        if ai_enabled:
+                        # AI overall narrative
+                        if st.session_state.get("menu1_ai_toggle", False):
                             try:
                                 user_payload = _build_user_prompt_overall(question_codes, pivot)
                                 content, hint = _call_openai_json(system=AI_SYSTEM_PROMPT, user=user_payload, model=OPENAI_MODEL, temperature=0.2)
@@ -567,7 +599,7 @@ def run_menu1():
                             except Exception as e:
                                 st.caption(f"AI error: {type(e).__name__}")
 
-                        # Excel download (Summary + one sheet per question + Context)
+                        # Excel download
                         with io.BytesIO() as buf:
                             with pd.ExcelWriter(buf, engine="xlsxwriter") as writer:
                                 pivot.round(1).reset_index().to_excel(writer, sheet_name="Summary_Matrix", index=False)
@@ -596,7 +628,6 @@ def run_menu1():
                 st.experimental_rerun()
         st.markdown("</div>", unsafe_allow_html=True)
 
-        # Small diagnostics (optional)
         if SHOW_DEBUG:
             st.markdown("---")
             st.caption("Diagnostics")
@@ -605,6 +636,7 @@ def run_menu1():
                 "kw_query": st.session_state.get("menu1_kw_query"),
                 "hits_count": len(st.session_state.get("menu1_hits", [])),
                 "ai_enabled": st.session_state.get("menu1_ai_toggle"),
+                "in_memory_loaded": isinstance(_get_pswide_df(), pd.DataFrame),
             })
 
 
