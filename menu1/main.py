@@ -1,7 +1,7 @@
 # menu1/main.py — PSES Explorer Search (Menu 1)
 # UX update:
 # - Hide Search/Reset after running a query; show "Start a new search" at the bottom.
-# - Add "Download AI analysis (Word)" button.
+# - Add "Download AI analysis (Word)" button with no external dependency (python-docx optional; OpenXML fallback).
 # - Rename Excel button to "Download data tabulations (Excel)".
 from __future__ import annotations
 
@@ -9,6 +9,7 @@ import io
 import json
 import os
 import time
+import zipfile
 from datetime import datetime
 from functools import lru_cache
 from typing import List, Dict, Tuple, Optional
@@ -463,6 +464,135 @@ def _user_prompt_overall_mixed(per_q_disp: Dict[str, pd.DataFrame],
     return json.dumps({"questions": items, "notes": "Provide a concise overall synthesis across questions, respecting each question’s metric_label."}, ensure_ascii=False)
 
 # -----------------------------
+# Minimal DOCX builder (fallback if python-docx is missing)
+# -----------------------------
+def _xml_escape(s: str) -> str:
+    return (str(s)
+            .replace("&", "&amp;")
+            .replace("<", "&lt;")
+            .replace(">", "&gt;")
+            .replace('"', "&quot;")
+            .replace("'", "&apos;"))
+
+def _build_ai_docx_bytes(per_q_order: List[str],
+                         narratives: Dict[str, str],
+                         overall_text: Optional[str],
+                         question_codes: List[str],
+                         selected_years: List[int],
+                         demo_selection: str,
+                         sub_selection: Optional[str],
+                         model_name: str) -> bytes:
+    """
+    Try python-docx first; if unavailable, build a minimal .docx via OpenXML (zipped XML).
+    Returns bytes.
+    """
+    # First: try python-docx
+    try:
+        from docx import Document  # type: ignore
+        doc = Document()
+        doc.add_heading("PSES Explorer — AI Analyses", level=1)
+        meta = doc.add_paragraph(f"Generated at: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+        doc.add_paragraph(
+            f"Selection: Questions: {', '.join(question_codes)}; Years: {', '.join(map(str, selected_years))}; "
+            f"Demographic: {demo_selection}" + (f" — {sub_selection}" if sub_selection else "")
+        )
+        for q in per_q_order:
+            if q in narratives:
+                doc.add_heading(f"Summary Analysis — {q}", level=2)
+                doc.add_paragraph(narratives[q])
+        if overall_text:
+            doc.add_heading("Overall Summary Analysis", level=2)
+            doc.add_paragraph(overall_text)
+        doc.add_paragraph("")
+        doc.add_paragraph(f"Model: {model_name} • Source: 2024 Public Service Employee Survey (Open Government Portal)")
+        bio = io.BytesIO()
+        doc.save(bio)
+        return bio.getvalue()
+    except Exception:
+        pass  # Fall through to raw OpenXML
+
+    # Build minimal DOCX manually
+    title = "PSES Explorer — AI Analyses"
+    generated = f"Generated at: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
+    selection = (f"Selection: Questions: {', '.join(question_codes)}; Years: {', '.join(map(str, selected_years))}; "
+                 f"Demographic: {demo_selection}" + (f" — {sub_selection}" if sub_selection else ""))
+    paras: List[str] = []
+    paras.append(title)
+    paras.append(generated)
+    paras.append(selection)
+    for q in per_q_order:
+        if q in narratives:
+            paras.append(f"Summary Analysis — {q}")
+            paras.append(narratives[q])
+    if overall_text:
+        paras.append("Overall Summary Analysis")
+        paras.append(overall_text)
+    paras.append(f"Model: {model_name} • Source: 2024 Public Service Employee Survey (Open Government Portal)")
+
+    # document.xml content
+    def _p(text: str) -> str:
+        return f'<w:p><w:r><w:t>{_xml_escape(text)}</w:t></w:r></w:p>'
+
+    doc_xml = (
+        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+        '<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">'
+        '<w:body>'
+        + "".join(_p(t) for t in paras) +
+        '<w:sectPr/></w:body></w:document>'
+    )
+
+    # [Content_Types].xml
+    content_types = (
+        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+        '<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">'
+        '<Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>'
+        '<Default Extension="xml" ContentType="application/xml"/>'
+        '<Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/>'
+        '<Override PartName="/docProps/core.xml" ContentType="application/vnd.openxmlformats-package.core-properties+xml"/>'
+        '</Types>'
+    )
+
+    # _rels/.rels
+    rels = (
+        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+        '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
+        '<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/>'
+        '<Relationship Id="rId2" Type="http://schemas.openxmlformats.org/package/2006/relationships/metadata/core-properties" Target="docProps/core.xml"/>'
+        '</Relationships>'
+    )
+
+    # docProps/core.xml
+    core_xml = (
+        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+        '<cp:coreProperties xmlns:cp="http://schemas.openxmlformats.org/package/2006/metadata/core-properties" '
+        'xmlns:dc="http://purl.org/dc/elements/1.1/" '
+        'xmlns:dcterms="http://purl.org/dc/terms/" '
+        'xmlns:dcmitype="http://purl.org/dc/dcmitype/" '
+        'xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">'
+        f'<dc:title>{_xml_escape(title)}</dc:title>'
+        f'<dc:creator>PSES Explorer</dc:creator>'
+        f'<cp:lastModifiedBy>PSES Explorer</cp:lastModifiedBy>'
+        f'<dcterms:created xsi:type="dcterms:W3CDTF">{datetime.utcnow().isoformat()}Z</dcterms:created>'
+        f'<dcterms:modified xsi:type="dcterms:W3CDTF">{datetime.utcnow().isoformat()}Z</dcterms:modified>'
+        '</cp:coreProperties>'
+    )
+
+    # word/_rels/document.xml.rels (empty is fine)
+    doc_rels = (
+        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+        '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"/>'
+    )
+
+    bio = io.BytesIO()
+    with zipfile.ZipFile(bio, 'w', zipfile.ZIP_DEFLATED) as z:
+        z.writestr('[Content_Types].xml', content_types)
+        z.writestr('_rels/.rels', rels)
+        z.writestr('docProps/core.xml', core_xml)
+        z.writestr('word/document.xml', doc_xml)
+        z.writestr('word/_rels/document.xml.rels', doc_rels)
+    return bio.getvalue()
+
+# -----------------------------
 # Misc utils
 # -----------------------------
 def _get_pswide_df() -> Optional[pd.DataFrame]:
@@ -733,10 +863,14 @@ def run_menu1():
             with colB:
                 if st.button("Reset all parameters"):
                     _reset_menu1_state()
-                    st.experimental_rerun()
+                    try:
+                        st.rerun()
+                    except Exception:
+                        st.experimental_rerun()
+                    st.stop()
             st.markdown("</div>", unsafe_allow_html=True)
         else:
-            clicked = False  # already searched; keep rendering results below
+            clicked = False  # already searched
 
         # =========================
         # RESULTS & AI (FULL WIDTH)
@@ -973,7 +1107,7 @@ def run_menu1():
                     with pd.ExcelWriter(buf, engine="xlsxwriter") as writer:
                         try:
                             if pivot is not None:
-                                pivot.round(1).reset_index().to_excel(writer, sheet_name="Summary_Table", index=False)
+                                pd.DataFrame(pivot.round(1).reset_index()).to_excel(writer, sheet_name="Summary_Table", index=False)
                         except Exception:
                             pass
                         for q, df_disp in per_q_disp.items():
@@ -997,49 +1131,20 @@ def run_menu1():
                         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                     )
 
-                # Build Word (.docx) with AI analyses
-                def _build_ai_docx(narratives: Dict[str, str], overall_text: Optional[str]) -> Optional[bytes]:
-                    try:
-                        from docx import Document  # python-docx
-                        from docx.shared import Pt
-                    except Exception:
-                        return None
-                    doc = Document()
-                    doc.add_heading("PSES Explorer — AI Analyses", level=1)
-                    meta = doc.add_paragraph()
-                    meta.add_run("Generated at: ").bold = True
-                    meta.add_run(datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
-                    meta2 = doc.add_paragraph()
-                    meta2.add_run("Selection: ").bold = True
-                    meta2.add_run(f"Questions: {', '.join(question_codes)}; Years: {', '.join(map(str, selected_years))}; "
-                                  f"Demographic: {demo_selection}" + (f" — {sub_selection}" if sub_selection else ""))
-
-                    # Per-question sections (in selected order)
-                    for qcode in tab_labels:
-                        if qcode in narratives:
-                            doc.add_heading(f"Summary Analysis — {qcode}", level=2)
-                            doc.add_paragraph(narratives[qcode])
-
-                    # Overall
-                    if overall_text:
-                        doc.add_heading("Overall Summary Analysis", level=2)
-                        doc.add_paragraph(overall_text)
-
-                    # Footer
-                    doc.add_paragraph("")
-                    foot = doc.add_paragraph()
-                    foot.add_run("Model: ").bold = True
-                    foot.add_run(OPENAI_MODEL)
-                    foot.add_run(" • Source: 2024 Public Service Employee Survey (Open Government Portal)")
-
-                    b = io.BytesIO()
-                    doc.save(b)
-                    return b.getvalue()
-
-                ai_doc_bytes = _build_ai_docx(ai_narratives, overall_narrative)
-
+                # Build Word (.docx) with AI analyses (works with or without python-docx)
+                has_ai_content = bool(ai_narratives) or bool(overall_narrative)
                 with dl_col2:
-                    if st.session_state.get("menu1_ai_toggle", True) and ai_doc_bytes:
+                    if st.session_state.get("menu1_ai_toggle", True) and has_ai_content:
+                        ai_doc_bytes = _build_ai_docx_bytes(
+                            per_q_order=tab_labels,
+                            narratives=ai_narratives,
+                            overall_text=overall_narrative,
+                            question_codes=question_codes,
+                            selected_years=selected_years,
+                            demo_selection=demo_selection,
+                            sub_selection=sub_selection,
+                            model_name=OPENAI_MODEL
+                        )
                         st.download_button(
                             label="Download AI analysis (Word)",
                             data=ai_doc_bytes,
@@ -1047,12 +1152,16 @@ def run_menu1():
                             mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
                         )
                     else:
-                        st.caption("AI analysis Word export unavailable (AI off or python-docx missing).")
+                        st.caption("No AI analysis available to export.")
 
                 with dl_col3:
                     if st.button("Start a new search"):
                         _reset_menu1_state()
-                        st.experimental_rerun()
+                        try:
+                            st.rerun()
+                        except Exception:
+                            st.experimental_rerun()
+                        st.stop()
 
 
 if __name__ == "__main__":
