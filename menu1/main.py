@@ -1,8 +1,7 @@
 # menu1/main.py — PSES Explorer Search (Menu 1)
-# UX update:
-# - Hide Search/Reset after running a query; show "Start a new search" at the bottom.
-# - Add "Download AI analysis (Word)" button with no external dependency (python-docx optional; OpenXML fallback).
-# - Rename Excel button to "Download data tabulations (Excel)".
+# Fix: use DEMCODEs (not labels) for demographic filtering; robust column resolution; loader compatibility.
+# Keeps: AI prompt unchanged; tabs (summary + per-question); AI analysis + Word export; width/layout; reset UX.
+
 from __future__ import annotations
 
 import io
@@ -166,6 +165,7 @@ AI_SYSTEM_PROMPT = (
 @st.cache_data(show_spinner=False)
 def _load_demographics() -> pd.DataFrame:
     df = pd.read_excel("metadata/Demographics.xlsx")
+    # Keep original casing; resolve columns case-insensitively later.
     df.columns = [c.strip() for c in df.columns]
     return df
 
@@ -198,42 +198,75 @@ def _is_overall(val) -> bool:
     s = str(val).strip().lower()
     return s in ("", "all", "all respondents", "allrespondents")
 
+def _col(df: pd.DataFrame, *cands: str) -> Optional[str]:
+    """Get first matching column (case-insensitive)."""
+    low = {c.lower(): c for c in df.columns}
+    for name in cands:
+        hit = low.get(name.lower())
+        if hit:
+            return hit
+    return None
+
+def _to_code_str(x) -> str:
+    """Normalize demcode to a clean string (no .0)."""
+    if x is None or (isinstance(x, float) and pd.isna(x)):
+        return ""
+    s = str(x).strip()
+    if s.endswith(".0"):
+        s = s[:-2]
+    return s
+
 def _resolve_demcodes(demo_df: pd.DataFrame, category_label: str, subgroup_label: Optional[str]):
-    DEMO_CAT_COL = "DEMCODE Category"
-    LABEL_COL = "DESCRIP_E"
+    """
+    Resolve demographics by DEMCODE (four-digit code), not labels.
+    Columns per your dataset:
+      - demcode_category: category label (e.g., Gender)
+      - demcode:          four-digit code (e.g., 1001)
+      - descrip_e:        subgroup label (English)
+    Returns (codes: List[str or None], display_map: Dict[code]->label, category_in_play: bool)
+    """
     if not category_label or category_label == "All respondents":
         return [None], {None: "All respondents"}, False
 
-    code_col = None
-    for c in ["DEMCODE", "DemCode", "CODE", "Code", "CODE_E", "Demographic code"]:
-        if c in demo_df.columns:
-            code_col = c
-            break
+    cat_col  = _col(demo_df, "demcode_category") or _col(demo_df, "DEMCODE Category") or _col(demo_df, "category")
+    code_col = _col(demo_df, "demcode") or _col(demo_df, "DEMCODE") or _col(demo_df, "code")
+    lbl_col  = _col(demo_df, "descrip_e") or _col(demo_df, "DESCRIP_E") or _col(demo_df, "english")
 
-    df_cat = demo_df[demo_df[DEMO_CAT_COL] == category_label] if DEMO_CAT_COL in demo_df.columns else demo_df.copy()
-    if df_cat.empty:
+    df = demo_df.copy()
+    if cat_col:
+        df = df[df[cat_col].astype(str).str.strip().str.lower() == category_label.strip().lower()]
+    if df.empty:
         return [None], {None: "All respondents"}, False
 
+    # Subgroup specified -> map label -> demcode
     if subgroup_label:
-        if code_col and LABEL_COL in df_cat.columns:
-            r = df_cat[df_cat[LABEL_COL] == subgroup_label]
-            if not r.empty:
-                code = str(r.iloc[0][code_col])
+        if lbl_col and (lbl_col in df.columns):
+            sub = df[df[lbl_col].astype(str).str.strip().str.lower() == subgroup_label.strip().lower()]
+            if not sub.empty and code_col in df.columns:
+                code = _to_code_str(sub.iloc[0][code_col])
                 return [code], {code: subgroup_label}, True
-        return [subgroup_label], {subgroup_label: subgroup_label}, True
+        # Fallback: treat provided subgroup as a code
+        code = _to_code_str(subgroup_label)
+        return [code], {code: subgroup_label}, True
 
-    if code_col and LABEL_COL in df_cat.columns:
-        codes = df_cat[code_col].astype(str).tolist()
-        labels = df_cat[LABEL_COL].astype(str).tolist()
-        keep = [(c, l) for c, l in zip(codes, labels) if str(c).strip() != ""]
-        codes = [c for c, _ in keep]
-        disp_map = {c: l for c, l in keep}
-        return codes, disp_map, True
+    # No subgroup -> all demcodes in category
+    if code_col:
+        codes = df[code_col].dropna().map(_to_code_str).tolist()
+        codes = [c for c in codes if c != ""]
+        disp: Dict[str, str] = {}
+        if lbl_col and lbl_col in df.columns:
+            labels = df[lbl_col].fillna("").astype(str).map(lambda s: s.strip()).tolist()
+            for c, l in zip(df[code_col].map(_to_code_str), labels):
+                if c:
+                    disp[c] = l if l else c
+        else:
+            for c in codes:
+                disp[c] = c
+        if not codes:
+            return [None], {None: "All respondents"}, False
+        return codes, disp, True
 
-    if LABEL_COL in df_cat.columns:
-        labels = df_cat[LABEL_COL].astype(str).tolist()
-        return labels, {l: l for l in labels}, True
-
+    # Last resort: nothing resolvable
     return [None], {None: "All respondents"}, False
 
 @lru_cache(maxsize=512)
@@ -260,7 +293,7 @@ def _get_scale_labels(scales_df: pd.DataFrame, question_code: str):
     return list(_get_scale_labels_cached(str(question_code).upper()))
 
 def _drop_999(df: pd.DataFrame) -> pd.DataFrame:
-    if df.empty:
+    if df is None or df.empty:
         return df
     out = df.copy()
     for c in [f"answer{i}" for i in range(1, 8)] + ["POSITIVE","NEUTRAL","NEGATIVE","AGREE","ANSCOUNT","positive_pct","neutral_pct","negative_pct","n"]:
@@ -271,6 +304,7 @@ def _drop_999(df: pd.DataFrame) -> pd.DataFrame:
 
 def _normalize_results(df: pd.DataFrame) -> pd.DataFrame:
     out = df.copy()
+    # Standardize expected column names
     if "question_code" not in out.columns:
         if "QUESTION" in out.columns: out = out.rename(columns={"QUESTION": "question_code"})
         else:
@@ -299,11 +333,16 @@ def _normalize_results(df: pd.DataFrame) -> pd.DataFrame:
         out = out.rename(columns={"AGREE": "Agree"})
     if "n" not in out.columns and "ANSCOUNT" in out.columns:
         out = out.rename(columns={"ANSCOUNT": "n"})
+    # Normalize types
+    if "year" in out.columns:
+        out["year"] = pd.to_numeric(out["year"], errors="coerce").astype("Int64")
+    if "group_value" in out.columns:
+        out["group_value"] = out["group_value"].map(_to_code_str)
     return out
 
 def _format_display(df_slice: pd.DataFrame, dem_disp_map: Dict, category_in_play: bool, scale_pairs: List[Tuple[str,str]]) -> pd.DataFrame:
-    if df_slice.empty:
-        return df_slice.copy()
+    if df_slice is None or df_slice.empty:
+        return pd.DataFrame()
     out = df_slice.copy()
     out["YearNum"] = pd.to_numeric(out["year"], errors="coerce").astype("Int64")
     out["Year"] = out["YearNum"].astype(str)
@@ -366,6 +405,52 @@ def _detect_metric_presence(df_disp: pd.DataFrame, scale_pairs: List[Tuple[str,s
     if res["Answer1"][1] is None and ans1_label:
         res["Answer1"] = (res["Answer1"][0], f"% {ans1_label}")
     return res
+
+# -----------------------------
+# Loader wrapper (handles group_values vs group_value)
+# -----------------------------
+def _load_slices_for_question(qcode: str, years: List[int], demcodes: List[Optional[str]]) -> pd.DataFrame:
+    """Try group_values=[...] if available; otherwise loop group_value=... per code."""
+    if load_results2024_filtered is None:
+        return pd.DataFrame()
+
+    # Normalize demcodes: None for overall; codes as strings otherwise
+    norm = [None if _is_overall(c) else _to_code_str(c) for c in demcodes]
+    try:
+        # If overall only, try not passing group_values (some loaders interpret this as 'overall')
+        if norm == [None]:
+            df = load_results2024_filtered(question_code=qcode, years=years)
+        else:
+            df = load_results2024_filtered(question_code=qcode, years=years, group_values=norm)
+        if df is not None:
+            return df
+    except TypeError:
+        pass
+
+    # Fallback: per-code loop with group_value
+    parts = []
+    for c in norm:
+        try:
+            dfp = load_results2024_filtered(
+                question_code=qcode,
+                years=years,
+                group_value=(None if _is_overall(c) else str(c))
+            )
+            if dfp is not None and not dfp.empty:
+                parts.append(dfp)
+        except TypeError:
+            # Older signature without group filtering; accept as-is
+            try:
+                dfp = load_results2024_filtered(question_code=qcode, years=years)
+                if dfp is not None and not dfp.empty:
+                    parts.append(dfp)
+            except Exception:
+                pass
+        except Exception:
+            pass
+    if parts:
+        return pd.concat(parts, ignore_index=True)
+    return pd.DataFrame()
 
 # -----------------------------
 # State reset
@@ -464,135 +549,6 @@ def _user_prompt_overall_mixed(per_q_disp: Dict[str, pd.DataFrame],
     return json.dumps({"questions": items, "notes": "Provide a concise overall synthesis across questions, respecting each question’s metric_label."}, ensure_ascii=False)
 
 # -----------------------------
-# Minimal DOCX builder (fallback if python-docx is missing)
-# -----------------------------
-def _xml_escape(s: str) -> str:
-    return (str(s)
-            .replace("&", "&amp;")
-            .replace("<", "&lt;")
-            .replace(">", "&gt;")
-            .replace('"', "&quot;")
-            .replace("'", "&apos;"))
-
-def _build_ai_docx_bytes(per_q_order: List[str],
-                         narratives: Dict[str, str],
-                         overall_text: Optional[str],
-                         question_codes: List[str],
-                         selected_years: List[int],
-                         demo_selection: str,
-                         sub_selection: Optional[str],
-                         model_name: str) -> bytes:
-    """
-    Try python-docx first; if unavailable, build a minimal .docx via OpenXML (zipped XML).
-    Returns bytes.
-    """
-    # First: try python-docx
-    try:
-        from docx import Document  # type: ignore
-        doc = Document()
-        doc.add_heading("PSES Explorer — AI Analyses", level=1)
-        meta = doc.add_paragraph(f"Generated at: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
-        doc.add_paragraph(
-            f"Selection: Questions: {', '.join(question_codes)}; Years: {', '.join(map(str, selected_years))}; "
-            f"Demographic: {demo_selection}" + (f" — {sub_selection}" if sub_selection else "")
-        )
-        for q in per_q_order:
-            if q in narratives:
-                doc.add_heading(f"Summary Analysis — {q}", level=2)
-                doc.add_paragraph(narratives[q])
-        if overall_text:
-            doc.add_heading("Overall Summary Analysis", level=2)
-            doc.add_paragraph(overall_text)
-        doc.add_paragraph("")
-        doc.add_paragraph(f"Model: {model_name} • Source: 2024 Public Service Employee Survey (Open Government Portal)")
-        bio = io.BytesIO()
-        doc.save(bio)
-        return bio.getvalue()
-    except Exception:
-        pass  # Fall through to raw OpenXML
-
-    # Build minimal DOCX manually
-    title = "PSES Explorer — AI Analyses"
-    generated = f"Generated at: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
-    selection = (f"Selection: Questions: {', '.join(question_codes)}; Years: {', '.join(map(str, selected_years))}; "
-                 f"Demographic: {demo_selection}" + (f" — {sub_selection}" if sub_selection else ""))
-    paras: List[str] = []
-    paras.append(title)
-    paras.append(generated)
-    paras.append(selection)
-    for q in per_q_order:
-        if q in narratives:
-            paras.append(f"Summary Analysis — {q}")
-            paras.append(narratives[q])
-    if overall_text:
-        paras.append("Overall Summary Analysis")
-        paras.append(overall_text)
-    paras.append(f"Model: {model_name} • Source: 2024 Public Service Employee Survey (Open Government Portal)")
-
-    # document.xml content
-    def _p(text: str) -> str:
-        return f'<w:p><w:r><w:t>{_xml_escape(text)}</w:t></w:r></w:p>'
-
-    doc_xml = (
-        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
-        '<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">'
-        '<w:body>'
-        + "".join(_p(t) for t in paras) +
-        '<w:sectPr/></w:body></w:document>'
-    )
-
-    # [Content_Types].xml
-    content_types = (
-        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
-        '<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">'
-        '<Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>'
-        '<Default Extension="xml" ContentType="application/xml"/>'
-        '<Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/>'
-        '<Override PartName="/docProps/core.xml" ContentType="application/vnd.openxmlformats-package.core-properties+xml"/>'
-        '</Types>'
-    )
-
-    # _rels/.rels
-    rels = (
-        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
-        '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
-        '<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/>'
-        '<Relationship Id="rId2" Type="http://schemas.openxmlformats.org/package/2006/relationships/metadata/core-properties" Target="docProps/core.xml"/>'
-        '</Relationships>'
-    )
-
-    # docProps/core.xml
-    core_xml = (
-        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
-        '<cp:coreProperties xmlns:cp="http://schemas.openxmlformats.org/package/2006/metadata/core-properties" '
-        'xmlns:dc="http://purl.org/dc/elements/1.1/" '
-        'xmlns:dcterms="http://purl.org/dc/terms/" '
-        'xmlns:dcmitype="http://purl.org/dc/dcmitype/" '
-        'xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">'
-        f'<dc:title>{_xml_escape(title)}</dc:title>'
-        f'<dc:creator>PSES Explorer</dc:creator>'
-        f'<cp:lastModifiedBy>PSES Explorer</cp:lastModifiedBy>'
-        f'<dcterms:created xsi:type="dcterms:W3CDTF">{datetime.utcnow().isoformat()}Z</dcterms:created>'
-        f'<dcterms:modified xsi:type="dcterms:W3CDTF">{datetime.utcnow().isoformat()}Z</dcterms:modified>'
-        '</cp:coreProperties>'
-    )
-
-    # word/_rels/document.xml.rels (empty is fine)
-    doc_rels = (
-        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
-        '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"/>'
-    )
-
-    bio = io.BytesIO()
-    with zipfile.ZipFile(bio, 'w', zipfile.ZIP_DEFLATED) as z:
-        z.writestr('[Content_Types].xml', content_types)
-        z.writestr('_rels/.rels', rels)
-        z.writestr('docProps/core.xml', core_xml)
-        z.writestr('word/document.xml', doc_xml)
-        z.writestr('word/_rels/document.xml.rels', doc_rels)
-    return bio.getvalue()
-
-# -----------------------------
 # Misc utils
 # -----------------------------
 def _get_pswide_df() -> Optional[pd.DataFrame]:
@@ -632,7 +588,6 @@ def run_menu1():
             [data-testid="stSwitch"] div[role="switch"] { box-shadow: inset 0 0 0 1px rgba(0,0,0,0.1); }
             .tiny-note { font-size: 13px; color: #444; margin-bottom: 6px; }
             .diag-box { background: #fafafa; border: 1px solid #eee; border-radius: 8px; padding: 10px 12px; }
-            /* Ensure tabs and dataframes fill the center column width */
             div[data-baseweb="tab-panel"] { width: 100% !important; }
             div[data-testid="stDataFrame"] { width: 100% !important; }
         </style>
@@ -729,8 +684,20 @@ def run_menu1():
                 subkey = f"sub_{str(demo_cat).replace(' ', '_')}"
                 subgroup = ("All respondents" if not demo_cat or demo_cat == "All respondents"
                             else (st.session_state.get(subkey, "") or "(all subgroups)"))
-                params = {"Selected questions": [code_to_display.get(c, c) for c in st.session_state.get("menu1_selected_codes", [])],
-                          "Years selected": years_selected, "Demographic category": demo_cat or "All respondents", "Subgroup": subgroup}
+                # NEW: show the actual demcodes we will use
+                if demo_cat == "All respondents":
+                    demcodes_show = ["(overall)"]
+                else:
+                    # Resolve codes here for display
+                    codes_disp, _, _ = _resolve_demcodes(demo_df, demo_cat, (None if subgroup in ("", "(all subgroups)") else subgroup))
+                    demcodes_show = [("(overall)" if c is None else str(c)) for c in (codes_disp or [])]
+                params = {
+                    "Selected questions": [code_to_display.get(c, c) for c in st.session_state.get("menu1_selected_codes", [])],
+                    "Years selected": years_selected,
+                    "Demographic category": demo_cat or "All respondents",
+                    "Subgroup": subgroup,
+                    "DEMCODEs used": ", ".join(demcodes_show) if demcodes_show else "(none)",
+                }
                 st.table(_kv_table(params))
             with tabs_diag[2]:
                 ai_status = st.session_state.get("menu1_last_ai_status") or {}
@@ -832,16 +799,22 @@ def run_menu1():
 
         # ---------- Demographics ----------
         st.markdown('<div class="field-label">Select a demographic category (optional):</div>', unsafe_allow_html=True)
-        DEMO_CAT_COL = "DEMCODE Category"
-        LABEL_COL = "DESCRIP_E"
-        demo_categories = ["All respondents"] + sorted(demo_df[DEMO_CAT_COL].dropna().astype(str).unique().tolist())
+        cat_col  = _col(demo_df, "demcode_category") or _col(demo_df, "DEMCODE Category") or _col(demo_df, "category")
+        LABEL_COL = _col(demo_df, "descrip_e") or _col(demo_df, "DESCRIP_E") or _col(demo_df, "english")
+        demo_categories = ["All respondents"]
+        if cat_col:
+            demo_categories += sorted(demo_df[cat_col].dropna().astype(str).unique().tolist())
         st.session_state.setdefault("demo_main", "All respondents")
         demo_selection = st.selectbox("Demographic category", demo_categories, key="demo_main", label_visibility="collapsed")
 
         sub_selection = None
         if demo_selection != "All respondents":
             st.markdown(f'<div class="field-label">Subgroup ({demo_selection}) (optional):</div>', unsafe_allow_html=True)
-            sub_items = demo_df.loc[demo_df[DEMO_CAT_COL] == demo_selection, LABEL_COL].dropna().astype(str).unique().tolist()
+            if cat_col and LABEL_COL:
+                sub_items = demo_df.loc[demo_df[cat_col].astype(str).str.strip().str.lower() == demo_selection.strip().lower(), LABEL_COL] \
+                            .dropna().astype(str).unique().tolist()
+            else:
+                sub_items = []
             sub_items = sorted(sub_items)
             sub_key = f"sub_{demo_selection.replace(' ', '_')}"
             sub_selection = st.selectbox("(leave blank to include all subgroups in this category)", [""] + sub_items, key=sub_key, label_visibility="collapsed")
@@ -877,7 +850,7 @@ def run_menu1():
         # =========================
         if clicked or st.session_state.get("menu1_search_clicked", False):
             if clicked:
-                st.session_state["menu1_search_clicked"] = True  # hide action row on subsequent renders
+                st.session_state["menu1_search_clicked"] = True  # hide action row
 
             t0 = time.time()
             with st.spinner(f"Running query… {datetime.fromtimestamp(t0).strftime('%Y-%m-%d %H:%M:%S')}"):
@@ -894,30 +867,18 @@ def run_menu1():
                     qtext = code_to_text.get(qcode, "")
                     per_q_text[qcode] = qtext
 
-                    parts = []
-                    if load_results2024_filtered is None:
+                    # LOAD using codes (or overall)
+                    df_all = _load_slices_for_question(qcode=qcode, years=selected_years, demcodes=demcodes)
+                    if df_all is None or df_all.empty:
                         continue
-                    for code in demcodes:
-                        df_part = load_results2024_filtered(
-                            question_code=qcode,
-                            years=selected_years,
-                            group_value=(None if _is_overall(code) else str(code))
-                        )
-                        if df_part is not None and not df_part.empty:
-                            parts.append(df_part)
-                    if not parts:
-                        continue
-                    df_all = pd.concat(parts, ignore_index=True)
 
                     df_all = _normalize_results(df_all)
+
+                    # Filter by question + years only (avoid double-filter by group_value)
                     qmask = df_all["question_code"].astype(str).str.strip().str.upper() == str(qcode).strip().upper()
-                    ymask = pd.to_numeric(df_all["year"], errors="coerce").astype("Int64").isin(selected_years)
-                    if demo_selection == "All respondents":
-                        gv = df_all["group_value"].astype(str).fillna("").str.strip()
-                        gmask = gv.apply(_is_overall)
-                    else:
-                        gmask = df_all["group_value"].astype(str).isin([str(c) for c in demcodes])
-                    df_all = df_all[qmask & ymask & gmask].copy()
+                    ymask = df_all["year"].astype("Int64").isin(selected_years)
+                    df_all = df_all[qmask & ymask].copy()
+
                     df_all = _drop_999(df_all)
                     if df_all.empty:
                         continue
@@ -957,7 +918,7 @@ def run_menu1():
             if not per_q_disp:
                 st.info("No data found for your selection.")
             else:
-                # Common summary metric decision
+                # Common summary metric decision across selected questions
                 qlist = [qc for qc in question_codes if qc in per_q_disp]
                 def all_have(kind: str) -> bool:
                     for qc in qlist:
@@ -975,13 +936,13 @@ def run_menu1():
                 else:
                     summary_metric_col = None
 
-                # Tabs (full center width)
+                # Tabs
                 tab_labels = [qc for qc in qlist]
                 first_tab_name = "Summary table" if summary_metric_col else "Results"
                 tabs = st.tabs(([first_tab_name] if summary_metric_col else []) + tab_labels)
 
                 # Summary tab
-                pivot = None  # for Excel export
+                pivot = None
                 if summary_metric_col:
                     long_rows = []
                     for qcode in tab_labels:
@@ -1002,7 +963,8 @@ def run_menu1():
                         keep = ["QuestionLabel", "Demographic", "Year", summary_metric_col]
                         long_rows.append(t[keep])
                     long_df = pd.concat(long_rows, ignore_index=True)
-                    if (demo_selection != "All respondents") and (sub_selection is None) and long_df["Demographic"].notna().any():
+                    # If category selected but NO subgroup, include Demographic in index
+                    if ("Demographic" in long_df.columns) and long_df["Demographic"].notna().any():
                         idx_cols = ["QuestionLabel","Demographic"]
                     else:
                         idx_cols = ["QuestionLabel"]
@@ -1020,7 +982,7 @@ def run_menu1():
                 else:
                     st.info("Summary table unavailable because the selected questions use different answer scales/metrics. Please view detailed tabs below.")
 
-                # Per-question tabs (details only)
+                # Per-question tabs
                 start_idx = 1 if summary_metric_col else 0
                 for idx, qcode in enumerate(tab_labels, start=start_idx):
                     with tabs[idx]:
@@ -1132,13 +1094,140 @@ def run_menu1():
                     )
 
                 # Build Word (.docx) with AI analyses (works with or without python-docx)
-                has_ai_content = bool(ai_narratives) or bool(overall_narrative)
+                def _xml_escape(s: str) -> str:
+                    return (str(s)
+                            .replace("&", "&amp;")
+                            .replace("<", "&lt;")
+                            .replace(">", "&gt;")
+                            .replace('"', "&quot;")
+                            .replace("'", "&apos;"))
+
+                def _build_ai_docx_bytes(per_q_order: List[str],
+                                         narratives: Dict[str, str],
+                                         overall_text: Optional[str],
+                                         question_codes: List[str],
+                                         selected_years: List[int],
+                                         demo_selection: str,
+                                         sub_selection: Optional[str],
+                                         model_name: str) -> bytes:
+                    # Try python-docx
+                    try:
+                        from docx import Document  # type: ignore
+                        doc = Document()
+                        doc.add_heading("PSES Explorer — AI Analyses", level=1)
+                        doc.add_paragraph(f"Generated at: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+                        doc.add_paragraph(
+                            f"Selection: Questions: {', '.join(question_codes)}; Years: {', '.join(map(str, selected_years))}; "
+                            f"Demographic: {demo_selection}" + (f" — {sub_selection}" if sub_selection else "")
+                        )
+                        for q in per_q_order:
+                            if q in narratives:
+                                doc.add_heading(f"Summary Analysis — {q}", level=2)
+                                doc.add_paragraph(narratives[q])
+                        if overall_text:
+                            doc.add_heading("Overall Summary Analysis", level=2)
+                            doc.add_paragraph(overall_text)
+                        doc.add_paragraph("")
+                        doc.add_paragraph(f"Model: {model_name} • Source: 2024 Public Service Employee Survey (Open Government Portal)")
+                        bio = io.BytesIO()
+                        doc.save(bio)
+                        return bio.getvalue()
+                    except Exception:
+                        pass
+                    # Fallback OpenXML
+                    title = "PSES Explorer — AI Analyses"
+                    generated = f"Generated at: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
+                    selection = (f"Selection: Questions: {', '.join(question_codes)}; Years: {', '.join(map(str, selected_years))}; "
+                                 f"Demographic: {demo_selection}" + (f" — {sub_selection}" if sub_selection else ""))
+                    paras: List[str] = []
+                    paras.append(title); paras.append(generated); paras.append(selection)
+                    for q in per_q_order:
+                        if q in narratives:
+                            paras.append(f"Summary Analysis — {q}")
+                            paras.append(narratives[q])
+                    if overall_text:
+                        paras.append("Overall Summary Analysis")
+                        paras.append(overall_text)
+                    paras.append(f"Model: {model_name} • Source: 2024 Public Service Employee Survey (Open Government Portal)")
+
+                    def _p(text: str) -> str:
+                        return f'<w:p><w:r><w:t>{_xml_escape(text)}</w:t></w:r></w:p>'
+
+                    doc_xml = (
+                        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+                        '<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">'
+                        '<w:body>' + "".join(_p(t) for t in paras) + '<w:sectPr/></w:body></w:document>'
+                    )
+                    content_types = (
+                        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+                        '<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">'
+                        '<Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>'
+                        '<Default Extension="xml" ContentType="application/xml"/>'
+                        '<Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/>'
+                        '<Override PartName="/docProps/core.xml" ContentType="application/vnd.openxmlformats-package.core-properties+xml"/>'
+                        '</Types>'
+                    )
+                    rels = (
+                        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+                        '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
+                        '<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/>'
+                        '<Relationship Id="rId2" Type="http://schemas.openxmlformats.org/package/2006/relationships/metadata/core-properties" Target="docProps/core.xml"/>'
+                        '</Relationships>'
+                    )
+                    core_xml = (
+                        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+                        '<cp:coreProperties xmlns:cp="http://schemas.openxmlformats.org/package/2006/metadata/core-properties" '
+                        'xmlns:dc="http://purl.org/dc/elements/1.1/" '
+                        'xmlns:dcterms="http://purl.org/dc/terms/" '
+                        'xmlns:dcmitype="http://purl.org/dc/dcmitype/" '
+                        'xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">'
+                        f'<dc:title>{_xml_escape(title)}</dc:title>'
+                        f'<dc:creator>PSES Explorer</dc:creator>'
+                        f'<cp:lastModifiedBy>PSES Explorer</cp:lastModifiedBy>'
+                        f'<dcterms:created xsi:type="dcterms:W3CDTF">{datetime.utcnow().isoformat()}Z</dcterms:created>'
+                        f'<dcterms:modified xsi:type="dcterms:W3CDTF">{datetime.utcnow().isoformat()}Z</dcterms:modified>'
+                        '</cp:coreProperties>'
+                    )
+                    doc_rels = (
+                        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+                        '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"/>'
+                    )
+
+                    bio = io.BytesIO()
+                    with zipfile.ZipFile(bio, 'w', zipfile.ZIP_DEFLATED) as z:
+                        z.writestr('[Content_Types].xml', content_types)
+                        z.writestr('_rels/.rels', rels)
+                        z.writestr('docProps/core.xml', core_xml)
+                        z.writestr('word/document.xml', doc_xml)
+                        z.writestr('word/_rels/document.xml.rels', doc_rels)
+                    return bio.getvalue()
+
+                has_ai_content = False  # set after AI generation
+                # We'll set has_ai_content below; for clarity we keep button grouped here.
+
+                with dl_col1:
+                    st.download_button(
+                        label="Download data tabulations (Excel)",
+                        data=excel_bytes,
+                        file_name=f"PSES_multiQ_{'-'.join(map(str, selected_years))}.xlsx",
+                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    )
+
+                # Determine AI export availability and render button
+                has_ai_content = any(True for _ in per_q_disp)  # placeholder; real check below
+                has_ai_content = False  # reset; actual logic:
+                # Check narratives collected above:
+                # (We can't reach here easily; so re-derive quickly:)
+                # Simpler: if any per_q_best_label exists, we likely had AI; but safer to check session status + narratives we stored
+                # We'll pass the narratives captured in scope:
+                has_ai_content = (len([1 for v in locals().get('ai_narratives', {}).values() if v]) > 0) or bool(locals().get('overall_narrative', None))
+
                 with dl_col2:
                     if st.session_state.get("menu1_ai_toggle", True) and has_ai_content:
                         ai_doc_bytes = _build_ai_docx_bytes(
                             per_q_order=tab_labels,
-                            narratives=ai_narratives,
-                            overall_text=overall_narrative,
+                            narratives=locals().get('ai_narratives', {}),
+                            overall_text=locals().get('overall_narrative', None),
                             question_codes=question_codes,
                             selected_years=selected_years,
                             demo_selection=demo_selection,
