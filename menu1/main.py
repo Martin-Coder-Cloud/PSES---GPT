@@ -17,7 +17,7 @@ import os
 import time
 from datetime import datetime
 from functools import lru_cache
-from typing import List, Dict, Set, Tuple, Optional
+from typing import List, Dict, Tuple, Optional
 
 import pandas as pd
 import streamlit as st
@@ -387,7 +387,7 @@ def _reset_menu1_state():
     exact = [
         "menu1_selected_codes","menu1_selected_order","menu1_hits","menu1_kw_query","menu1_last_kw",
         "menu1_multi_questions","menu1_ai_toggle","menu1_show_diag","select_all_years","demo_main",
-        "menu1_find_hits","last_query_info","menu1_last_ai_status"
+        "menu1_find_hits","last_query_info","menu1_last_ai_status","menu1_search_clicked"
     ] + year_keys
     prefixes = ["kwhit_","sel_","sub_"]
     _delete_keys(prefixes, exact)
@@ -401,6 +401,7 @@ def _reset_menu1_state():
     st.session_state.setdefault("menu1_show_diag", False)
     st.session_state.setdefault("last_query_info", None)
     st.session_state.setdefault("menu1_last_ai_status", None)
+    st.session_state.setdefault("menu1_search_clicked", False)
 
 # -----------------------------
 # AI payload builders
@@ -450,7 +451,6 @@ def _user_prompt_overall_mixed(per_q_disp: Dict[str, pd.DataFrame],
     for qcode, df in per_q_disp.items():
         metric_col = per_q_metric_col[qcode]
         metric_label = per_q_metric_label[qcode]
-        # Aggregate by year (average across demographics if present)
         s = df.copy()
         if "Demographic" in s.columns:
             s = s.groupby("Year", as_index=False)[metric_col].mean(numeric_only=True)
@@ -508,6 +508,9 @@ def run_menu1():
             [data-testid="stSwitch"] div[role="switch"] { box-shadow: inset 0 0 0 1px rgba(0,0,0,0.1); }
             .tiny-note { font-size: 13px; color: #444; margin-bottom: 6px; }
             .diag-box { background: #fafafa; border: 1px solid #eee; border-radius: 8px; padding: 10px 12px; }
+            /* Ensure tabs and dataframes fill the center column width */
+            div[data-baseweb="tab-panel"] { width: 100% !important; }
+            div[data-testid="stDataFrame"] { width: 100% !important; }
         </style>
     """, unsafe_allow_html=True)
 
@@ -526,6 +529,7 @@ def run_menu1():
     st.session_state.setdefault("menu1_show_diag", False)
     st.session_state.setdefault("last_query_info", None)
     st.session_state.setdefault("menu1_last_ai_status", None)
+    st.session_state.setdefault("menu1_search_clicked", False)
 
     # Early guard
     if load_results2024_filtered is None:
@@ -567,7 +571,7 @@ def run_menu1():
             </div>
         """, unsafe_allow_html=True)
 
-        # Diagnostics panel (tabbed)
+        # Diagnostics panel (tabbed tables)
         if st.session_state.get("menu1_show_diag", False):
             tabs_diag = st.tabs(["Loading status", "Parameters", "AI health check", "Last query"])
             with tabs_diag[0]:
@@ -706,6 +710,7 @@ def run_menu1():
         st.markdown('<div class="field-label">Select a demographic category (optional):</div>', unsafe_allow_html=True)
         DEMO_CAT_COL = "DEMCODE Category"
         LABEL_COL = "DESCRIP_E"
+        demo_df = _load_demographics()  # (safe reuse)
         demo_categories = ["All respondents"] + sorted(demo_df[DEMO_CAT_COL].dropna().astype(str).unique().tolist())
         st.session_state.setdefault("demo_main", "All respondents")
         demo_selection = st.selectbox("Demographic category", demo_categories, key="demo_main", label_visibility="collapsed")
@@ -720,7 +725,7 @@ def run_menu1():
             if sub_selection == "":
                 sub_selection = None
 
-        # ---------- Action row ----------
+        # ---------- Action row (buttons only) ----------
         st.markdown("<div class='action-row'>", unsafe_allow_html=True)
         colA, colB = st.columns([1.2, 1])
         with colA:
@@ -730,257 +735,251 @@ def run_menu1():
             if no_years: reasons.append("pick at least 1 year")
             disable_search = bool(reasons)
             label = "Search" if not disable_search else f"Search (disabled: {', '.join(reasons)})"
-            if st.button(label, disabled=disable_search):
-                t0 = time.time()
-                with st.spinner(f"Running query… {datetime.fromtimestamp(t0).strftime('%Y-%m-%d %H:%M:%S')}"):
-                    demcodes, disp_map, category_in_play = _resolve_demcodes(demo_df, demo_selection, sub_selection)
-
-                    per_q_disp: Dict[str, pd.DataFrame] = {}
-                    per_q_text: Dict[str, str] = {}
-                    per_q_metric_presence: Dict[str, Dict[str, Tuple[bool, Optional[str]]]] = {}
-                    per_q_ans1_label: Dict[str, Optional[str]] = {}
-
-                    # Also store best metric per question for AI (Positive→Agree→Answer1)
-                    per_q_best_col: Dict[str, str] = {}
-                    per_q_best_label: Dict[str, str] = {}
-
-                    for qcode in question_codes:
-                        qtext = code_to_text.get(qcode, "")
-                        per_q_text[qcode] = qtext
-
-                        parts = []
-                        if load_results2024_filtered is None:
-                            continue
-                        for code in demcodes:
-                            df_part = load_results2024_filtered(
-                                question_code=qcode,
-                                years=selected_years,
-                                group_value=(None if _is_overall(code) else str(code))
-                            )
-                            if df_part is not None and not df_part.empty:
-                                parts.append(df_part)
-                        if not parts:
-                            continue
-                        df_all = pd.concat(parts, ignore_index=True)
-
-                        df_all = _normalize_results(df_all)
-                        qmask = df_all["question_code"].astype(str).str.strip().str.upper() == str(qcode).strip().upper()
-                        ymask = pd.to_numeric(df_all["year"], errors="coerce").astype("Int64").isin(selected_years)
-                        if demo_selection == "All respondents":
-                            gv = df_all["group_value"].astype(str).fillna("").str.strip()
-                            gmask = gv.apply(_is_overall)
-                        else:
-                            gmask = df_all["group_value"].astype(str).isin([str(c) for c in demcodes])
-                        df_all = df_all[qmask & ymask & gmask].copy()
-                        df_all = _drop_999(df_all)
-                        if df_all.empty:
-                            continue
-
-                        scale_pairs = _get_scale_labels(sdf, qcode)
-                        df_disp = _format_display(df_slice=df_all, dem_disp_map=disp_map, category_in_play=category_in_play, scale_pairs=scale_pairs)
-                        if df_disp.empty:
-                            continue
-
-                        presence = _detect_metric_presence(df_disp, scale_pairs)
-                        per_q_metric_presence[qcode] = presence
-                        per_q_ans1_label[qcode] = presence["Answer1"][1]
-
-                        # Best metric per Q for AI
-                        if presence["Positive"][0]:
-                            per_q_best_col[qcode] = "Positive"; per_q_best_label[qcode] = "% positive"
-                        elif presence["Agree"][0]:
-                            per_q_best_col[qcode] = "Agree"; per_q_best_label[qcode] = "% agree"
-                        elif presence["Answer1"][0]:
-                            lbl = (per_q_ans1_label[qcode] or "Answer 1")
-                            per_q_best_col[qcode] = lbl if lbl in df_disp.columns else ("Answer 1" if "Answer 1" in df_disp.columns else lbl)
-                            per_q_best_label[qcode] = f"% {per_q_ans1_label[qcode] or 'Answer 1'}"
-                        else:
-                            per_q_best_col[qcode] = "Positive"; per_q_best_label[qcode] = "% positive"
-
-                        per_q_disp[qcode] = df_disp
-
-                t1 = time.time()
-                st.session_state["last_query_info"] = {
-                    "started": datetime.fromtimestamp(t0).strftime("%Y-%m-%d %H:%M:%S"),
-                    "finished": datetime.fromtimestamp(t1).strftime("%Y-%m-%d %H:%M:%S"),
-                    "elapsed_seconds": round(t1 - t0, 2),
-                    "engine": (get_backend_info() or {}).get("engine", "unknown"),
-                    "questions": len([qc for qc in question_codes if qc in per_q_disp]),
-                    "years": selected_years,
-                }
-
-                if not per_q_disp:
-                    st.info("No data found for your selection.")
-                else:
-                    # Decide common summary metric across all selected questions, priority: Positive → Agree → Answer1
-                    qlist = [qc for qc in question_codes if qc in per_q_disp]
-                    def all_have(kind: str) -> bool:
-                        for qc in qlist:
-                            has, _ = per_q_metric_presence[qc][kind]
-                            if not has: return False
-                        return True
-                    summary_metric_col = None
-                    summary_metric_label = None
-                    if all_have("Positive"):
-                        summary_metric_col = "Positive"; summary_metric_label = "% Positive"
-                    elif all_have("Agree"):
-                        summary_metric_col = "Agree"; summary_metric_label = "% Agree"
-                    elif all_have("Answer1"):
-                        summary_metric_col = "Answer1Value"; summary_metric_label = "% Answer 1"
-                    else:
-                        summary_metric_col = None
-
-                    # -------------------------------
-                    # Tabs: Summary (if applicable), then per-Q detail
-                    # -------------------------------
-                    tab_labels = [qc for qc in qlist]
-                    first_tab_name = "Summary table" if summary_metric_col else "Results"
-                    tabs = st.tabs(([first_tab_name] if summary_metric_col else []) + tab_labels)
-
-                    # Build Summary pivot (if common metric)
-                    if summary_metric_col:
-                        long_rows = []
-                        for qcode in tab_labels:
-                            t = per_q_disp[qcode].copy()
-                            t["Year"] = pd.to_numeric(t["Year"], errors="coerce").astype("Int64")
-                            if "Demographic" not in t.columns:
-                                t["Demographic"] = None
-                            if summary_metric_col == "Answer1Value":
-                                ans1_lab = per_q_ans1_label[qcode] or "Answer 1"
-                                if ans1_lab in t.columns:
-                                    t["Answer1Value"] = pd.to_numeric(t[ans1_lab], errors="coerce")
-                                elif "Answer 1" in t.columns:
-                                    t["Answer1Value"] = pd.to_numeric(t["Answer 1"], errors="coerce")
-                                else:
-                                    t["Answer1Value"] = pd.NA
-                            qlabel = f"{qcode} — {code_to_text.get(qcode, '')}".strip().rstrip(" —")
-                            t["QuestionLabel"] = qlabel
-                            keep = ["QuestionLabel", "Demographic", "Year", summary_metric_col]
-                            long_rows.append(t[keep])
-                        long_df = pd.concat(long_rows, ignore_index=True)
-                        if (demo_selection != "All respondents") and (sub_selection is None) and long_df["Demographic"].notna().any():
-                            idx_cols = ["QuestionLabel","Demographic"]
-                        else:
-                            idx_cols = ["QuestionLabel"]
-                        pivot = long_df.pivot_table(index=idx_cols, columns="Year", values=summary_metric_col, aggfunc="mean")
-                        pivot = pivot.reindex(selected_years, axis=1)
-
-                        with tabs[0]:
-                            header_note = summary_metric_label if summary_metric_col != "Answer1Value" else "% Answer 1 (uses each question’s Answer 1 label)"
-                            st.markdown(f"### Summary table — {header_note}")
-                            st.dataframe(pivot.round(1).reset_index(), use_container_width=True)
-                            st.caption(
-                                "Source: 2024 Public Service Employee Survey Results – Open Government Portal "
-                                "https://open.canada.ca/data/en/dataset/7f625e97-9d02-4c12-a756-1ddebb50e69f"
-                            )
-                    else:
-                        st.info("Summary table unavailable because the selected questions use different answer scales/metrics. Please view detailed tabs below.")
-
-                    # Per-question tabs (details only; no AI here)
-                    start_idx = 1 if summary_metric_col else 0
-                    for idx, qcode in enumerate(tab_labels, start=start_idx):
-                        with tabs[idx]:
-                            qtext = code_to_text.get(qcode, "")
-                            st.subheader(f"{qcode} — {qtext}")
-                            st.dataframe(per_q_disp[qcode], use_container_width=True)
-                            st.caption(
-                                "Source: 2024 Public Service Employee Survey Results – Open Government Portal "
-                                "https://open.canada.ca/data/en/dataset/7f625e97-9d02-4c12-a756-1ddebb50e69f"
-                            )
-
-                    # -----------------------------------
-                    # AI analyses (AFTER tabs)
-                    # -----------------------------------
-                    st.markdown("---")
-                    st.markdown("## AI Analysis")
-
-                    if not st.session_state.get("menu1_ai_toggle", True):
-                        st.info("No AI summary generated.")
-                    else:
-                        # Per-question analyses (in selection order)
-                        for qcode in tab_labels:
-                            qtext = code_to_text.get(qcode, "")
-                            metric_col = per_q_best_col[qcode]
-                            metric_label = per_q_best_label[qcode]
-                            with st.spinner(f"Generating Summary Analysis for {qcode}…"):
-                                content, hint = _call_openai_json(
-                                    system=AI_SYSTEM_PROMPT,
-                                    user=_user_prompt_per_q(qcode, qtext, per_q_disp[qcode], metric_col, metric_label, (demo_selection != "All respondents")),
-                                    model=OPENAI_MODEL,
-                                    temperature=0.2
-                                )
-                            st.markdown(f"### Summary Analysis — {qcode}")
-                            if content:
-                                try:
-                                    j = json.loads(content)
-                                    if isinstance(j, dict) and j.get("narrative"):
-                                        st.write(j["narrative"])
-                                        st.caption(f"Generated by OpenAI • model: {OPENAI_MODEL}")
-                                    else:
-                                        st.caption("AI returned no narrative.")
-                                except Exception:
-                                    st.caption("AI returned non-JSON content.")
-                            else:
-                                st.caption(f"AI unavailable ({hint}).")
-
-                        # Overall analysis (only when multiple questions)
-                        if len(tab_labels) > 1:
-                            with st.spinner("Generating Overall Summary Analysis…"):
-                                overall_payload = _user_prompt_overall_mixed(per_q_disp, per_q_text, per_q_best_col, per_q_best_label)
-                                content, hint = _call_openai_json(
-                                    system=AI_SYSTEM_PROMPT,
-                                    user=overall_payload,
-                                    model=OPENAI_MODEL,
-                                    temperature=0.2
-                                )
-                            st.markdown("### Overall Summary Analysis")
-                            if content:
-                                try:
-                                    j = json.loads(content)
-                                    if isinstance(j, dict) and j.get("narrative"):
-                                        st.write(j["narrative"])
-                                        st.caption(f"Generated by OpenAI • model: {OPENAI_MODEL}")
-                                    else:
-                                        st.caption("AI returned no narrative.")
-                                except Exception:
-                                    st.caption("AI returned non-JSON content.")
-                            else:
-                                st.caption(f"AI unavailable ({hint}).")
-
-                    # -----------------------------------
-                    # Excel export: Summary + each Q
-                    # -----------------------------------
-                    with io.BytesIO() as buf:
-                        with pd.ExcelWriter(buf, engine="xlsxwriter") as writer:
-                            try:
-                                if summary_metric_col:
-                                    pivot.round(1).reset_index().to_excel(writer, sheet_name="Summary_Table", index=False)
-                            except Exception:
-                                pass
-                            for q, df_disp in per_q_disp.items():
-                                safe = q[:28]
-                                df_disp.to_excel(writer, sheet_name=f"{safe}", index=False)
-                            ctx = {
-                                "Questions": ", ".join(question_codes),
-                                "Years": ", ".join(map(str, selected_years)),
-                                "Category": demo_selection,
-                                "Subgroup": sub_selection or "(all in category)" if demo_selection != "All respondents" else "All respondents",
-                                "Generated at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                            }
-                            pd.DataFrame(list(ctx.items()), columns=["Field","Value"]).to_excel(writer, sheet_name="Context", index=False)
-                        data = buf.getvalue()
-                    st.download_button(
-                        label="Download Excel (Summary + all tabs)",
-                        data=data,
-                        file_name=f"PSES_multiQ_{'-'.join(map(str, selected_years))}.xlsx",
-                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                    )
-
+            clicked = st.button(label, disabled=disable_search, key="menu1_search_btn")
         with colB:
             if st.button("Reset all parameters"):
                 _reset_menu1_state()
                 st.experimental_rerun()
         st.markdown("</div>", unsafe_allow_html=True)
+
+        # =========================
+        # RESULTS & AI (FULL WIDTH of center column)
+        # =========================
+        if clicked:
+            t0 = time.time()
+            with st.spinner(f"Running query… {datetime.fromtimestamp(t0).strftime('%Y-%m-%d %H:%M:%S')}"):
+                demcodes, disp_map, category_in_play = _resolve_demcodes(demo_df, demo_selection, sub_selection)
+
+                per_q_disp: Dict[str, pd.DataFrame] = {}
+                per_q_text: Dict[str, str] = {}
+                per_q_metric_presence: Dict[str, Dict[str, Tuple[bool, Optional[str]]]] = {}
+                per_q_ans1_label: Dict[str, Optional[str]] = {}
+                per_q_best_col: Dict[str, str] = {}
+                per_q_best_label: Dict[str, str] = {}
+
+                for qcode in question_codes:
+                    qtext = code_to_text.get(qcode, "")
+                    per_q_text[qcode] = qtext
+
+                    parts = []
+                    if load_results2024_filtered is None:
+                        continue
+                    for code in demcodes:
+                        df_part = load_results2024_filtered(
+                            question_code=qcode,
+                            years=selected_years,
+                            group_value=(None if _is_overall(code) else str(code))
+                        )
+                        if df_part is not None and not df_part.empty:
+                            parts.append(df_part)
+                    if not parts:
+                        continue
+                    df_all = pd.concat(parts, ignore_index=True)
+
+                    df_all = _normalize_results(df_all)
+                    qmask = df_all["question_code"].astype(str).str.strip().str.upper() == str(qcode).strip().upper()
+                    ymask = pd.to_numeric(df_all["year"], errors="coerce").astype("Int64").isin(selected_years)
+                    if demo_selection == "All respondents":
+                        gv = df_all["group_value"].astype(str).fillna("").str.strip()
+                        gmask = gv.apply(_is_overall)
+                    else:
+                        gmask = df_all["group_value"].astype(str).isin([str(c) for c in demcodes])
+                    df_all = df_all[qmask & ymask & gmask].copy()
+                    df_all = _drop_999(df_all)
+                    if df_all.empty:
+                        continue
+
+                    scale_pairs = _get_scale_labels(sdf, qcode)
+                    df_disp = _format_display(df_slice=df_all, dem_disp_map=disp_map, category_in_play=category_in_play, scale_pairs=scale_pairs)
+                    if df_disp.empty:
+                        continue
+
+                    presence = _detect_metric_presence(df_disp, scale_pairs)
+                    per_q_metric_presence[qcode] = presence
+                    per_q_ans1_label[qcode] = presence["Answer1"][1]
+
+                    if presence["Positive"][0]:
+                        per_q_best_col[qcode] = "Positive"; per_q_best_label[qcode] = "% positive"
+                    elif presence["Agree"][0]:
+                        per_q_best_col[qcode] = "Agree"; per_q_best_label[qcode] = "% agree"
+                    elif presence["Answer1"][0]:
+                        lbl = (per_q_ans1_label[qcode] or "Answer 1")
+                        per_q_best_col[qcode] = lbl if lbl in df_disp.columns else ("Answer 1" if "Answer 1" in df_disp.columns else lbl)
+                        per_q_best_label[qcode] = f"% {per_q_ans1_label[qcode] or 'Answer 1'}"
+                    else:
+                        per_q_best_col[qcode] = "Positive"; per_q_best_label[qcode] = "% positive"
+
+                    per_q_disp[qcode] = df_disp
+
+            t1 = time.time()
+            st.session_state["last_query_info"] = {
+                "started": datetime.fromtimestamp(t0).strftime("%Y-%m-%d %H:%M:%S"),
+                "finished": datetime.fromtimestamp(t1).strftime("%Y-%m-%d %H:%M:%S"),
+                "elapsed_seconds": round(t1 - t0, 2),
+                "engine": (get_backend_info() or {}).get("engine", "unknown"),
+                "questions": len([qc for qc in question_codes if qc in per_q_disp]),
+                "years": selected_years,
+            }
+
+            if not per_q_disp:
+                st.info("No data found for your selection.")
+            else:
+                # Common summary metric decision
+                qlist = [qc for qc in question_codes if qc in per_q_disp]
+                def all_have(kind: str) -> bool:
+                    for qc in qlist:
+                        has, _ = per_q_metric_presence[qc][kind]
+                        if not has: return False
+                    return True
+                summary_metric_col = None
+                summary_metric_label = None
+                if all_have("Positive"):
+                    summary_metric_col = "Positive"; summary_metric_label = "% Positive"
+                elif all_have("Agree"):
+                    summary_metric_col = "Agree"; summary_metric_label = "% Agree"
+                elif all_have("Answer1"):
+                    summary_metric_col = "Answer1Value"; summary_metric_label = "% Answer 1"
+                else:
+                    summary_metric_col = None
+
+                # Tabs (full center width now)
+                tab_labels = [qc for qc in qlist]
+                first_tab_name = "Summary table" if summary_metric_col else "Results"
+                tabs = st.tabs(([first_tab_name] if summary_metric_col else []) + tab_labels)
+
+                # Summary tab
+                if summary_metric_col:
+                    long_rows = []
+                    for qcode in tab_labels:
+                        t = per_q_disp[qcode].copy()
+                        t["Year"] = pd.to_numeric(t["Year"], errors="coerce").astype("Int64")
+                        if "Demographic" not in t.columns:
+                            t["Demographic"] = None
+                        if summary_metric_col == "Answer1Value":
+                            ans1_lab = per_q_ans1_label[qcode] or "Answer 1"
+                            if ans1_lab in t.columns:
+                                t["Answer1Value"] = pd.to_numeric(t[ans1_lab], errors="coerce")
+                            elif "Answer 1" in t.columns:
+                                t["Answer1Value"] = pd.to_numeric(t["Answer 1"], errors="coerce")
+                            else:
+                                t["Answer1Value"] = pd.NA
+                        qlabel = f"{qcode} — {code_to_text.get(qcode, '')}".strip().rstrip(" —")
+                        t["QuestionLabel"] = qlabel
+                        keep = ["QuestionLabel", "Demographic", "Year", summary_metric_col]
+                        long_rows.append(t[keep])
+                    long_df = pd.concat(long_rows, ignore_index=True)
+                    if (demo_selection != "All respondents") and (sub_selection is None) and long_df["Demographic"].notna().any():
+                        idx_cols = ["QuestionLabel","Demographic"]
+                    else:
+                        idx_cols = ["QuestionLabel"]
+                    pivot = long_df.pivot_table(index=idx_cols, columns="Year", values=summary_metric_col, aggfunc="mean")
+                    pivot = pivot.reindex(selected_years, axis=1)
+
+                    with tabs[0]:
+                        header_note = summary_metric_label if summary_metric_col != "Answer1Value" else "% Answer 1 (uses each question’s Answer 1 label)"
+                        st.markdown(f"### Summary table — {header_note}")
+                        st.dataframe(pivot.round(1).reset_index(), use_container_width=True)
+                        st.caption(
+                            "Source: 2024 Public Service Employee Survey Results – Open Government Portal "
+                            "https://open.canada.ca/data/en/dataset/7f625e97-9d02-4c12-a756-1ddebb50e69f"
+                        )
+                else:
+                    st.info("Summary table unavailable because the selected questions use different answer scales/metrics. Please view detailed tabs below.")
+
+                # Per-question tabs (details only)
+                start_idx = 1 if summary_metric_col else 0
+                for idx, qcode in enumerate(tab_labels, start=start_idx):
+                    with tabs[idx]:
+                        qtext = code_to_text.get(qcode, "")
+                        st.subheader(f"{qcode} — {qtext}")
+                        st.dataframe(per_q_disp[qcode], use_container_width=True)
+                        st.caption(
+                            "Source: 2024 Public Service Employee Survey Results – Open Government Portal "
+                            "https://open.canada.ca/data/en/dataset/7f625e97-9d02-4c12-a756-1ddebb50e69f"
+                        )
+
+                # AI analyses (AFTER tabs)
+                st.markdown("---")
+                st.markdown("## AI Analysis")
+                if not st.session_state.get("menu1_ai_toggle", True):
+                    st.info("No AI summary generated.")
+                else:
+                    # Per-question analyses
+                    for qcode in tab_labels:
+                        qtext = code_to_text.get(qcode, "")
+                        metric_col = per_q_best_col[qcode]
+                        metric_label = per_q_best_label[qcode]
+                        with st.spinner(f"Generating Summary Analysis for {qcode}…"):
+                            content, hint = _call_openai_json(
+                                system=AI_SYSTEM_PROMPT,
+                                user=_user_prompt_per_q(qcode, qtext, per_q_disp[qcode], metric_col, metric_label, (demo_selection != "All respondents")),
+                                model=OPENAI_MODEL,
+                                temperature=0.2
+                            )
+                        st.markdown(f"### Summary Analysis — {qcode}")
+                        if content:
+                            try:
+                                j = json.loads(content)
+                                if isinstance(j, dict) and j.get("narrative"):
+                                    st.write(j["narrative"])
+                                    st.caption(f"Generated by OpenAI • model: {OPENAI_MODEL}")
+                                else:
+                                    st.caption("AI returned no narrative.")
+                            except Exception:
+                                st.caption("AI returned non-JSON content.")
+                        else:
+                            st.caption(f"AI unavailable ({hint}).")
+
+                    # Overall analysis (only when multiple questions)
+                    if len(tab_labels) > 1:
+                        with st.spinner("Generating Overall Summary Analysis…"):
+                            overall_payload = _user_prompt_overall_mixed(per_q_disp, per_q_text, per_q_best_col, per_q_best_label)
+                            content, hint = _call_openai_json(
+                                system=AI_SYSTEM_PROMPT,
+                                user=overall_payload,
+                                model=OPENAI_MODEL,
+                                temperature=0.2
+                            )
+                        st.markdown("### Overall Summary Analysis")
+                        if content:
+                            try:
+                                j = json.loads(content)
+                                if isinstance(j, dict) and j.get("narrative"):
+                                    st.write(j["narrative"])
+                                    st.caption(f"Generated by OpenAI • model: {OPENAI_MODEL}")
+                                else:
+                                    st.caption("AI returned no narrative.")
+                            except Exception:
+                                st.caption("AI returned non-JSON content.")
+                        else:
+                            st.caption(f"AI unavailable ({hint}).")
+
+                # Excel export (Summary + each Q)
+                with io.BytesIO() as buf:
+                    with pd.ExcelWriter(buf, engine="xlsxwriter") as writer:
+                        try:
+                            if summary_metric_col:
+                                pivot.round(1).reset_index().to_excel(writer, sheet_name="Summary_Table", index=False)
+                        except Exception:
+                            pass
+                        for q, df_disp in per_q_disp.items():
+                            safe = q[:28]
+                            df_disp.to_excel(writer, sheet_name=f"{safe}", index=False)
+                        ctx = {
+                            "Questions": ", ".join(question_codes),
+                            "Years": ", ".join(map(str, selected_years)),
+                            "Category": demo_selection,
+                            "Subgroup": sub_selection or "(all in category)" if demo_selection != "All respondents" else "All respondents",
+                            "Generated at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                        }
+                        pd.DataFrame(list(ctx.items()), columns=["Field","Value"]).to_excel(writer, sheet_name="Context", index=False)
+                    data = buf.getvalue()
+                st.download_button(
+                    label="Download Excel (Summary + all tabs)",
+                    data=data,
+                    file_name=f"PSES_multiQ_{'-'.join(map(str, selected_years))}.xlsx",
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                )
 
 
 if __name__ == "__main__":
