@@ -1,14 +1,8 @@
 # menu1/main.py — PSES Explorer Search (Menu 1)
-# - Hybrid keyword search + dropdown multi-select (max 5) with visible “Selected questions”
-# - Diagnostics panel toggle with TABS: Loading status • Parameters • AI health check • Last query (tables)
-# - Tabs:
-#     1) Summary table (ONLY if all Qs share the same metric: Positive → Agree → Answer 1)
-#     2+) One tab per question with detailed distribution
-# - AI analyses are rendered AFTER the tabs:
-#     • one "Summary Analysis" per question
-#     • one "Overall Summary Analysis" (only when multiple questions)
-# - AI toggle default ON (red)
-# - Excel export (Summary + each Q)
+# UX update:
+# - Hide Search/Reset after running a query; show "Start a new search" at the bottom.
+# - Add "Download AI analysis (Word)" button.
+# - Rename Excel button to "Download data tabulations (Excel)".
 from __future__ import annotations
 
 import io
@@ -710,7 +704,6 @@ def run_menu1():
         st.markdown('<div class="field-label">Select a demographic category (optional):</div>', unsafe_allow_html=True)
         DEMO_CAT_COL = "DEMCODE Category"
         LABEL_COL = "DESCRIP_E"
-        demo_df = _load_demographics()  # (safe reuse)
         demo_categories = ["All respondents"] + sorted(demo_df[DEMO_CAT_COL].dropna().astype(str).unique().tolist())
         st.session_state.setdefault("demo_main", "All respondents")
         demo_selection = st.selectbox("Demographic category", demo_categories, key="demo_main", label_visibility="collapsed")
@@ -725,27 +718,33 @@ def run_menu1():
             if sub_selection == "":
                 sub_selection = None
 
-        # ---------- Action row (buttons only) ----------
-        st.markdown("<div class='action-row'>", unsafe_allow_html=True)
-        colA, colB = st.columns([1.2, 1])
-        with colA:
-            reasons = []
-            if not loader_ok: reasons.append("data loader unavailable")
-            if not question_codes: reasons.append("pick at least 1 question")
-            if no_years: reasons.append("pick at least 1 year")
-            disable_search = bool(reasons)
-            label = "Search" if not disable_search else f"Search (disabled: {', '.join(reasons)})"
-            clicked = st.button(label, disabled=disable_search, key="menu1_search_btn")
-        with colB:
-            if st.button("Reset all parameters"):
-                _reset_menu1_state()
-                st.experimental_rerun()
-        st.markdown("</div>", unsafe_allow_html=True)
+        # ---------- Action row (hidden after search) ----------
+        if not st.session_state.get("menu1_search_clicked", False):
+            st.markdown("<div class='action-row'>", unsafe_allow_html=True)
+            colA, colB = st.columns([1.2, 1])
+            with colA:
+                reasons = []
+                if not loader_ok: reasons.append("data loader unavailable")
+                if not question_codes: reasons.append("pick at least 1 question")
+                if no_years: reasons.append("pick at least 1 year")
+                disable_search = bool(reasons)
+                label = "Search" if not disable_search else f"Search (disabled: {', '.join(reasons)})"
+                clicked = st.button(label, disabled=disable_search, key="menu1_search_btn")
+            with colB:
+                if st.button("Reset all parameters"):
+                    _reset_menu1_state()
+                    st.experimental_rerun()
+            st.markdown("</div>", unsafe_allow_html=True)
+        else:
+            clicked = False  # already searched; keep rendering results below
 
         # =========================
-        # RESULTS & AI (FULL WIDTH of center column)
+        # RESULTS & AI (FULL WIDTH)
         # =========================
-        if clicked:
+        if clicked or st.session_state.get("menu1_search_clicked", False):
+            if clicked:
+                st.session_state["menu1_search_clicked"] = True  # hide action row on subsequent renders
+
             t0 = time.time()
             with st.spinner(f"Running query… {datetime.fromtimestamp(t0).strftime('%Y-%m-%d %H:%M:%S')}"):
                 demcodes, disp_map, category_in_play = _resolve_demcodes(demo_df, demo_selection, sub_selection)
@@ -842,12 +841,13 @@ def run_menu1():
                 else:
                     summary_metric_col = None
 
-                # Tabs (full center width now)
+                # Tabs (full center width)
                 tab_labels = [qc for qc in qlist]
                 first_tab_name = "Summary table" if summary_metric_col else "Results"
                 tabs = st.tabs(([first_tab_name] if summary_metric_col else []) + tab_labels)
 
                 # Summary tab
+                pivot = None  # for Excel export
                 if summary_metric_col:
                     long_rows = []
                     for qcode in tab_labels:
@@ -898,9 +898,14 @@ def run_menu1():
                             "https://open.canada.ca/data/en/dataset/7f625e97-9d02-4c12-a756-1ddebb50e69f"
                         )
 
+                # -----------------------------------
                 # AI analyses (AFTER tabs)
+                # -----------------------------------
                 st.markdown("---")
                 st.markdown("## AI Analysis")
+                ai_narratives: Dict[str, str] = {}
+                overall_narrative: Optional[str] = None
+
                 if not st.session_state.get("menu1_ai_toggle", True):
                     st.info("No AI summary generated.")
                 else:
@@ -921,6 +926,7 @@ def run_menu1():
                             try:
                                 j = json.loads(content)
                                 if isinstance(j, dict) and j.get("narrative"):
+                                    ai_narratives[qcode] = j["narrative"]
                                     st.write(j["narrative"])
                                     st.caption(f"Generated by OpenAI • model: {OPENAI_MODEL}")
                                 else:
@@ -945,6 +951,7 @@ def run_menu1():
                             try:
                                 j = json.loads(content)
                                 if isinstance(j, dict) and j.get("narrative"):
+                                    overall_narrative = j["narrative"]
                                     st.write(j["narrative"])
                                     st.caption(f"Generated by OpenAI • model: {OPENAI_MODEL}")
                                 else:
@@ -954,11 +961,18 @@ def run_menu1():
                         else:
                             st.caption(f"AI unavailable ({hint}).")
 
-                # Excel export (Summary + each Q)
+                # -----------------------------------
+                # Downloads + New search (BOTTOM)
+                # -----------------------------------
+                st.markdown("---")
+                dl_col1, dl_col2, dl_col3 = st.columns([1, 1, 1])
+
+                # Build Excel in-memory
+                excel_bytes = None
                 with io.BytesIO() as buf:
                     with pd.ExcelWriter(buf, engine="xlsxwriter") as writer:
                         try:
-                            if summary_metric_col:
+                            if pivot is not None:
                                 pivot.round(1).reset_index().to_excel(writer, sheet_name="Summary_Table", index=False)
                         except Exception:
                             pass
@@ -973,13 +987,72 @@ def run_menu1():
                             "Generated at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
                         }
                         pd.DataFrame(list(ctx.items()), columns=["Field","Value"]).to_excel(writer, sheet_name="Context", index=False)
-                    data = buf.getvalue()
-                st.download_button(
-                    label="Download Excel (Summary + all tabs)",
-                    data=data,
-                    file_name=f"PSES_multiQ_{'-'.join(map(str, selected_years))}.xlsx",
-                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                )
+                    excel_bytes = buf.getvalue()
+
+                with dl_col1:
+                    st.download_button(
+                        label="Download data tabulations (Excel)",
+                        data=excel_bytes,
+                        file_name=f"PSES_multiQ_{'-'.join(map(str, selected_years))}.xlsx",
+                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    )
+
+                # Build Word (.docx) with AI analyses
+                def _build_ai_docx(narratives: Dict[str, str], overall_text: Optional[str]) -> Optional[bytes]:
+                    try:
+                        from docx import Document  # python-docx
+                        from docx.shared import Pt
+                    except Exception:
+                        return None
+                    doc = Document()
+                    doc.add_heading("PSES Explorer — AI Analyses", level=1)
+                    meta = doc.add_paragraph()
+                    meta.add_run("Generated at: ").bold = True
+                    meta.add_run(datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+                    meta2 = doc.add_paragraph()
+                    meta2.add_run("Selection: ").bold = True
+                    meta2.add_run(f"Questions: {', '.join(question_codes)}; Years: {', '.join(map(str, selected_years))}; "
+                                  f"Demographic: {demo_selection}" + (f" — {sub_selection}" if sub_selection else ""))
+
+                    # Per-question sections (in selected order)
+                    for qcode in tab_labels:
+                        if qcode in narratives:
+                            doc.add_heading(f"Summary Analysis — {qcode}", level=2)
+                            doc.add_paragraph(narratives[qcode])
+
+                    # Overall
+                    if overall_text:
+                        doc.add_heading("Overall Summary Analysis", level=2)
+                        doc.add_paragraph(overall_text)
+
+                    # Footer
+                    doc.add_paragraph("")
+                    foot = doc.add_paragraph()
+                    foot.add_run("Model: ").bold = True
+                    foot.add_run(OPENAI_MODEL)
+                    foot.add_run(" • Source: 2024 Public Service Employee Survey (Open Government Portal)")
+
+                    b = io.BytesIO()
+                    doc.save(b)
+                    return b.getvalue()
+
+                ai_doc_bytes = _build_ai_docx(ai_narratives, overall_narrative)
+
+                with dl_col2:
+                    if st.session_state.get("menu1_ai_toggle", True) and ai_doc_bytes:
+                        st.download_button(
+                            label="Download AI analysis (Word)",
+                            data=ai_doc_bytes,
+                            file_name=f"PSES_AI_analyses_{datetime.now().strftime('%Y%m%d_%H%M%S')}.docx",
+                            mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                        )
+                    else:
+                        st.caption("AI analysis Word export unavailable (AI off or python-docx missing).")
+
+                with dl_col3:
+                    if st.button("Start a new search"):
+                        _reset_menu1_state()
+                        st.experimental_rerun()
 
 
 if __name__ == "__main__":
