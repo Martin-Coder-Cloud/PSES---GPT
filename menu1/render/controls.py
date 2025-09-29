@@ -7,10 +7,11 @@ Controls for Menu 1:
 - Demographic category & subgroup selector
 - Search button enablement helper
 
-Changes per request:
-  • Multiselect placeholder set to "Choose a question from the list below"
-  • Keyword UI wrapped in a dropdown-style expander labeled
-    "Search questionnaire by keywords or theme" with styling to look like a placeholder
+UI-only changes per request:
+  • Multiselect placeholder: "Choose a question from the list below"
+  • Keyword section shown as a dropdown-style box whose label visually matches the
+    multiselect's placeholder font/color
+  • Small centered "or" divider between the two boxes
 """
 
 from __future__ import annotations
@@ -75,7 +76,7 @@ def _dedupe_hits(df: pd.DataFrame) -> pd.DataFrame:
 def _run_keyword_search(qdf: pd.DataFrame, query: str, top_k: int = 120) -> pd.DataFrame:
     """
     Calls utils.hybrid_search.hybrid_question_search with fixed threshold.
-    (That function is now embeddings-aware and still API-free.)
+    (That function is embeddings-aware and API-free.)
     """
     if callable(hybrid_question_search):
         try:
@@ -93,7 +94,7 @@ def question_picker(qdf: pd.DataFrame) -> List[str]:
     """
     UI:
       1) Dropdown multi-select (authoritative, max 5) with custom placeholder
-      2) Keyword search in a dropdown-style expander (label looks like placeholder)
+      2) Keyword search in a dropdown-style box whose label looks like an input placeholder
       3) "Selected questions" list with quick unselect checkboxes
 
     Returns ordered list of selected question codes (max 5).
@@ -120,30 +121,40 @@ def question_picker(qdf: pd.DataFrame) -> List[str]:
         all_displays,
         max_selections=5,
         label_visibility="collapsed",
-        key=K_MULTI_QUESTIONS,   # value is taken from session_state; no "default" to avoid warning
-        placeholder="Choose a question from the list below",  # <<< requested text
+        key=K_MULTI_QUESTIONS,   # session-driven value; no "default" to avoid warning
+        placeholder="Choose a question from the list below",  # requested text
     )
     selected_from_multi: Set[str] = set(display_to_code[d] for d in st.session_state[K_MULTI_QUESTIONS] if d in display_to_code)
 
-    # ---------- 2) Keyword search (dropdown-style expander with placeholder-like label) ----------
-    # Style the expander summary to mimic an input placeholder (same color/weight vibe)
+    # ---------- Divider: "or" ----------
+    st.markdown("""
+        <div class="or-divider" style="
+            text-align:center;
+            margin: .25rem 0 .25rem 0;
+            font-size: 0.875rem;
+            color: rgba(49,51,63,.6);
+        ">or</div>
+    """, unsafe_allow_html=True)
+
+    # ---------- 2) Keyword search (dropdown-style box with placeholder-like label) ----------
+    # CSS: make the expander's summary mimic the multiselect placeholder font/color
     st.markdown("""
         <style>
-        /* Make only the FIRST expander below look like an input */
         .kw-expander details > summary {
             border: 1px solid rgba(0,0,0,0.15);
             border-radius: 6px;
             padding: .5rem .75rem;
-            color: var(--text-color-subdued, #6c757d);
             background: #ffffff;
-            font-weight: 400;
-            list-style: none;   /* hide default triangle bullet */
+            list-style: none;               /* hide marker */
+            font-family: inherit;           /* match app font */
+            font-size: 0.875rem;            /* ~14px to match inputs */
+            font-weight: 400;               /* normal weight like placeholders */
+            color: rgba(49,51,63,.6);       /* Streamlit-esque placeholder grey */
         }
         .kw-expander details > summary:hover {
             border-color: rgba(0,0,0,0.35);
             cursor: pointer;
         }
-        /* Hide the default triangle marker for a cleaner 'input-like' look */
         .kw-expander details > summary::-webkit-details-marker { display: none; }
         </style>
     """, unsafe_allow_html=True)
