@@ -6,39 +6,30 @@ Controls for Menu 1:
 - Years selector
 - Demographic category & subgroup selector
 - Search button enablement helper
+
+Improvements:
+- Multi-keyword search with dynamic thresholding
+- Partial/typo tolerance (substring/prefix checks)
+- Fallback search if external hybrid_search returns no results
+- Clear "no results" feedback
 """
 
 from __future__ import annotations
 from typing import Dict, List, Optional, Set, Tuple
+import re
 import pandas as pd
 import streamlit as st
 
-
-# Try to import the hybrid search; provide a lightweight fallback if missing
+# Try to import the hybrid search; we'll wrap it with better defaults & fallback
 try:
     from utils.hybrid_search import hybrid_question_search  # type: ignore
 except Exception:
-    def hybrid_question_search(qdf: pd.DataFrame, query: str, top_k: int = 120, min_score: float = 0.40) -> pd.DataFrame:
-        """Simple fallback: case-insensitive substring + token overlap scorer."""
-        if not query or not str(query).strip():
-            return pd.DataFrame(columns=["code", "text", "display", "score"])
-        q = str(query).strip().lower()
-        tokens = {t for t in q.replace(",", " ").split() if t}
-        scores = []
-        for _, r in qdf.iterrows():
-            text = f"{r['code']} {r['text']}".lower()
-            base = 1.0 if q in text else 0.0
-            overlap = sum(1 for t in tokens if t in text) / max(len(tokens), 1)
-            score = 0.6 * overlap + 0.4 * base
-            scores.append(score)
-        out = qdf.copy()
-        out["score"] = scores
-        out = out.sort_values("score", ascending=False)
-        out = out[out["score"] >= min_score]
-        return out.head(top_k)
+    hybrid_question_search = None  # type: ignore
 
 
-# Session-state keys used in Menu 1
+# -----------------------------
+# Session-state keys (Menu 1)
+# -----------------------------
 K_MULTI_QUESTIONS = "menu1_multi_questions"  # List[str] of "display" labels picked in the dropdown
 K_SELECTED_CODES  = "menu1_selected_codes"   # Ordered List[str] of codes (multi + hits merged)
 K_KW_QUERY        = "menu1_kw_query"         # str
@@ -47,9 +38,124 @@ K_FIND_HITS_BTN   = "menu1_find_hits"        # button key
 K_SEARCH_DONE     = "menu1_search_done"      # bool: did user click Search questions?
 K_LAST_QUERY      = "menu1_last_search_query"# str: what query was used last time
 
-# Year keys
+# Years
 DEFAULT_YEARS = [2024, 2022, 2020, 2019]
 K_SELECT_ALL_YEARS = "select_all_years"
+
+
+# -----------------------------------------------------------------------------
+# Internal helpers: tokenization & scoring for fallback search
+# -----------------------------------------------------------------------------
+_word_re = re.compile(r"[a-z0-9']+")
+
+def _normalize(s: str) -> str:
+    return re.sub(r"\s+", " ", s.lower()).strip()
+
+def _tokens(s: str) -> List[str]:
+    return _word_re.findall(_normalize(s))
+
+def _dynamic_min_score(num_tokens: int) -> float:
+    # Looser threshold when multiple keywords are used
+    if num_tokens <= 1:
+        return 0.40
+    if num_tokens == 2:
+        return 0.30
+    return 0.25  # 3+ tokens
+
+def _fallback_search(qdf: pd.DataFrame, query: str, top_k: int = 120, min_score: Optional[float] = None) -> pd.DataFrame:
+    """
+    Lightweight multi-keyword search with partial/typo tolerance.
+    Scoring:
+      - token_coverage: matched tokens / total tokens (substring/prefix tolerant)
+      - phrase_hit: 1 if full query substring appears
+      - bigram_hit: 1 if any two consecutive tokens appear as a phrase
+    score = 0.6*token_coverage + 0.3*phrase_hit + 0.1*bigram_hit
+    """
+    q = _normalize(query)
+    if not q:
+        return pd.DataFrame(columns=["code", "text", "display", "score"])
+
+    toks = _tokens(q)
+    if not toks:
+        return pd.DataFrame(columns=["code", "text", "display", "score"])
+
+    # dynamic threshold based on tokens used
+    threshold = _dynamic_min_score(len(toks)) if min_score is None else float(min_score)
+    phrases = [" ".join(toks[i:i+2]) for i in range(len(toks) - 1)]  # bigrams
+
+    scores: List[float] = []
+    rows = []
+    for _, r in qdf.iterrows():
+        code = str(r["code"])
+        text = str(r["text"])
+        display = f"{code} — {text}"
+
+        t = _normalize(f"{code} {text}")
+        t_words = set(_tokens(t))
+
+        # token matches (substring/prefix tolerant)
+        matched = 0
+        for tok in toks:
+            if (tok in t) or any(w.startswith(tok) or tok.startswith(w) for w in t_words):
+                matched += 1
+        token_coverage = matched / max(len(toks), 1)
+
+        # phrase & bigram hits
+        phrase_hit = 1.0 if q in t else 0.0
+        bigram_hit = 1.0 if any(p in t for p in phrases) else 0.0
+
+        score = 0.6 * token_coverage + 0.3 * phrase_hit + 0.1 * bigram_hit
+        if score >= threshold:
+            rows.append({"code": code, "text": text, "display": display, "score": score})
+
+    if not rows:
+        # Last resort: slightly relax threshold
+        relax = max(0.0, threshold - 0.1)
+        for _, r in qdf.iterrows():
+            code = str(r["code"])
+            text = str(r["text"])
+            display = f"{code} — {text}"
+            t = _normalize(f"{code} {text}")
+            t_words = set(_tokens(t))
+            matched = 0
+            for tok in toks:
+                if (tok in t) or any(w.startswith(tok) or tok.startswith(w) for w in t_words):
+                    matched += 1
+            token_coverage = matched / max(len(toks), 1)
+            phrase_hit = 1.0 if q in t else 0.0
+            bigram_hit = 1.0 if any(p in t for p in phrases) else 0.0
+            score = 0.6 * token_coverage + 0.3 * phrase_hit + 0.1 * bigram_hit
+            if score >= relax:
+                rows.append({"code": code, "text": text, "display": display, "score": score})
+
+    if not rows:
+        return pd.DataFrame(columns=["code", "text", "display", "score"])
+
+    out = pd.DataFrame(rows).sort_values("score", ascending=False)
+    return out.head(top_k)
+
+
+def _run_keyword_search(qdf: pd.DataFrame, query: str, top_k: int = 120) -> pd.DataFrame:
+    """
+    Wrapper that:
+      1) Computes a dynamic min_score based on number of tokens
+      2) Tries external hybrid_question_search if available
+      3) Falls back to our tolerant multi-keyword search if no hits
+    """
+    toks = _tokens(query)
+    dyn_threshold = _dynamic_min_score(len(toks)) if toks else 0.40
+
+    # Try external search first (if available)
+    if callable(hybrid_question_search):
+        try:
+            hits_df = hybrid_question_search(qdf, query, top_k=top_k, min_score=dyn_threshold)  # type: ignore
+            if isinstance(hits_df, pd.DataFrame) and not hits_df.empty:
+                return hits_df
+        except Exception:
+            pass  # ignore and fallback
+
+    # Fallback (multi-keyword tolerant)
+    return _fallback_search(qdf, query, top_k=top_k, min_score=dyn_threshold)
 
 
 # -----------------------------------------------------------------------------
@@ -107,7 +213,7 @@ def question_picker(qdf: pd.DataFrame) -> List[str]:
     """
     UI:
       1) Dropdown multi-select (authoritative, max 5)
-      2) Expander: keyword search (hybrid); checkboxes to select hits
+      2) Expander: keyword search; checkboxes to select hits
       3) "Selected questions" list with quick unselect checkboxes
 
     Returns ordered list of selected question codes (max 5).
@@ -145,7 +251,7 @@ def question_picker(qdf: pd.DataFrame) -> List[str]:
             key=K_KW_QUERY
         )
         if st.button("Search questions", key=K_FIND_HITS_BTN):
-            hits_df = hybrid_question_search(qdf, query, top_k=120, min_score=0.40)
+            hits_df = _run_keyword_search(qdf, query, top_k=120)
             st.session_state[K_SEARCH_DONE] = True
             st.session_state[K_LAST_QUERY] = query
             st.session_state[K_HITS] = hits_df[["code", "text"]].to_dict(orient="records") if isinstance(hits_df, pd.DataFrame) and not hits_df.empty else []
@@ -154,21 +260,19 @@ def question_picker(qdf: pd.DataFrame) -> List[str]:
         hits = st.session_state.get(K_HITS, [])
 
         if st.session_state.get(K_SEARCH_DONE, False):
-            # Show feedback for search outcomes
             if not hits:
-                # --- NEW: Clear, actionable message when no results found
                 q = (st.session_state.get(K_LAST_QUERY) or "").strip()
                 safe_q = q if q else "your search"
                 st.warning(
                     f"No questions matched “{safe_q}”. "
-                    "Try broader or different keywords (e.g., synonyms), or search by a question code like “Q01”."
+                    "Try broader or different keywords (e.g., synonyms), split phrases (e.g., “overall satisfaction” → “satisfaction”), "
+                    "or search by a question code like “Q01”."
                 )
             else:
                 st.write(f"Top {len(hits)} matches meeting the quality threshold:")
         else:
             st.info('Enter keywords and click "Search questions" to see matches.')
 
-        # Render checkboxes for hits (if any)
         if hits:
             for rec in hits:
                 code = rec["code"]; text = rec["text"]
