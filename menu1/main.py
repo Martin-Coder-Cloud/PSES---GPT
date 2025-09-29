@@ -190,3 +190,9 @@ def run() -> None:
 
 if __name__ == "__main__":
     run()
+
+# --- keep this at the end of menu1/main.py ---
+def run_menu1():
+    # backward-compat alias for older loaders that expect run_menu1
+    return run()
+
