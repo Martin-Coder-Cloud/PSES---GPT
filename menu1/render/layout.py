@@ -33,12 +33,12 @@ def centered_page(columns: List[int] | None = None, *, with_css: bool = True):
     Returns a (left, center, right) 3-column layout.
     Use the 'center' column as the primary content area to keep widths consistent.
 
-    Note: No vertical_alignment arg (kept compatible with older Streamlit versions).
+    Note: Kept compatible with older Streamlit versions (no vertical_alignment arg).
     """
     if with_css:
         inject_base_css()
     col_spec = columns or CENTER_COLUMNS
-    left, center, right = st.columns(col_spec)  # <-- removed vertical_alignment
+    left, center, right = st.columns(col_spec)
     return left, center, right
 
 # ---------------------------------------------------------------------------
@@ -65,18 +65,22 @@ def toggles() -> Tuple[bool, bool]:
     returns their ON/OFF states as (ai_on, show_diag).
     Keys are defined in state.py to keep names consistent.
     """
+    # Ensure defaults before rendering widgets: AI ON, Diagnostics OFF
+    st.session_state.setdefault(K_AI_TOGGLE, True)
+    st.session_state.setdefault(K_DIAG_TOGGLE, False)
+
     c1, c2 = st.columns([1, 1])
     with c1:
         st.toggle(
             "🧠 Enable AI analysis",
             key=K_AI_TOGGLE,
-            help="Include the AI-generated analysis alongside the tables."
+            help="Include the AI-generated analysis alongside the tables.",
         )
     with c2:
         st.toggle(
             "🔧 Show technical parameters & diagnostics",
             key=K_DIAG_TOGGLE,
-            help="Show current parameters, app setup status, and last query timings."
+            help="Show current parameters, app setup status, AI status, and last query timings.",
         )
 
     ai_on = bool(st.session_state.get(K_AI_TOGGLE, True))
