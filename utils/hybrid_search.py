@@ -255,3 +255,28 @@ def hybrid_question_search(
     out = pd.DataFrame(rows, columns=["score", "hit_type", "code", "text", "display"])
     out = out.sort_values(["score", "code"], ascending=[False, True], kind="mergesort").head(top_k)
     return out.reset_index(drop=True)
+# --- at the bottom of utils/hybrid_search.py ---
+
+def get_embedding_status() -> dict:
+    """
+    Return a lightweight status dict about local embeddings usage.
+    Keys:
+      - sentence_transformers_installed: bool
+      - model_loaded: bool
+      - model_name: str|None
+      - catalogues_indexed: int   (# of qdf catalogues cached in memory)
+    """
+    status = {
+        "sentence_transformers_installed": bool(_ST_AVAILABLE),
+        "model_loaded": False,
+        "model_name": None,
+        "catalogues_indexed": len(_INDEX_CACHE),
+    }
+    if _ST_AVAILABLE:
+        try:
+            m = _load_model()
+            status["model_loaded"] = bool(m)
+            status["model_name"] = getattr(m, "model_name_or_path", None) if m else None
+        except Exception:
+            pass
+    return status
