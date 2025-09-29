@@ -7,25 +7,23 @@ Controls for Menu 1:
 - Demographic category & subgroup selector
 - Search button enablement helper
 
-Improvements:
-- Multi-keyword search with dynamic thresholding
-- Partial/typo tolerance (substring/prefix checks)
-- Fallback search if external hybrid_search returns no results
+Behavior:
+- Fixed min score threshold (> 0.40) for BOTH the external hybrid search and the local fallback
+- Multi-keyword support with partial/typo tolerance in the fallback
 - Clear "no results" feedback
 """
 
 from __future__ import annotations
-from typing import Dict, List, Optional, Set, Tuple
+from typing import Dict, List, Optional, Set
 import re
 import pandas as pd
 import streamlit as st
 
-# Try to import the hybrid search; we'll wrap it with better defaults & fallback
+# Try to import the hybrid search; we'll wrap it and also provide a robust fallback
 try:
     from utils.hybrid_search import hybrid_question_search  # type: ignore
 except Exception:
     hybrid_question_search = None  # type: ignore
-
 
 # -----------------------------
 # Session-state keys (Menu 1)
@@ -42,6 +40,8 @@ K_LAST_QUERY      = "menu1_last_search_query"# str: what query was used last tim
 DEFAULT_YEARS = [2024, 2022, 2020, 2019]
 K_SELECT_ALL_YEARS = "select_all_years"
 
+# Threshold (fixed)
+MIN_SCORE = 0.40  # keep > 0.40 filter in both engines
 
 # -----------------------------------------------------------------------------
 # Internal helpers: tokenization & scoring for fallback search
@@ -54,15 +54,7 @@ def _normalize(s: str) -> str:
 def _tokens(s: str) -> List[str]:
     return _word_re.findall(_normalize(s))
 
-def _dynamic_min_score(num_tokens: int) -> float:
-    # Looser threshold when multiple keywords are used
-    if num_tokens <= 1:
-        return 0.40
-    if num_tokens == 2:
-        return 0.30
-    return 0.25  # 3+ tokens
-
-def _fallback_search(qdf: pd.DataFrame, query: str, top_k: int = 120, min_score: Optional[float] = None) -> pd.DataFrame:
+def _fallback_search(qdf: pd.DataFrame, query: str, top_k: int = 120) -> pd.DataFrame:
     """
     Lightweight multi-keyword search with partial/typo tolerance.
     Scoring:
@@ -70,6 +62,7 @@ def _fallback_search(qdf: pd.DataFrame, query: str, top_k: int = 120, min_score:
       - phrase_hit: 1 if full query substring appears
       - bigram_hit: 1 if any two consecutive tokens appear as a phrase
     score = 0.6*token_coverage + 0.3*phrase_hit + 0.1*bigram_hit
+    Filter: score > MIN_SCORE (0.40)
     """
     q = _normalize(query)
     if not q:
@@ -79,11 +72,8 @@ def _fallback_search(qdf: pd.DataFrame, query: str, top_k: int = 120, min_score:
     if not toks:
         return pd.DataFrame(columns=["code", "text", "display", "score"])
 
-    # dynamic threshold based on tokens used
-    threshold = _dynamic_min_score(len(toks)) if min_score is None else float(min_score)
     phrases = [" ".join(toks[i:i+2]) for i in range(len(toks) - 1)]  # bigrams
 
-    scores: List[float] = []
     rows = []
     for _, r in qdf.iterrows():
         code = str(r["code"])
@@ -105,28 +95,8 @@ def _fallback_search(qdf: pd.DataFrame, query: str, top_k: int = 120, min_score:
         bigram_hit = 1.0 if any(p in t for p in phrases) else 0.0
 
         score = 0.6 * token_coverage + 0.3 * phrase_hit + 0.1 * bigram_hit
-        if score >= threshold:
+        if score > MIN_SCORE:
             rows.append({"code": code, "text": text, "display": display, "score": score})
-
-    if not rows:
-        # Last resort: slightly relax threshold
-        relax = max(0.0, threshold - 0.1)
-        for _, r in qdf.iterrows():
-            code = str(r["code"])
-            text = str(r["text"])
-            display = f"{code} — {text}"
-            t = _normalize(f"{code} {text}")
-            t_words = set(_tokens(t))
-            matched = 0
-            for tok in toks:
-                if (tok in t) or any(w.startswith(tok) or tok.startswith(w) for w in t_words):
-                    matched += 1
-            token_coverage = matched / max(len(toks), 1)
-            phrase_hit = 1.0 if q in t else 0.0
-            bigram_hit = 1.0 if any(p in t for p in phrases) else 0.0
-            score = 0.6 * token_coverage + 0.3 * phrase_hit + 0.1 * bigram_hit
-            if score >= relax:
-                rows.append({"code": code, "text": text, "display": display, "score": score})
 
     if not rows:
         return pd.DataFrame(columns=["code", "text", "display", "score"])
@@ -138,24 +108,20 @@ def _fallback_search(qdf: pd.DataFrame, query: str, top_k: int = 120, min_score:
 def _run_keyword_search(qdf: pd.DataFrame, query: str, top_k: int = 120) -> pd.DataFrame:
     """
     Wrapper that:
-      1) Computes a dynamic min_score based on number of tokens
-      2) Tries external hybrid_question_search if available
-      3) Falls back to our tolerant multi-keyword search if no hits
+      1) Calls external hybrid_question_search if available (min_score=MIN_SCORE)
+      2) Falls back to our tolerant multi-keyword search
     """
-    toks = _tokens(query)
-    dyn_threshold = _dynamic_min_score(len(toks)) if toks else 0.40
-
     # Try external search first (if available)
     if callable(hybrid_question_search):
         try:
-            hits_df = hybrid_question_search(qdf, query, top_k=top_k, min_score=dyn_threshold)  # type: ignore
+            hits_df = hybrid_question_search(qdf, query, top_k=top_k, min_score=MIN_SCORE)  # type: ignore
             if isinstance(hits_df, pd.DataFrame) and not hits_df.empty:
                 return hits_df
         except Exception:
             pass  # ignore and fallback
 
-    # Fallback (multi-keyword tolerant)
-    return _fallback_search(qdf, query, top_k=top_k, min_score=dyn_threshold)
+    # Fallback (multi-keyword tolerant, fixed threshold)
+    return _fallback_search(qdf, query, top_k=top_k)
 
 
 # -----------------------------------------------------------------------------
