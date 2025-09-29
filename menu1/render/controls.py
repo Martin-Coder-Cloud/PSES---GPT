@@ -7,10 +7,10 @@ Controls for Menu 1:
 - Demographic category & subgroup selector
 - Search button enablement helper
 
-Updates:
-- Deduplicate search results by question code (keeps highest score) → prevents repeated items like Q43
-- Fixed-threshold filtering (> 0.40) for both hybrid and fallback search
-- Clear "no results" feedback
+Changes per request:
+  • Multiselect placeholder set to "Choose a question from the list below"
+  • Keyword UI wrapped in a dropdown-style expander labeled
+    "Search questionnaire by keywords or theme" with styling to look like a placeholder
 """
 
 from __future__ import annotations
@@ -31,7 +31,7 @@ except Exception:
 K_MULTI_QUESTIONS = "menu1_multi_questions"  # List[str] of "display" labels picked in the dropdown
 K_SELECTED_CODES  = "menu1_selected_codes"   # Ordered List[str] of codes (multi + hits merged)
 K_KW_QUERY        = "menu1_kw_query"         # str
-K_HITS            = "menu1_hits"             # List[{"code","text","score"}] from last search (deduped)
+K_HITS            = "menu1_hits"             # List[{"code","text","display","score"}] from last search (deduped)
 K_FIND_HITS_BTN   = "menu1_find_hits"        # button key
 K_SEARCH_DONE     = "menu1_search_done"      # bool: did user click Search questions?
 K_LAST_QUERY      = "menu1_last_search_query"# str: what query was used last time
@@ -44,7 +44,7 @@ K_SELECT_ALL_YEARS = "select_all_years"
 MIN_SCORE = 0.40  # keep > 0.40 filter in both engines
 
 # -----------------------------------------------------------------------------
-# Internal helpers: tokenization & scoring for fallback search
+# Internal regex/token helpers for fallback search (unused here, but kept for consistency)
 # -----------------------------------------------------------------------------
 _word_re = re.compile(r"[a-z0-9']+")
 
@@ -54,70 +54,18 @@ def _normalize(s: str) -> str:
 def _tokens(s: str) -> List[str]:
     return _word_re.findall(_normalize(s))
 
-def _fallback_search(qdf: pd.DataFrame, query: str, top_k: int = 120) -> pd.DataFrame:
-    """
-    Lightweight multi-keyword search with partial/typo tolerance.
-    Scoring:
-      - token_coverage: matched tokens / total tokens (substring/prefix tolerant)
-      - phrase_hit: 1 if full query substring appears
-      - bigram_hit: 1 if any two consecutive tokens appear as a phrase
-    score = 0.6*token_coverage + 0.3*phrase_hit + 0.1*bigram_hit
-    Filter: score > MIN_SCORE (0.40)
-    """
-    q = _normalize(query)
-    if not q:
-        return pd.DataFrame(columns=["code", "text", "display", "score"])
-
-    toks = _tokens(q)
-    if not toks:
-        return pd.DataFrame(columns=["code", "text", "display", "score"])
-
-    phrases = [" ".join(toks[i:i+2]) for i in range(len(toks) - 1)]  # bigrams
-
-    rows = []
-    for _, r in qdf.iterrows():
-        code = str(r["code"])
-        text = str(r["text"])
-        display = f"{code} — {text}"
-
-        t = _normalize(f"{code} {text}")
-        t_words = set(_tokens(t))
-
-        # token matches (substring/prefix tolerant)
-        matched = 0
-        for tok in toks:
-            if (tok in t) or any(w.startswith(tok) or tok.startswith(w) for w in t_words):
-                matched += 1
-        token_coverage = matched / max(len(toks), 1)
-
-        # phrase & bigram hits
-        phrase_hit = 1.0 if q in t else 0.0
-        bigram_hit = 1.0 if any(p in t for p in phrases) else 0.0
-
-        score = 0.6 * token_coverage + 0.3 * phrase_hit + 0.1 * bigram_hit
-        if score > MIN_SCORE:
-            rows.append({"code": code, "text": text, "display": display, "score": score})
-
-    if not rows:
-        return pd.DataFrame(columns=["code", "text", "display", "score"])
-
-    out = pd.DataFrame(rows).sort_values("score", ascending=False)
-    return out.head(top_k)
-
+# -----------------------------------------------------------------------------
+# Utilities for dedupe and wrapped call
+# -----------------------------------------------------------------------------
 def _dedupe_hits(df: pd.DataFrame) -> pd.DataFrame:
-    """
-    Keep the highest-scoring row per question code. Ensures unique widget keys and no visual duplicates.
-    """
     if not isinstance(df, pd.DataFrame) or df.empty:
         return pd.DataFrame(columns=["code", "text", "display", "score"])
     out = df.copy()
-    # Ensure required cols exist
     if "score" not in out.columns:
         out["score"] = 0.0
     out["code"] = out["code"].astype(str)
     out = out.sort_values("score", ascending=False)
     out = out.drop_duplicates(subset=["code"], keep="first")
-    # Respect global threshold if score column present
     try:
         out = out[out["score"] > MIN_SCORE]
     except Exception:
@@ -126,69 +74,17 @@ def _dedupe_hits(df: pd.DataFrame) -> pd.DataFrame:
 
 def _run_keyword_search(qdf: pd.DataFrame, query: str, top_k: int = 120) -> pd.DataFrame:
     """
-    Wrapper that:
-      1) Calls external hybrid_question_search if available (min_score=MIN_SCORE)
-      2) Dedupes by code and re-applies threshold
-      3) Falls back to our tolerant multi-keyword search (also deduped)
+    Calls utils.hybrid_search.hybrid_question_search with fixed threshold.
+    (That function is now embeddings-aware and still API-free.)
     """
-    # Try external search first (if available)
     if callable(hybrid_question_search):
         try:
             hits_df = hybrid_question_search(qdf, query, top_k=top_k, min_score=MIN_SCORE)  # type: ignore
             if isinstance(hits_df, pd.DataFrame) and not hits_df.empty:
                 return _dedupe_hits(hits_df).head(top_k)
         except Exception:
-            pass  # ignore and fallback
-
-    # Fallback (multi-keyword tolerant, fixed threshold)
-    return _dedupe_hits(_fallback_search(qdf, query, top_k=top_k)).head(top_k)
-
-# -----------------------------------------------------------------------------
-# Internal helper: resolve demographic codes & display map
-# -----------------------------------------------------------------------------
-def _resolve_demcodes(demo_df: pd.DataFrame, category_label: str, subgroup_label: Optional[str]):
-    DEMO_CAT_COL = "DEMCODE Category"
-    LABEL_COL = "DESCRIP_E"
-
-    # overall
-    if not category_label or category_label == "All respondents":
-        return [None], {None: "All respondents"}, False
-
-    # find code column
-    code_col = None
-    for c in ["DEMCODE", "DemCode", "CODE", "Code", "CODE_E", "Demographic code"]:
-        if c in demo_df.columns:
-            code_col = c
-            break
-
-    df_cat = demo_df[demo_df[DEMO_CAT_COL] == category_label] if DEMO_CAT_COL in demo_df.columns else demo_df.copy()
-    if df_cat.empty:
-        return [None], {None: "All respondents"}, False
-
-    # single subgroup chosen
-    if subgroup_label:
-        if code_col and LABEL_COL in df_cat.columns:
-            r = df_cat[df_cat[LABEL_COL] == subgroup_label]
-            if not r.empty:
-                code = str(r.iloc[0][code_col])
-                return [code], {code: subgroup_label}, True
-        return [subgroup_label], {subgroup_label: subgroup_label}, True
-
-    # no subgroup -> take all codes in category
-    if code_col and LABEL_COL in df_cat.columns:
-        codes = df_cat[code_col].astype(str).tolist()
-        labels = df_cat[LABEL_COL].astype(str).tolist()
-        keep = [(c, l) for c, l in zip(codes, labels) if str(c).strip() != ""]
-        codes = [c for c, _ in keep]
-        disp_map = {c: l for c, l in keep}
-        return codes, disp_map, True
-
-    # fallback
-    if LABEL_COL in df_cat.columns:
-        labels = df_cat[LABEL_COL].astype(str).tolist()
-        return labels, {l: l for l in labels}, True
-
-    return [None], {None: "All respondents"}, False
+            pass
+    return pd.DataFrame(columns=["code", "text", "display", "score"])
 
 # -----------------------------------------------------------------------------
 # Question picker (dropdown + keyword search) → returns List[str] (codes)
@@ -196,14 +92,15 @@ def _resolve_demcodes(demo_df: pd.DataFrame, category_label: str, subgroup_label
 def question_picker(qdf: pd.DataFrame) -> List[str]:
     """
     UI:
-      1) Dropdown multi-select (authoritative, max 5)
-      2) Expander: keyword search; checkboxes to select hits
+      1) Dropdown multi-select (authoritative, max 5) with custom placeholder
+      2) Keyword search in a dropdown-style expander (label looks like placeholder)
       3) "Selected questions" list with quick unselect checkboxes
 
     Returns ordered list of selected question codes (max 5).
     """
-    # Ensure session defaults
-    st.session_state.setdefault(K_MULTI_QUESTIONS, [])
+    # Ensure session defaults (initialize BEFORE widget, but don't pass 'default=' later)
+    if K_MULTI_QUESTIONS not in st.session_state:
+        st.session_state[K_MULTI_QUESTIONS] = []
     st.session_state.setdefault(K_SELECTED_CODES, [])
     st.session_state.setdefault(K_KW_QUERY, "")
     st.session_state.setdefault(K_HITS, [])
@@ -215,32 +112,57 @@ def question_picker(qdf: pd.DataFrame) -> List[str]:
     code_to_display = dict(zip(qdf["code"], qdf["display"]))
     display_to_code = {v: k for k, v in code_to_display.items()}
 
-    # ---------- 1) Dropdown multi-select ----------
+    # ---------- 1) Dropdown multi-select (NO default=, only key=) ----------
     st.markdown('<div class="field-label">Pick up to 5 survey questions:</div>', unsafe_allow_html=True)
     all_displays = qdf["display"].tolist()
-    multi_choices = st.multiselect(
+    st.multiselect(
         "Choose one or more from the official list",
         all_displays,
-        default=st.session_state.get(K_MULTI_QUESTIONS, []),
         max_selections=5,
         label_visibility="collapsed",
-        key=K_MULTI_QUESTIONS,
+        key=K_MULTI_QUESTIONS,   # value is taken from session_state; no "default" to avoid warning
+        placeholder="Choose a question from the list below",  # <<< requested text
     )
-    selected_from_multi: Set[str] = set(display_to_code[d] for d in multi_choices if d in display_to_code)
+    selected_from_multi: Set[str] = set(display_to_code[d] for d in st.session_state[K_MULTI_QUESTIONS] if d in display_to_code)
 
-    # ---------- 2) Hybrid keyword search ----------
-    with st.expander("Search by keywords or theme (optional)"):
+    # ---------- 2) Keyword search (dropdown-style expander with placeholder-like label) ----------
+    # Style the expander summary to mimic an input placeholder (same color/weight vibe)
+    st.markdown("""
+        <style>
+        /* Make only the FIRST expander below look like an input */
+        .kw-expander details > summary {
+            border: 1px solid rgba(0,0,0,0.15);
+            border-radius: 6px;
+            padding: .5rem .75rem;
+            color: var(--text-color-subdued, #6c757d);
+            background: #ffffff;
+            font-weight: 400;
+            list-style: none;   /* hide default triangle bullet */
+        }
+        .kw-expander details > summary:hover {
+            border-color: rgba(0,0,0,0.35);
+            cursor: pointer;
+        }
+        /* Hide the default triangle marker for a cleaner 'input-like' look */
+        .kw-expander details > summary::-webkit-details-marker { display: none; }
+        </style>
+    """, unsafe_allow_html=True)
+
+    # Wrap the expander in a div we can target
+    st.markdown('<div class="kw-expander">', unsafe_allow_html=True)
+    with st.expander("Search questionnaire by keywords or theme", expanded=False):
         query = st.text_input(
             "Enter keywords (e.g., harassment, recognition, onboarding)",
-            key=K_KW_QUERY
+            key=K_KW_QUERY,
+            label_visibility="collapsed",
+            placeholder="Type keywords like “career advancement”, “harassment”, “recognition”…",
         )
-        if st.button("Search questions", key=K_FIND_HITS_BTN):
+        if st.button("Search the questionnaire", key=K_FIND_HITS_BTN):
             hits_df = _run_keyword_search(qdf, query, top_k=120)
             st.session_state[K_SEARCH_DONE] = True
             st.session_state[K_LAST_QUERY] = query
-            # Dedup and keep only the columns we show
-            hits_df = _dedupe_hits(hits_df)
-            st.session_state[K_HITS] = hits_df[["code", "text", "display", "score"]].to_dict(orient="records") if isinstance(hits_df, pd.DataFrame) and not hits_df.empty else []
+            st.session_state[K_HITS] = hits_df[["code", "text", "display", "score"]].to_dict(orient="records") \
+                                       if isinstance(hits_df, pd.DataFrame) and not hits_df.empty else []
 
         selected_from_hits: Set[str] = set()
         hits = st.session_state.get(K_HITS, [])
@@ -251,16 +173,15 @@ def question_picker(qdf: pd.DataFrame) -> List[str]:
                 safe_q = q if q else "your search"
                 st.warning(
                     f"No questions matched “{safe_q}”. "
-                    "Try broader or different keywords (e.g., synonyms), split phrases (e.g., “overall satisfaction” → “satisfaction”), "
+                    "Try broader or different keywords (e.g., synonyms), split phrases (e.g., “career advancement” → “career”), "
                     "or search by a question code like “Q01”."
                 )
             else:
                 st.write(f"Top {len(hits)} matches meeting the quality threshold:")
         else:
-            st.info('Enter keywords and click "Search questions" to see matches.')
+            st.info('Enter keywords and click "Search the questionnaire" to see matches.')
 
         if hits:
-            # Render each unique hit with a stable, unique key (per code)
             for rec in hits:
                 code = rec["code"]; text = rec["text"]
                 label = f"{code} — {text}"
@@ -269,6 +190,7 @@ def question_picker(qdf: pd.DataFrame) -> List[str]:
                 checked = st.checkbox(label, value=default_checked, key=key)
                 if checked:
                     selected_from_hits.add(code)
+    st.markdown('</div>', unsafe_allow_html=True)
 
     # ---------- Merge selections (dropdown first, then hits), cap at 5 ----------
     combined_order: List[str] = []
@@ -348,8 +270,51 @@ def demographic_picker(demo_df: pd.DataFrame):
         if sub_selection == "":
             sub_selection = None
 
+    # Resolve codes
     demcodes, disp_map, category_in_play = _resolve_demcodes(demo_df, demo_selection, sub_selection)
     return demo_selection, sub_selection, demcodes, disp_map, category_in_play
+
+# -----------------------------------------------------------------------------
+# Internal helper: resolve demographic codes & display map
+# -----------------------------------------------------------------------------
+def _resolve_demcodes(demo_df: pd.DataFrame, category_label: str, subgroup_label: Optional[str]):
+    DEMO_CAT_COL = "DEMCODE Category"
+    LABEL_COL = "DESCRIP_E"
+
+    if not category_label or category_label == "All respondents":
+        return [None], {None: "All respondents"}, False
+
+    code_col = None
+    for c in ["DEMCODE", "DemCode", "CODE", "Code", "CODE_E", "Demographic code"]:
+        if c in demo_df.columns:
+            code_col = c
+            break
+
+    df_cat = demo_df[demo_df[DEMO_CAT_COL] == category_label] if DEMO_CAT_COL in demo_df.columns else demo_df.copy()
+    if df_cat.empty:
+        return [None], {None: "All respondents"}, False
+
+    if subgroup_label:
+        if code_col and LABEL_COL in df_cat.columns:
+            r = df_cat[df_cat[LABEL_COL] == subgroup_label]
+            if not r.empty:
+                code = str(r.iloc[0][code_col])
+                return [code], {code: subgroup_label}, True
+        return [subgroup_label], {subgroup_label: subgroup_label}, True
+
+    if code_col and LABEL_COL in df_cat.columns:
+        codes = df_cat[code_col].astype(str).tolist()
+        labels = df_cat[LABEL_COL].astype(str).tolist()
+        keep = [(c, l) for c, l in zip(codes, labels) if str(c).strip() != ""]
+        codes = [c for c, _ in keep]
+        disp_map = {c: l for c, l in keep}
+        return codes, disp_map, True
+
+    if LABEL_COL in df_cat.columns:
+        labels = df_cat[LABEL_COL].astype(str).tolist()
+        return labels, {l: l for l in labels}, True
+
+    return [None], {None: "All respondents"}, False
 
 # -----------------------------------------------------------------------------
 # Search button enabled?
