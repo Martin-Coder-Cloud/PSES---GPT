@@ -9,9 +9,9 @@ Controls for Menu 1:
 
 UI-only adjustments:
   • Multiselect placeholder: "Choose a question from the list below"
-  • Search box header styled to visually match the multiselect (same bg/font/size/border/radius/height)
-  • "or" label uses same font/color and is left-aligned with the box text
-  • Tightened vertical spacing between the two boxes
+  • Search box header now visually identical to the multiselect (bg/font/size/border/radius/height)
+  • Stronger CSS selectors + !important to win over Streamlit theme styles
+  • Even tighter spacing between the two boxes and around the "or"
 """
 
 from __future__ import annotations
@@ -116,55 +116,70 @@ def question_picker(qdf: pd.DataFrame) -> List[str]:
     # ---------- Wrapper for consistent CSS scoping ----------
     st.markdown('<div class="question-picker">', unsafe_allow_html=True)
 
-    # Tight CSS to match Streamlit select look and reduce space
+    # High-specificity CSS to match multiselect and tighten spacing
     st.markdown("""
         <style>
-        /* Tighten spacing for first multiselect and the following "or" & expander */
-        .question-picker [data-testid="stMultiSelect"] { margin-bottom: 0.25rem !important; }
-        .question-picker .or-divider { margin: 0.15rem 0 0.15rem 0.5rem; }
+        /* Tighten spacing for the multiselect and the "or" line */
+        .question-picker [data-testid="stMultiSelect"] { margin-bottom: 0.15rem !important; }
+        .question-picker .or-divider { margin: 0 .0 0.10rem 0.5rem !important; }
 
-        /* Make the search expander summary look like the multiselect control */
-        .question-picker .kw-expander [data-testid="stExpander"] {
-            margin-bottom: 0.25rem;         /* tighter spacing after the box */
-        }
-        .question-picker .kw-expander details { margin: 0; }
-        .question-picker .kw-expander details > summary {
-            display: flex;
-            align-items: center;
-            justify-content: space-between;
-            width: 100%;
-            height: 38px;                                   /* approx. control height */
-            box-sizing: border-box;
-            padding: 0.375rem 0.75rem;                      /* match input padding */
-            border: 1px solid rgba(0,0,0,0.15);
-            border-radius: 6px;
+        /* EXPANDER HEADER: make it look exactly like a select input */
+        /* Target both summary and internal header container across Streamlit versions */
+        .question-picker .kw-expander [data-testid="stExpander"] summary,
+        .question-picker .kw-expander [data-testid="stExpander"] > div[role="button"],
+        .question-picker .kw-expander details > summary,
+        .question-picker .kw-expander .st-expanderHeader {
+            display: flex !important;
+            align-items: center !important;
+            justify-content: space-between !important;
+            width: 100% !important;
+            height: 38px !important;                       /* match control height */
+            box-sizing: border-box !important;
+            padding: 0.375rem 0.75rem !important;          /* match input padding */
+            border: 1px solid rgba(0,0,0,0.15) !important;
+            border-radius: 6px !important;
             background: var(--secondary-background-color, #F0F2F6) !important;
-            list-style: none;                               /* hide marker bullet */
-            font-family: inherit;                           /* match app font */
-            font-size: 0.875rem;                            /* ~14px like placeholders */
-            font-weight: 400;                               /* normal */
-            color: rgba(49,51,63,.6);                       /* placeholder grey */
+            /* font look */
+            font-family: inherit !important;
+            font-size: 0.875rem !important;                /* ~14px like placeholders */
+            font-weight: 400 !important;
+            color: rgba(49,51,63,.6) !important;           /* placeholder grey */
+            line-height: 1.2 !important;
+            margin: 0 !important;
         }
-        /* Caret to mimic a select */
-        .question-picker .kw-expander details > summary::after {
+        /* Ensure any nested text inherits the same look */
+        .question-picker .kw-expander [data-testid="stExpander"] summary * {
+            font-family: inherit !important;
+            font-size: 0.875rem !important;
+            font-weight: 400 !important;
+            color: rgba(49,51,63,.6) !important;
+        }
+
+        /* Add a caret on the right to mimic a select */
+        .question-picker .kw-expander [data-testid="stExpander"] summary::after,
+        .question-picker .kw-expander [data-testid="stExpander"] > div[role="button"]::after {
             content: '▾';
             margin-left: .5rem;
             color: rgba(49,51,63,.6);
             font-size: 0.875rem;
         }
+
+        /* Hover/expanded border feedback */
+        .question-picker .kw-expander [data-testid="stExpander"] summary:hover,
+        .question-picker .kw-expander [data-testid="stExpander"] > div[role="button"]:hover {
+            border-color: rgba(0,0,0,0.35) !important;
+            cursor: pointer !important;
+        }
         .question-picker .kw-expander details[open] > summary {
-            border-color: rgba(0,0,0,0.35);
+            border-color: rgba(0,0,0,0.35) !important;
         }
-        .question-picker .kw-expander details > summary:hover {
-            border-color: rgba(0,0,0,0.35);
-            cursor: pointer;
-        }
-        /* Remove default marker for cleaner look */
-        .question-picker .kw-expander details > summary::-webkit-details-marker { display: none; }
+
+        /* Remove default marker/triangle for a cleaner look */
+        .question-picker .kw-expander details > summary::-webkit-details-marker { display: none !important; }
         </style>
     """, unsafe_allow_html=True)
 
-    # ---------- 1) Dropdown multi-select (NO default=, only key=) ----------
+    # ---------- 1) Dropdown multi-select ----------
     st.markdown('<div class="field-label">Pick up to 5 survey questions:</div>', unsafe_allow_html=True)
     all_displays = qdf["display"].tolist()
     st.multiselect(
@@ -172,19 +187,19 @@ def question_picker(qdf: pd.DataFrame) -> List[str]:
         all_displays,
         max_selections=5,
         label_visibility="collapsed",
-        key=K_MULTI_QUESTIONS,   # session-driven value; no "default" to avoid warning
-        placeholder="Choose a question from the list below",  # requested text
+        key=K_MULTI_QUESTIONS,
+        placeholder="Choose a question from the list below",
     )
     selected_from_multi: Set[str] = set(display_to_code[d] for d in st.session_state[K_MULTI_QUESTIONS] if d in display_to_code)
 
     # ---------- Divider: "or" (left-aligned, same placeholder style) ----------
     st.markdown("""
         <div class="or-divider" style="
-            font-size: 0.875rem;              /* ~14px to match inputs */
-            line-height: 1.4;
+            font-size: 0.875rem;
+            line-height: 1.2;
             font-weight: 400;
-            color: rgba(49,51,63,.6);         /* same subdued grey as placeholder */
-            font-family: inherit;             /* match app font */
+            color: rgba(49,51,63,.6);
+            font-family: inherit;
         ">or</div>
     """, unsafe_allow_html=True)
 
@@ -225,7 +240,7 @@ def question_picker(qdf: pd.DataFrame) -> List[str]:
             for rec in hits:
                 code = rec["code"]; text = rec["text"]
                 label = f"{code} — {text}"
-                key = f"kwhit_{code}"   # unique per code after dedupe
+                key = f"kwhit_{code}"
                 default_checked = st.session_state.get(key, False) or (code in selected_from_multi)
                 checked = st.checkbox(label, value=default_checked, key=key)
                 if checked:
@@ -259,13 +274,10 @@ def question_picker(qdf: pd.DataFrame) -> List[str]:
                 label = code_to_display.get(code, code)
                 keep = st.checkbox(label, value=True, key=f"sel_{code}")
                 if not keep:
-                    # remove from current selection
                     updated = [c for c in updated if c != code]
-                    # uncheck corresponding search hit, if any
                     hk = f"kwhit_{code}"
                     if hk in st.session_state:
                         st.session_state[hk] = False
-                    # remove from dropdown selected list
                     disp = code_to_display.get(code)
                     if disp:
                         st.session_state[K_MULTI_QUESTIONS] = [d for d in st.session_state[K_MULTI_QUESTIONS] if d != disp]
