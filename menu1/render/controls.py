@@ -7,11 +7,13 @@ Controls for Menu 1:
 - Demographic category & subgroup selector
 - Search button enablement helper
 
-UI-only adjustments:
-  • Multiselect placeholder: "Choose a question from the list below"
-  • Search box header now visually identical to the multiselect (bg/font/size/border/radius/height)
-  • Stronger CSS selectors + !important to win over Streamlit theme styles
-  • Even tighter spacing between the two boxes and around the "or"
+UI changes requested:
+  • Sub-title above Box 1: "Choose a question from the list below" (bold, smaller)
+  • Ensure Q01 appears first in the multiselect list
+  • Box 1 preselects Q01 by default
+  • Sub-title above Box 2: "Search questionnaire by keywords or theme to search"
+  • Box 2 is a plain text input with placeholder; Search button only shows when text is present
+  • Tighter spacing between boxes
 """
 
 from __future__ import annotations
@@ -29,13 +31,13 @@ except Exception:
 # -----------------------------
 # Session-state keys (Menu 1)
 # -----------------------------
-K_MULTI_QUESTIONS = "menu1_multi_questions"  # List[str] of "display" labels picked in the dropdown
-K_SELECTED_CODES  = "menu1_selected_codes"   # Ordered List[str] of codes (multi + hits merged)
-K_KW_QUERY        = "menu1_kw_query"         # str
-K_HITS            = "menu1_hits"             # List[{"code","text","display","score"}] from last search (deduped)
-K_FIND_HITS_BTN   = "menu1_find_hits"        # button key
-K_SEARCH_DONE     = "menu1_search_done"      # bool: did user click Search questions?
-K_LAST_QUERY      = "menu1_last_search_query"# str: what query was used last time
+K_MULTI_QUESTIONS = "menu1_multi_questions"   # List[str] of "display" labels picked in the dropdown
+K_SELECTED_CODES  = "menu1_selected_codes"    # Ordered List[str] of codes (multi + hits merged)
+K_KW_QUERY        = "menu1_kw_query"          # str
+K_HITS            = "menu1_hits"              # List[{"code","text","display","score"}] from last search (deduped)
+K_FIND_HITS_BTN   = "menu1_find_hits"         # button key
+K_SEARCH_DONE     = "menu1_search_done"       # bool: did user click Search questions?
+K_LAST_QUERY      = "menu1_last_search_query" # str: what query was used last time
 
 # Years
 DEFAULT_YEARS = [2024, 2022, 2020, 2019]
@@ -93,15 +95,14 @@ def _run_keyword_search(qdf: pd.DataFrame, query: str, top_k: int = 120) -> pd.D
 def question_picker(qdf: pd.DataFrame) -> List[str]:
     """
     UI:
-      1) Dropdown multi-select (authoritative, max 5) with custom placeholder
-      2) Keyword search in a dropdown-style box that visually matches the multiselect
+      1) Box 1: Dropdown multi-select with sub-title (preselect Q01 if nothing picked yet)
+      2) Box 2: Text input with sub-title and conditional Search button
       3) "Selected questions" list with quick unselect checkboxes
 
     Returns ordered list of selected question codes (max 5).
     """
     # Ensure session defaults (initialize BEFORE widget, but don't pass 'default=' later)
-    if K_MULTI_QUESTIONS not in st.session_state:
-        st.session_state[K_MULTI_QUESTIONS] = []
+    st.session_state.setdefault(K_MULTI_QUESTIONS, [])
     st.session_state.setdefault(K_SELECTED_CODES, [])
     st.session_state.setdefault(K_KW_QUERY, "")
     st.session_state.setdefault(K_HITS, [])
@@ -113,142 +114,90 @@ def question_picker(qdf: pd.DataFrame) -> List[str]:
     code_to_display = dict(zip(qdf["code"], qdf["display"]))
     display_to_code = {v: k for k, v in code_to_display.items()}
 
-    # ---------- Wrapper for consistent CSS scoping ----------
-    st.markdown('<div class="question-picker">', unsafe_allow_html=True)
-
-    # High-specificity CSS to match multiselect and tighten spacing
+    # Scoped styles for sub-titles and spacing
     st.markdown("""
         <style>
-        /* Tighten spacing for the multiselect and the "or" line */
-        .question-picker [data-testid="stMultiSelect"] { margin-bottom: 0.15rem !important; }
-        .question-picker .or-divider { margin: 0 .0 0.10rem 0.5rem !important; }
-
-        /* EXPANDER HEADER: make it look exactly like a select input */
-        /* Target both summary and internal header container across Streamlit versions */
-        .question-picker .kw-expander [data-testid="stExpander"] summary,
-        .question-picker .kw-expander [data-testid="stExpander"] > div[role="button"],
-        .question-picker .kw-expander details > summary,
-        .question-picker .kw-expander .st-expanderHeader {
-            display: flex !important;
-            align-items: center !important;
-            justify-content: space-between !important;
-            width: 100% !important;
-            height: 38px !important;                       /* match control height */
-            box-sizing: border-box !important;
-            padding: 0.375rem 0.75rem !important;          /* match input padding */
-            border: 1px solid rgba(0,0,0,0.15) !important;
-            border-radius: 6px !important;
-            background: var(--secondary-background-color, #F0F2F6) !important;
-            /* font look */
-            font-family: inherit !important;
-            font-size: 0.875rem !important;                /* ~14px like placeholders */
-            font-weight: 400 !important;
-            color: rgba(49,51,63,.6) !important;           /* placeholder grey */
-            line-height: 1.2 !important;
-            margin: 0 !important;
-        }
-        /* Ensure any nested text inherits the same look */
-        .question-picker .kw-expander [data-testid="stExpander"] summary * {
-            font-family: inherit !important;
-            font-size: 0.875rem !important;
-            font-weight: 400 !important;
-            color: rgba(49,51,63,.6) !important;
-        }
-
-        /* Add a caret on the right to mimic a select */
-        .question-picker .kw-expander [data-testid="stExpander"] summary::after,
-        .question-picker .kw-expander [data-testid="stExpander"] > div[role="button"]::after {
-            content: '▾';
-            margin-left: .5rem;
-            color: rgba(49,51,63,.6);
-            font-size: 0.875rem;
-        }
-
-        /* Hover/expanded border feedback */
-        .question-picker .kw-expander [data-testid="stExpander"] summary:hover,
-        .question-picker .kw-expander [data-testid="stExpander"] > div[role="button"]:hover {
-            border-color: rgba(0,0,0,0.35) !important;
-            cursor: pointer !important;
-        }
-        .question-picker .kw-expander details[open] > summary {
-            border-color: rgba(0,0,0,0.35) !important;
-        }
-
-        /* Remove default marker/triangle for a cleaner look */
-        .question-picker .kw-expander details > summary::-webkit-details-marker { display: none !important; }
+            .sub-title {
+                font-weight: 700;
+                font-size: 0.95rem;     /* smaller than main section header */
+                margin: 0.25rem 0 0.25rem 0;
+            }
+            .tight-gap { margin-top: 0.15rem; margin-bottom: 0.35rem; }
         </style>
     """, unsafe_allow_html=True)
 
-    # ---------- 1) Dropdown multi-select ----------
-    st.markdown('<div class="field-label">Pick up to 5 survey questions:</div>', unsafe_allow_html=True)
+    # ---------- 1) Box 1: Dropdown multi-select ----------
+    st.markdown('<div class="sub-title">Choose a question from the list below</div>', unsafe_allow_html=True)
+
+    # Build list with Q01 forced to the top if present
     all_displays = qdf["display"].tolist()
+    q01_disp = code_to_display.get("Q01") or code_to_display.get("Q1")
+    if q01_disp and q01_disp in all_displays:
+        all_displays.remove(q01_disp)
+        all_displays.insert(0, q01_disp)
+
+    # PRESELECT Q01 (via session state) ONLY if nothing is picked yet
+    if not st.session_state[K_MULTI_QUESTIONS] and q01_disp:
+        st.session_state[K_MULTI_QUESTIONS] = [q01_disp]
+
     st.multiselect(
         "Choose one or more from the official list",
         all_displays,
         max_selections=5,
         label_visibility="collapsed",
-        key=K_MULTI_QUESTIONS,
+        key=K_MULTI_QUESTIONS,                 # session-driven value; no "default"
         placeholder="Choose a question from the list below",
     )
     selected_from_multi: Set[str] = set(display_to_code[d] for d in st.session_state[K_MULTI_QUESTIONS] if d in display_to_code)
 
-    # ---------- Divider: "or" (left-aligned, same placeholder style) ----------
-    st.markdown("""
-        <div class="or-divider" style="
-            font-size: 0.875rem;
-            line-height: 1.2;
-            font-weight: 400;
-            color: rgba(49,51,63,.6);
-            font-family: inherit;
-        ">or</div>
-    """, unsafe_allow_html=True)
+    # ---------- 2) Box 2: Text input search with sub-title & conditional button ----------
+    st.markdown('<div class="sub-title tight-gap">Search questionnaire by keywords or theme to search</div>', unsafe_allow_html=True)
 
-    # ---------- 2) Keyword search (dropdown-style box that visually matches multiselect) ----------
-    st.markdown('<div class="kw-expander">', unsafe_allow_html=True)
-    with st.expander("Search questionnaire by keywords or theme", expanded=False):
-        query = st.text_input(
-            "Enter keywords (e.g., harassment, recognition, onboarding)",
-            key=K_KW_QUERY,
-            label_visibility="collapsed",
-            placeholder="Type keywords like “career advancement”, “harassment”, “recognition”…",
-        )
+    query = st.text_input(
+        "Enter keywords",
+        key=K_KW_QUERY,
+        label_visibility="collapsed",
+        placeholder='Type keywords like “career advancement”, “harassment”, “recognition”…',
+    )
+
+    selected_from_hits: Set[str] = set()
+
+    # Only show the Search button if there is text
+    if query and query.strip():
         if st.button("Search the questionnaire", key=K_FIND_HITS_BTN):
             hits_df = _run_keyword_search(qdf, query, top_k=120)
             st.session_state[K_SEARCH_DONE] = True
             st.session_state[K_LAST_QUERY] = query
             st.session_state[K_HITS] = hits_df[["code", "text", "display", "score"]].to_dict(orient="records") \
                                        if isinstance(hits_df, pd.DataFrame) and not hits_df.empty else []
+    else:
+        # Clear prior results if user erased the query
+        st.session_state[K_SEARCH_DONE] = False
+        st.session_state[K_HITS] = []
 
-        selected_from_hits: Set[str] = set()
-        hits = st.session_state.get(K_HITS, [])
-
-        if st.session_state.get(K_SEARCH_DONE, False):
-            if not hits:
-                q = (st.session_state.get(K_LAST_QUERY) or "").strip()
-                safe_q = q if q else "your search"
-                st.warning(
-                    f"No questions matched “{safe_q}”. "
-                    "Try broader or different keywords (e.g., synonyms), split phrases (e.g., “career advancement” → “career”), "
-                    "or search by a question code like “Q01”."
-                )
-            else:
-                st.write(f"Top {len(hits)} matches meeting the quality threshold:")
+    # Show search results (if any)
+    hits = st.session_state.get(K_HITS, [])
+    if st.session_state.get(K_SEARCH_DONE, False):
+        if not hits:
+            q = (st.session_state.get(K_LAST_QUERY) or "").strip()
+            safe_q = q if q else "your search"
+            st.warning(
+                f'No questions matched “{safe_q}”. '
+                "Try broader or different keywords (e.g., synonyms), split phrases (e.g., “career advancement” → “career”), "
+                "or search by a question code like “Q01”."
+            )
         else:
-            st.info('Enter keywords and click "Search the questionnaire" to see matches.')
+            st.write(f"Top {len(hits)} matches meeting the quality threshold:")
 
-        if hits:
-            for rec in hits:
-                code = rec["code"]; text = rec["text"]
-                label = f"{code} — {text}"
-                key = f"kwhit_{code}"
-                default_checked = st.session_state.get(key, False) or (code in selected_from_multi)
-                checked = st.checkbox(label, value=default_checked, key=key)
-                if checked:
-                    selected_from_hits.add(code)
-    st.markdown('</div>', unsafe_allow_html=True)
-
-    # Close wrapper
-    st.markdown('</div>', unsafe_allow_html=True)
+    if hits:
+        for rec in hits:
+            code = rec["code"]; text = rec["text"]
+            label = f"{code} — {text}"
+            key = f"kwhit_{code}"   # unique per code after dedupe
+            default_checked = st.session_state.get(key, False) or (code in selected_from_multi)
+            checked = st.checkbox(label, value=default_checked, key=key)
+            if checked:
+                selected_from_hits.add(code)
 
     # ---------- Merge selections (dropdown first, then hits), cap at 5 ----------
     combined_order: List[str] = []
@@ -266,7 +215,7 @@ def question_picker(qdf: pd.DataFrame) -> List[str]:
 
     # ---------- 3) Selected list with quick unselect ----------
     if st.session_state[K_SELECTED_CODES]:
-        st.markdown('<div class="field-label">Selected questions:</div>', unsafe_allow_html=True)
+        st.markdown('<div class="sub-title">Selected questions</div>', unsafe_allow_html=True)
         updated = list(st.session_state[K_SELECTED_CODES])
         cols = st.columns(min(5, len(updated)))
         for idx, code in enumerate(list(updated)):
