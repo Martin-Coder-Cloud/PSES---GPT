@@ -4,6 +4,19 @@ from __future__ import annotations
 import importlib
 import streamlit as st
 
+# ── Make set_page_config idempotent (prevents duplicate-call crash) ──────────
+if not hasattr(st, "_setpcf_wrapped"):
+    _orig_spc = st.set_page_config
+    def _safe_set_page_config(*args, **kwargs):
+        # Only allow this once per run
+        if st.session_state.get("_page_config_done"):
+            return
+        st.session_state["_page_config_done"] = True
+        return _orig_spc(*args, **kwargs)
+    st.set_page_config = _safe_set_page_config
+    st._setpcf_wrapped = True
+
+# First Streamlit call (now idempotent)
 st.set_page_config(page_title="PSES Explorer", layout="wide")
 
 # ── Import loader module once; pull functions via getattr so missing names don't break imports ──
@@ -116,8 +129,7 @@ def render_home():
 def render_menu1():
     _clear_bg_css()
     try:
-        # uses the backward-compat alias we added in menu1/main.py
-        from menu1.main import run_menu1
+        from menu1.main import run_menu1  # the compat alias calls run()
         run_menu1()
     except Exception as e:
         st.error(f"Menu 1 is unavailable: {type(e).__name__}: {e}")
