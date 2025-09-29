@@ -1,4 +1,4 @@
-# app/menu1/main.py
+# menu1/main.py
 from __future__ import annotations
 
 import time
@@ -20,6 +20,7 @@ from .metadata import load_questions, load_scales, load_demographics
 from .render import layout, controls, diagnostics, results
 from .queries import fetch_per_question, normalize_results
 from .formatters import drop_suppressed, scale_pairs, format_display, detect_metric
+from .ai import build_overall_prompt, build_per_q_prompt, call_openai_json  # <-- direct imports
 
 
 def _build_summary_pivot(
@@ -180,9 +181,9 @@ def run() -> None:
             results.tabs_summary_and_per_q(
                 payload=payload,
                 ai_on=ai_on,
-                build_overall_prompt=lambda **kw: __import__("app.menu1.ai", fromlist=["build_overall_prompt"]).build_overall_prompt(**kw),
-                build_per_q_prompt=lambda **kw: __import__("app.menu1.ai", fromlist=["build_per_q_prompt"]).build_per_q_prompt(**kw),
-                call_openai_json=lambda **kw: __import__("app.menu1.ai", fromlist=["call_openai_json"]).call_openai_json(**kw),
+                build_overall_prompt=build_overall_prompt,  # <-- pass directly
+                build_per_q_prompt=build_per_q_prompt,      # <-- pass directly
+                call_openai_json=call_openai_json,          # <-- pass directly
                 source_url=SOURCE_URL,
                 source_title=SOURCE_TITLE,
             )
@@ -195,4 +196,3 @@ if __name__ == "__main__":
 def run_menu1():
     # backward-compat alias for older loaders that expect run_menu1
     return run()
-
