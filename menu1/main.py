@@ -73,8 +73,9 @@ def _build_summary_pivot(
 
 
 def run() -> None:
-    # Page config + centered layout
-    st.set_page_config(page_title=PAGE_TITLE, layout="wide")
+    # NOTE: st.set_page_config() is intentionally NOT called here
+    # to avoid double-calling it (root main.py calls it once).
+
     left, center, right = layout.centered_page(CENTER_COLUMNS)
     with center:
         # Header
@@ -172,7 +173,11 @@ def run() -> None:
         with colB:
             if st.button("Reset all parameters"):
                 state.reset_menu1_state()
-                st.experimental_rerun()
+                # st.rerun() is preferred in newer Streamlit versions:
+                try:
+                    st.rerun()
+                except Exception:
+                    st.experimental_rerun()
         st.markdown("</div>", unsafe_allow_html=True)
 
         # Results (center area)
