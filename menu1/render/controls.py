@@ -7,11 +7,11 @@ Controls for Menu 1:
 - Demographic category & subgroup selector
 - Search button enablement helper
 
-UI-only changes per request:
+UI-only adjustments:
   • Multiselect placeholder: "Choose a question from the list below"
-  • Keyword section shown as a dropdown-style box whose label visually matches the
-    multiselect's placeholder font/color
-  • Small centered "or" divider between the two boxes
+  • Search box header styled to match multiselect placeholder (font, size, color)
+  • Search box background uses Streamlit secondary background color
+  • "or" label uses same font/color and is left-aligned with box text
 """
 
 from __future__ import annotations
@@ -126,35 +126,41 @@ def question_picker(qdf: pd.DataFrame) -> List[str]:
     )
     selected_from_multi: Set[str] = set(display_to_code[d] for d in st.session_state[K_MULTI_QUESTIONS] if d in display_to_code)
 
-    # ---------- Divider: "or" ----------
+    # ---------- Divider: "or" (left-aligned, same placeholder style) ----------
     st.markdown("""
         <div class="or-divider" style="
-            text-align:center;
-            margin: .25rem 0 .25rem 0;
-            font-size: 0.875rem;
-            color: rgba(49,51,63,.6);
+            margin: .35rem 0 .35rem .5rem;            /* align with box's left padding */
+            font-size: 0.875rem;                      /* ~14px to match inputs */
+            line-height: 1.4;
+            font-weight: 400;
+            color: rgba(49,51,63,.6);                 /* same subdued grey as placeholder */
+            font-family: inherit;                     /* match app font */
         ">or</div>
     """, unsafe_allow_html=True)
 
     # ---------- 2) Keyword search (dropdown-style box with placeholder-like label) ----------
-    # CSS: make the expander's summary mimic the multiselect placeholder font/color
+    # CSS: make the expander's summary mimic the multiselect placeholder font/color/background
     st.markdown("""
         <style>
         .kw-expander details > summary {
             border: 1px solid rgba(0,0,0,0.15);
             border-radius: 6px;
-            padding: .5rem .75rem;
-            background: #ffffff;
-            list-style: none;               /* hide marker */
-            font-family: inherit;           /* match app font */
-            font-size: 0.875rem;            /* ~14px to match inputs */
-            font-weight: 400;               /* normal weight like placeholders */
-            color: rgba(49,51,63,.6);       /* Streamlit-esque placeholder grey */
+            padding: .5rem .75rem;                    /* match input padding */
+            background: var(--secondary-background-color, #F0F2F6);  /* grey like inputs */
+            list-style: none;                         /* hide marker bullet */
+            font-family: inherit;                     /* match app font */
+            font-size: 0.875rem;                      /* ~14px like placeholders */
+            font-weight: 400;                         /* normal */
+            color: rgba(49,51,63,.6);                 /* placeholder grey */
+        }
+        .kw-expander details[open] > summary {
+            border-color: rgba(0,0,0,0.35);
         }
         .kw-expander details > summary:hover {
             border-color: rgba(0,0,0,0.35);
             cursor: pointer;
         }
+        /* Hide default triangle for a cleaner input-like look */
         .kw-expander details > summary::-webkit-details-marker { display: none; }
         </style>
     """, unsafe_allow_html=True)
