@@ -9,9 +9,8 @@ Controls for Menu 1:
 
 UI-only adjustments:
   • Multiselect placeholder: "Choose a question from the list below"
-  • Search box header styled to match multiselect placeholder (font, size, color)
-  • Search box background uses Streamlit secondary background color
-  • "or" label uses same font/color and is left-aligned with box text
+  • Search box header styled to visually match the multiselect (same font/size/color/bg/border/radius/height)
+  • "or" label uses same font/color and is left-aligned with the box text
 """
 
 from __future__ import annotations
@@ -129,29 +128,43 @@ def question_picker(qdf: pd.DataFrame) -> List[str]:
     # ---------- Divider: "or" (left-aligned, same placeholder style) ----------
     st.markdown("""
         <div class="or-divider" style="
-            margin: .35rem 0 .35rem .5rem;            /* align with box's left padding */
-            font-size: 0.875rem;                      /* ~14px to match inputs */
+            margin: .35rem 0 .35rem .5rem;    /* align with box's left padding */
+            font-size: 0.875rem;              /* ~14px to match inputs */
             line-height: 1.4;
             font-weight: 400;
-            color: rgba(49,51,63,.6);                 /* same subdued grey as placeholder */
-            font-family: inherit;                     /* match app font */
+            color: rgba(49,51,63,.6);         /* same subdued grey as placeholder */
+            font-family: inherit;             /* match app font */
         ">or</div>
     """, unsafe_allow_html=True)
 
-    # ---------- 2) Keyword search (dropdown-style box with placeholder-like label) ----------
-    # CSS: make the expander's summary mimic the multiselect placeholder font/color/background
+    # ---------- 2) Keyword search (dropdown-style box that visually matches multiselect) ----------
+    # CSS: make the expander's summary mimic the multiselect placeholder look
     st.markdown("""
         <style>
+        /* Give the expander summary the same look & feel as the select box */
         .kw-expander details > summary {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            width: 100%;
+            height: 38px;                                   /* typical input/select height */
             border: 1px solid rgba(0,0,0,0.15);
             border-radius: 6px;
-            padding: .5rem .75rem;                    /* match input padding */
-            background: var(--secondary-background-color, #F0F2F6);  /* grey like inputs */
-            list-style: none;                         /* hide marker bullet */
-            font-family: inherit;                     /* match app font */
-            font-size: 0.875rem;                      /* ~14px like placeholders */
-            font-weight: 400;                         /* normal */
-            color: rgba(49,51,63,.6);                 /* placeholder grey */
+            padding: 0.375rem 0.75rem;                      /* match input padding */
+            background: var(--secondary-background-color, #F0F2F6);
+            list-style: none;                               /* hide marker bullet */
+            font-family: inherit;                           /* match app font */
+            font-size: 0.875rem;                            /* ~14px like placeholders */
+            font-weight: 400;                               /* normal */
+            color: rgba(49,51,63,.6);                       /* placeholder grey */
+            box-sizing: border-box;
+        }
+        /* Add a caret to the right to mimic a select */
+        .kw-expander details > summary::after {
+            content: '▾';
+            margin-left: .5rem;
+            color: rgba(49,51,63,.6);
+            font-size: 0.875rem;
         }
         .kw-expander details[open] > summary {
             border-color: rgba(0,0,0,0.35);
@@ -160,7 +173,7 @@ def question_picker(qdf: pd.DataFrame) -> List[str]:
             border-color: rgba(0,0,0,0.35);
             cursor: pointer;
         }
-        /* Hide default triangle for a cleaner input-like look */
+        /* Hide default triangle for a cleaner select-like look */
         .kw-expander details > summary::-webkit-details-marker { display: none; }
         </style>
     """, unsafe_allow_html=True)
