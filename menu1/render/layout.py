@@ -1,4 +1,4 @@
-# app/menu1/render/layout.py
+# menu1/render/layout.py
 """
 Layout helpers for Menu 1:
 - CSS injection and centered page container
@@ -21,7 +21,6 @@ from ..state import (
     K_DIAG_TOGGLE,
 )
 
-
 # ---------------------------------------------------------------------------
 # CSS / Centering
 # ---------------------------------------------------------------------------
@@ -29,18 +28,18 @@ def inject_base_css() -> None:
     """Injects base CSS for consistent look/feel across Menu 1."""
     st.markdown(BASE_CSS, unsafe_allow_html=True)
 
-
 def centered_page(columns: List[int] | None = None, *, with_css: bool = True):
     """
     Returns a (left, center, right) 3-column layout.
     Use the 'center' column as the primary content area to keep widths consistent.
+
+    Note: No vertical_alignment arg (kept compatible with older Streamlit versions).
     """
     if with_css:
         inject_base_css()
     col_spec = columns or CENTER_COLUMNS
-    left, center, right = st.columns(col_spec, vertical_alignment="top")
+    left, center, right = st.columns(col_spec)  # <-- removed vertical_alignment
     return left, center, right
-
 
 # ---------------------------------------------------------------------------
 # Header elements
@@ -49,16 +48,13 @@ def banner(src: str = BANNER_URL) -> None:
     """Top banner image (full width within the center column)."""
     st.markdown(f"<img class='menu-banner' src='{src}'>", unsafe_allow_html=True)
 
-
 def title(text: str) -> None:
     """Large page title using the shared CSS class."""
     st.markdown(f"<div class='custom-header'>{text}</div>", unsafe_allow_html=True)
 
-
 def instructions(html: str = INSTRUCTION_HTML) -> None:
     """Intro instructions block (HTML string from constants)."""
     st.markdown(html, unsafe_allow_html=True)
-
 
 # ---------------------------------------------------------------------------
 # Toggles row
