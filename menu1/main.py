@@ -2,9 +2,11 @@
 # - Hybrid keyword search + dropdown multi-select (max 5) with visible “Selected questions”
 # - Diagnostics panel toggle (top, next to AI toggle): Parameters preview • App setup status • Last query
 # - Tabs:
-#     1) Summary table (rows = Questions or Question×Demographic; cols = selected Years; values = per-question metric)
+#     1) Summary table (rows = Question # only or Question×Demographic; cols = selected Years; values = per-question metric)
 #     2+) One tab per question with detailed distribution
-# - AI toggle default ON (red): per-question "Summary Analysis" and (if multi-Q) "Overall Summary Analysis"
+# - AI:
+#     • Per-question: one-paragraph "Summary Analysis"
+#     • Overall: "Overall Summary Analysis" (when >1 question)
 # - Excel export (Summary + each Q)
 from __future__ import annotations
 
@@ -122,34 +124,23 @@ def _call_openai_json(system: str, user: str, model: str = OPENAI_MODEL, tempera
             return "", "no_openai_sdk"
 
 # -----------------------------
-# Exact AI system prompt (as provided)
+# AI system prompt (base rules)
 # -----------------------------
 AI_SYSTEM_PROMPT = (
     "You are preparing insights for the Government of Canada’s Public Service Employee Survey (PSES).\n\n"
     "Context\n"
     "- The PSES provides information to improve people management practices in the federal public service.\n"
     "- Results help departments and agencies identify strengths and concerns in areas such as employee engagement, anti-racism, equity and inclusion, and workplace well-being.\n"
-    "- The survey tracks progress over time to refine action plans. Employees’ voices guide improvements to workplace quality, which leads to better results for the public service and Canadians.\n"
-    "- Each cycle includes recurring questions (for tracking trends) and new/modified questions reflecting evolving priorities (e.g., updated Employment Equity questions and streamlined hybrid-work items in 2024).\n"
-    "- Statistics Canada administers the survey with the Treasury Board of Canada Secretariat. Confidentiality is guaranteed under the Statistics Act (grouped reporting; results for groups <10 are suppressed).\n\n"
+    "- The survey tracks progress over time to refine action plans. Employees’ voices guide improvements to workplace quality.\n"
+    "- Public Service–wide scope only.\n\n"
     "Data-use rules (hard constraints)\n"
-    "- Use ONLY the provided JSON payload/table. DO NOT invent, assume, extrapolate, infer, or generalize beyond the numbers present. No speculation or hypotheses.\n"
-    "- Public Service–wide scope ONLY; do not reference specific departments unless present in the payload.\n"
+    "- Use ONLY the provided JSON payload/table. Do NOT invent or infer beyond it.\n"
     "- Express percentages as whole numbers (e.g., “75%”). Use “points” for differences/changes.\n\n"
     "Analysis rules\n"
-    "- Begin with the 2024 result for the selected question (metric_label).\n"
-    "- Describe trend over time: compare 2024 with the earliest year available, using thresholds:\n"
-    "  • stable ≤1 point\n"
-    "  • slight >1–2 points\n"
-    "  • notable >2 points\n"
-    "- Compare demographic groups in 2024:\n"
-    "  • Focus on the most relevant comparisons (largest gap(s), or those crossing thresholds).\n"
-    "  • Report gaps in points and classify them: minimal ≤2, notable >2–5, important >5.\n"
-    "- If multiple groups are present, highlight only the most meaningful contrasts instead of exhaustively listing all.\n"
-    "- Mention whether gaps observed in 2024 have widened, narrowed, or remained stable compared with earlier years.\n"
-    "- Conclude with a concise overall statement (e.g., “Overall, results have remained steady and demographic gaps are unchanged”).\n\n"
-    "Style & output\n"
-    "- Professional, concise, neutral. Narrative style (1–3 short paragraphs, no lists).\n"
+    "- Start from the latest year provided (typically 2024) for context.\n"
+    "- Trend: compare the latest with the earliest year in the series (stable ≤1 pt; slight >1–2 pts; notable >2 pts).\n"
+    "- Demographic gaps (latest year): classify size (minimal ≤2; notable >2–5; important >5) and indicate whether gaps widened/narrowed vs. earlier.\n"
+    "- Style: professional, concise, neutral.\n"
     "- Output VALID JSON with exactly one key: \"narrative\".\n"
 )
 
@@ -173,6 +164,7 @@ def _load_questions() -> pd.DataFrame:
     with pd.option_context("mode.chained_assignment", None):
         qdf["qnum"] = pd.to_numeric(qdf["qnum"], errors="coerce")
     qdf = qdf.sort_values(["qnum", "code"], na_position="last")
+    # Keep existing en dash in display (no change to selection behaviour)
     qdf["display"] = qdf["code"].astype(str) + " – " + qdf["text"].astype(str)
     return qdf[["code", "text", "display"]]
 
@@ -237,7 +229,7 @@ def _get_scale_labels(scales_df: pd.DataFrame, question_code: str):
             if not candidates.empty:
                 break
     pairs = []
-    for i in range(1, 7 + 1):
+    for i in range(1, 8):
         col = f"answer{i}"
         lbl = None
         if not candidates.empty and col in candidates.columns:
@@ -349,6 +341,16 @@ def _detect_metric_mode(df_disp: pd.DataFrame, scale_pairs) -> dict:
     return {"metric_col": cols_l.get("positive", "Positive"), "metric_label": "% positive"}
 
 # -----------------------------
+# Constants: Source link
+# -----------------------------
+SOURCE_URL = "https://open.canada.ca/data/en/dataset/7f625e97-9d02-4c12-a756-1ddebb50e69f"
+SOURCE_TITLE = "Public Service Employee Survey Results – Open Government Portal"
+
+def _render_source_caption():
+    # Show URL and clickable title, placed directly under tabulations (before AI summaries)
+    st.caption(f"Source: {SOURCE_URL} — [{SOURCE_TITLE}]({SOURCE_URL})")
+
+# -----------------------------
 # State reset
 # -----------------------------
 def _delete_keys(prefixes: List[str], exact_keys: List[str] = None):
@@ -365,7 +367,7 @@ def _reset_menu1_state():
         "menu1_selected_codes","menu1_hits","menu1_kw_query","menu1_multi_questions",
         "menu1_ai_toggle","menu1_show_diag","select_all_years","demo_main","menu1_find_hits",
         "last_query_info",
-        # results stash keys (added for centering fix)
+        # results stash keys (for centered rendering)
         "m1_has_results","m1_tab_labels","m1_pivot","m1_per_q_disp",
         "m1_per_q_metric_col","m1_per_q_metric_label","m1_code_to_text",
         "m1_selected_years","m1_demo_selection","m1_sub_selection"
@@ -418,11 +420,12 @@ def _user_prompt_per_q(qcode: str, qtext: str, df_disp: pd.DataFrame, metric_col
         "metric_label": metric_label,
         "series_positive_by_year": _series_json(df_disp, metric_col),  # keep field name for compatibility
         "latest_year_group_snapshot": group_info,
-        "notes": "Use the supplied metric_label for interpretation."
+        "output_style_hint": "Return exactly one short paragraph.",
     }
-    return json.dumps(payload, ensure_ascii=False)
+    # Explicit instruction appended for one-paragraph output
+    return json.dumps(payload, ensure_ascii=False) + "\n\nReturn valid JSON with key 'narrative' containing ONE short paragraph."
 
-def _user_prompt_overall(selected_labels: List[str], pivot: pd.DataFrame, q_to_metric: Dict[str, str]) -> str:
+def _user_prompt_overall(q_labels: List[str], pivot: pd.DataFrame, q_to_metric: Dict[str, str]) -> str:
     items = []
     for q in pivot.index.tolist():
         row = {"question_label": str(q), "metric_label": q_to_metric.get(q, "% positive"), "values_by_year": {}}
@@ -431,7 +434,8 @@ def _user_prompt_overall(selected_labels: List[str], pivot: pd.DataFrame, q_to_m
             if pd.notna(val):
                 row["values_by_year"][int(y)] = float(val)
         items.append(row)
-    return json.dumps({"questions": items, "notes": "Synthesize overall pattern across questions using each question's metric_label."}, ensure_ascii=False)
+    notes = "Synthesize overall pattern across questions using each question's metric_label."
+    return json.dumps({"questions": items, "notes": notes}, ensure_ascii=False)
 
 # -----------------------------
 # Small utils
@@ -506,7 +510,7 @@ def run_menu1():
         # Title
         st.markdown('<div class="custom-header">PSES Explorer Search</div>', unsafe_allow_html=True)
 
-        # Row of toggles (AI + Diagnostics) — no value= to avoid conflicts
+        # Row of toggles (AI + Diagnostics)
         c1, c2 = st.columns([1, 1])
         with c1:
             st.toggle("🧠 Enable AI analysis", key="menu1_ai_toggle", help="Include the AI-generated analysis alongside the tables.")
@@ -522,11 +526,10 @@ def run_menu1():
             </div>
         """, unsafe_allow_html=True)
 
-        # ---------- Parameters panel (replicated pattern) ----------
+        # ---------- Diagnostics (optional) ----------
         if st.session_state.get("menu1_show_diag", False):
             with st.container(border=False):
                 st.markdown("#### Parameters preview")
-                # Assemble current parameters snapshot
                 preview = {
                     "Selected questions": [code_to_display.get(c, c) for c in st.session_state.get("menu1_selected_codes", [])],
                     "Years (selected)": [y for y in [2019, 2020, 2022, 2024] if st.session_state.get(f"year_{y}", True if st.session_state.get("select_all_years", True) else False)],
@@ -534,7 +537,6 @@ def run_menu1():
                 }
                 demo_cat = preview["Demographic category"]
                 if demo_cat and demo_cat != "All respondents":
-                    # find the last subgroup key we might've set
                     subkey = f"sub_{str(demo_cat).replace(' ', '_')}"
                     preview["Subgroup"] = st.session_state.get(subkey, "")
                 else:
@@ -548,7 +550,6 @@ def run_menu1():
                     info = get_backend_info() or {}
                 except Exception:
                     info = {"engine": "csv.gz"}
-                # augment with in-memory facts if present
                 try:
                     df_ps = _get_pswide_df()
                     if isinstance(df_ps, pd.DataFrame) and not df_ps.empty:
@@ -566,19 +567,12 @@ def run_menu1():
                         info.update({"in_memory": False})
                 except Exception:
                     pass
-                # metadata counts (best effort)
-                try:
-                    info["metadata_questions"] = int(len(qdf))
-                except Exception:
-                    pass
-                try:
-                    info["metadata_scales"] = int(len(sdf))
-                except Exception:
-                    pass
-                try:
-                    info["metadata_demographics"] = int(len(demo_df))
-                except Exception:
-                    pass
+                try: info["metadata_questions"] = int(len(qdf))
+                except Exception: pass
+                try: info["metadata_scales"] = int(len(sdf))
+                except Exception: pass
+                try: info["metadata_demographics"] = int(len(demo_df))
+                except Exception: pass
 
                 st.markdown(f"<div class='diag-box'><pre>{json.dumps(info, ensure_ascii=False, indent=2)}</pre></div>", unsafe_allow_html=True)
 
@@ -635,7 +629,7 @@ def run_menu1():
             st.warning("Limit is 5 questions; extra selections were ignored.")
         st.session_state["menu1_selected_codes"] = combined_order
 
-        # Selected list with checkboxes (to quickly unselect)
+        # Selected list with checkboxes (quick unselect)
         if st.session_state["menu1_selected_codes"]:
             st.markdown('<div class="field-label">Selected questions:</div>', unsafe_allow_html=True)
             updated = list(st.session_state["menu1_selected_codes"])
@@ -692,9 +686,7 @@ def run_menu1():
         st.markdown("<div class='action-row'>", unsafe_allow_html=True)
         colA, colB = st.columns([1, 1])
 
-        # NOTE: Only the SEARCH BUTTON remains inside colA.
-        # All RESULTS RENDERING has been moved BELOW (still inside the `center` column),
-        # so results occupy the full center width instead of the left half.
+        # Only the SEARCH/RESET buttons remain in the split row; results are rendered below, full center width.
         with colA:
             disable_search = (not question_codes) or (not selected_years)
             if st.button("Search", disabled=disable_search):
@@ -762,7 +754,6 @@ def run_menu1():
                         per_q_disp[qcode] = df_disp
 
                 t1 = time.time()
-                # Store last query info for the diagnostics panel
                 st.session_state["last_query_info"] = {
                     "started": datetime.fromtimestamp(t0).strftime("%Y-%m-%d %H:%M:%S"),
                     "finished": datetime.fromtimestamp(t1).strftime("%Y-%m-%d %H:%M:%S"),
@@ -772,14 +763,13 @@ def run_menu1():
 
                 # --------- STASH RESULTS FOR CENTERED RENDERING ---------
                 if per_q_disp:
-                    # Build long for summary using the detected metric per question
                     long_rows = []
                     tab_labels = [qc for qc in question_codes if qc in per_q_disp]
                     for qcode in tab_labels:
                         df_disp = per_q_disp[qcode]
                         metric_col = per_q_metric_col[qcode]
-                        metric_label = per_q_metric_label[qcode]
-                        qlabel = f"{qcode} — {code_to_text.get(qcode, '')} [{metric_label}]".strip().rstrip(" —")
+                        # Summary table row label must be the Question # only (no text)
+                        qlabel = f"{qcode}"
 
                         t = df_disp.copy()
                         t["QuestionLabel"] = qlabel
@@ -802,7 +792,7 @@ def run_menu1():
                         pivot = long_df.pivot_table(index=idx_cols, columns="Year", values="Value", aggfunc="mean")
                         pivot = pivot.reindex(selected_years, axis=1)
 
-                        # Save everything needed to render results outside colA
+                        # Save everything needed to render results
                         st.session_state["m1_has_results"] = True
                         st.session_state["m1_tab_labels"] = tab_labels
                         st.session_state["m1_pivot"] = pivot
@@ -841,45 +831,39 @@ def run_menu1():
             # Tabs: Summary first, then per-Q
             tabs = st.tabs(["Summary table"] + tab_labels)
 
-            # Summary tab
+            # Summary tab (Question # only)
             with tabs[0]:
                 st.markdown("### Summary table")
-                st.markdown("<div class='tiny-note'>Rows include the metric used per question in brackets.</div>", unsafe_allow_html=True)
                 st.dataframe(pivot.round(1).reset_index(), use_container_width=True)
+                # Source directly under the table (before AI)
+                _render_source_caption()
 
-                # Overall Summary Analysis (only when multi-question)
-                if len(tab_labels) > 1:
-                    if st.session_state.get("menu1_ai_toggle", True):
-                        with st.spinner("Generating Overall Summary Analysis…"):
-                            # Build mapping by label for AI context
-                            q_to_metric = {f"{q} — {code_to_text_local.get(q,'')} [{per_q_metric_label[q]}]": per_q_metric_label[q] for q in tab_labels}
-                            content, hint = _call_openai_json(
-                                system=AI_SYSTEM_PROMPT,
-                                user=_user_prompt_overall(list(q_to_metric.keys()), pivot, q_to_metric),
-                                model=OPENAI_MODEL,
-                                temperature=0.2
-                            )
-                        if content:
-                            try:
-                                j = json.loads(content)
-                                if isinstance(j, dict) and j.get("narrative"):
-                                    st.markdown("### Overall Summary Analysis")
-                                    st.write(j["narrative"])
-                                    st.caption(f"Generated by OpenAI • model: {OPENAI_MODEL}")
-                                else:
-                                    st.caption("AI returned no narrative.")
-                            except Exception:
-                                st.caption("AI returned non-JSON content.")
-                        else:
-                            st.caption(f"AI unavailable ({hint}).")
+                # Overall Summary Analysis (when multi-question)
+                if len(tab_labels) > 1 and st.session_state.get("menu1_ai_toggle", True):
+                    with st.spinner("Generating Overall Summary Analysis…"):
+                        # Mapping from Question # -> metric label (for context)
+                        q_to_metric = {q: per_q_metric_label[q] for q in tab_labels}
+                        content, hint = _call_openai_json(
+                            system=AI_SYSTEM_PROMPT,
+                            user=_user_prompt_overall(tab_labels, pivot, q_to_metric),
+                            model=OPENAI_MODEL,
+                            temperature=0.2
+                        )
+                    if content:
+                        try:
+                            j = json.loads(content)
+                            if isinstance(j, dict) and j.get("narrative"):
+                                st.markdown("### Overall Summary Analysis")
+                                st.write(j["narrative"])
+                                st.caption(f"Generated by OpenAI • model: {OPENAI_MODEL}")
+                            else:
+                                st.caption("AI returned no narrative.")
+                        except Exception:
+                            st.caption("AI returned non-JSON content.")
                     else:
-                        st.info("No AI summary generated.")
-
-                # Open Data link (footer)
-                st.caption(
-                    "Source: 2024 Public Service Employee Survey Results – Open Government Portal "
-                    "https://open.canada.ca/data/en/dataset/7f625e97-9d02-4c12-a756-1ddebb50e69f"
-                )
+                        st.caption(f"AI unavailable ({hint}).")
+                elif len(tab_labels) <= 1:
+                    st.info("Select more than one question to see an Overall Summary Analysis.")
 
             # Per-question tabs
             for idx, qcode in enumerate(tab_labels, start=1):
@@ -887,11 +871,13 @@ def run_menu1():
                     qtext = code_to_text_local.get(qcode, "")
                     st.subheader(f"{qcode} — {qtext}")
                     st.dataframe(per_q_disp[qcode], use_container_width=True)
+                    # Source directly under the table (before AI)
+                    _render_source_caption()
 
                     metric_col = per_q_metric_col[qcode]
                     metric_label = per_q_metric_label[qcode]
 
-                    # Per-question AI Summary Analysis
+                    # Per-question AI Summary Analysis (one short paragraph)
                     if st.session_state.get("menu1_ai_toggle", True):
                         with st.spinner("Generating Summary Analysis…"):
                             content, hint = _call_openai_json(
@@ -905,7 +891,7 @@ def run_menu1():
                                 j = json.loads(content)
                                 if isinstance(j, dict) and j.get("narrative"):
                                     st.markdown("### Summary Analysis")
-                                    st.write(j["narrative"])
+                                    st.write(j["narrative"])  # expected single paragraph
                                     st.caption(f"Generated by OpenAI • model: {OPENAI_MODEL}")
                                 else:
                                     st.caption("AI returned no narrative.")
@@ -915,12 +901,6 @@ def run_menu1():
                             st.caption(f"AI unavailable ({hint}).")
                     else:
                         st.info("No AI summary generated.")
-
-                    # Footer: Open Data link
-                    st.caption(
-                        "Source: 2024 Public Service Employee Survey Results – Open Government Portal "
-                        "https://open.canada.ca/data/en/dataset/7f625e97-9d02-4c12-a756-1ddebb50e69f"
-                    )
 
             # -----------------------------------
             # Excel export: Summary + each Q
