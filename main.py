@@ -1,12 +1,12 @@
 # main.py — Home-first router; preload on app load; Home-only background;
-# Canada.ca link + white "Status" expander under CTA; robust loader imports.
+# Canada.ca link under CTA; robust loader imports. (Home Status expander removed)
 from __future__ import annotations
 import importlib
 import streamlit as st
 
-st.set_page_config(layout="wide")
+st.set_page_config(page_title="PSES Explorer", layout="wide")
 
-# ── Import loader module once, pull functions via getattr so missing names don't break imports ──
+# ── Import loader module once; pull functions via getattr so missing names don't break imports ──
 _loader_err = ""
 _dl = None
 try:
@@ -42,7 +42,7 @@ def _clear_bg_css():
         </style>
     """, unsafe_allow_html=True)
 
-# ── Home view (hero background, CTA, Canada.ca link, Status expander) ────────
+# ── Home view (hero background, CTA, Canada.ca link) ─────────────────────────
 def render_home():
     # Scoped styles for Home view
     st.markdown("""
@@ -70,12 +70,8 @@ def render_home():
                 border-radius: 14px !important; text-align: left !important; backdrop-filter: blur(2px);
             }
             div.stButton > button:hover { border-color: white !important; background-color: rgba(255, 255, 255, 0.14) !important; }
-            /* White expander summary like your "Advanced" look */
-            div[data-testid="stExpander"] > details > summary { color: #fff; font-size: 16px; }
             /* Make links readable on the hero background */
             .main-section a { color: #fff !important; text-decoration: underline; }
-            .status-lines { font-size: 14px; line-height: 1.4; }
-            .status-subtle { font-size: 13px; opacity: 0.9; }
         </style>
     """, unsafe_allow_html=True)
 
@@ -116,74 +112,11 @@ def render_home():
         unsafe_allow_html=True
     )
 
-    # White "Status" expander (with richer diagnostics)
-    with st.expander("Status", expanded=False):
-        info = {}
-        try:
-            info = (get_backend_info() or {})
-        except Exception:
-            info = {}
-
-        mc = info.get("metadata_counts", {}) or {}
-        engine = info.get("last_engine", "?")
-        inmem  = info.get("inmem_mode", "none")
-        rows   = int(info.get("inmem_rows", 0) or 0)
-        pswide = "Yes" if info.get("pswide_only") else "No"
-
-        st.markdown("<div class='status-lines'>", unsafe_allow_html=True)
-        st.markdown(f"- **Engine:** {engine}")
-        st.markdown(f"- **In-memory:** {inmem}")
-        st.markdown(f"- **Rows in memory:** {rows:,}")
-        st.markdown(f"- **PS-wide only:** {pswide}")
-        st.markdown(f"- **Questions (metadata):** {int(mc.get('questions', 0))}")
-        st.markdown(f"- **Scales (metadata):** {int(mc.get('scales', 0))}")
-        st.markdown(f"- **Demographics (metadata):** {int(mc.get('demographics', 0))}")
-        if info.get("parquet_dir"):
-            st.markdown(f"- **Parquet directory:** `{info.get('parquet_dir')}`")
-        if info.get("csv_path"):
-            st.markdown(f"- **CSV path:** `{info.get('csv_path')}`")
-
-        # ── TEMP DIAGNOSTICS — confirm which functions actually imported
-        imported = {
-            "module_loaded": bool(_dl),
-            "prewarm_all": bool(prewarm_all),
-            "get_backend_info": bool(get_backend_info),
-            "preload_pswide_dataframe": bool(preload_pswide_dataframe),
-            "get_last_query_diag": bool(get_last_query_diag),
-            "module_error": _loader_err,
-        }
-        st.markdown("</div>", unsafe_allow_html=True)
-        st.markdown("<div class='status-subtle'>Imports:</div>", unsafe_allow_html=True)
-        st.json(imported)
-
-        # Live in-memory verification (safe/cached)
-        st.markdown("<div class='status-subtle'>Diagnostics (temporary):</div>", unsafe_allow_html=True)
-        try:
-            if preload_pswide_dataframe:
-                df_mem = preload_pswide_dataframe()
-                mem_rows = 0 if df_mem is None else int(getattr(df_mem, "shape", [0])[0])
-                st.markdown(f"- In-memory DF rows (live check): **{mem_rows:,}**")
-                if df_mem is not None and not df_mem.empty:
-                    try:
-                        uq = df_mem["question_code"].nunique()
-                        st.markdown(f"- Unique questions in memory: **{int(uq)}**")
-                    except Exception:
-                        pass
-                    try:
-                        ymin = int(df_mem["year"].min())
-                        ymax = int(df_mem["year"].max())
-                        st.markdown(f"- Year range in memory: **{ymin}–{ymax}**")
-                    except Exception:
-                        pass
-            else:
-                st.caption("• preload_pswide_dataframe() not available.")
-        except Exception as e:
-            st.caption(f"• Preload verification failed: {type(e).__name__}: {e}")
-
 # ── Menu wrappers (no hero background) ───────────────────────────────────────
 def render_menu1():
     _clear_bg_css()
     try:
+        # uses the backward-compat alias we added in menu1/main.py
         from menu1.main import run_menu1
         run_menu1()
     except Exception as e:
