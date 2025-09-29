@@ -1,4 +1,4 @@
-# app/menu1/render/results.py
+# menu1/render/results.py
 """
 Results rendering for Menu 1:
 - Summary table tab (rows: question code only, or code×demographic if applicable)
@@ -183,7 +183,7 @@ def _download_excel_section(
     sub_selection: Optional[str],
 ) -> None:
     """Create and expose an Excel file containing the summary and each question tab."""
-    if not tab_labels or pivot is None:
+    if (not tab_labels) or (pivot is None):
         return
 
     with io.BytesIO() as buf:
@@ -193,7 +193,9 @@ def _download_excel_section(
             # One sheet per question (use a short, safe name)
             for q, df_disp in per_q_disp.items():
                 safe = q[:28] or "Q"
-                (df_disp or pd.DataFrame()).to_excel(writer, sheet_name=f"{safe}", index=False)
+                # ---- FIX: avoid boolean evaluation of DataFrame ----
+                df_to_write = df_disp if isinstance(df_disp, pd.DataFrame) else pd.DataFrame()
+                df_to_write.to_excel(writer, sheet_name=f"{safe}", index=False)
             # Context sheet
             ctx = {
                 "Questions": ", ".join(tab_labels),
