@@ -4,7 +4,7 @@ Results rendering for Menu 1:
 - Summary table tab (rows: question code only, or code×demographic if applicable)
 - One tab per question with the detailed distribution table
 - Source caption appears directly under each table (before AI narratives)
-- Selected questions & metrics legend (code → text · metric) under the Summary table
+- Selected questions & metrics legend (code → text · metric) under the Summary table (small font)
 - AI narratives:
     • On Summary tab:
         - Per-question "Summary Analysis" for every question shown
@@ -89,13 +89,24 @@ def tabs_summary_and_per_q(
         # Source directly under the table (before AI)
         source_caption(source_url=source_url, source_title=source_title)
 
-        # Legend: code → text · metric
+        # Legend: code → text · metric (SMALL FONT, compact)
         if tab_labels:
-            st.markdown("**Selected questions & metrics**")
-            for q in tab_labels:
-                q_text = code_to_text.get(q, "")
-                metric = per_q_metric_label.get(q, "% positive")
-                st.markdown(f"- **{q}** — {q_text} · *{metric}*")
+            items_html = "".join(
+                f"<li><strong>{q}</strong> — {code_to_text.get(q, '')} "
+                f"<span style='opacity:0.8'>· {per_q_metric_label.get(q, '% positive')}</span></li>"
+                for q in tab_labels
+            )
+            st.markdown(
+                f"""
+                <div style="font-size:13px;color:#444;margin-top:6px;margin-bottom:8px;">
+                  <div style="font-weight:600;margin-bottom:4px;">Selected questions &amp; metrics</div>
+                  <ul style="margin:0 0 0 18px;padding:0;list-style:disc;">
+                    {items_html}
+                  </ul>
+                </div>
+                """,
+                unsafe_allow_html=True,
+            )
 
         # --- AI Summary section (per question, then optional overall) ---
         if ai_on and tab_labels:
