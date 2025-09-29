@@ -9,8 +9,9 @@ Controls for Menu 1:
 
 UI-only adjustments:
   • Multiselect placeholder: "Choose a question from the list below"
-  • Search box header styled to visually match the multiselect (same font/size/color/bg/border/radius/height)
+  • Search box header styled to visually match the multiselect (same bg/font/size/border/radius/height)
   • "or" label uses same font/color and is left-aligned with the box text
+  • Tightened vertical spacing between the two boxes
 """
 
 from __future__ import annotations
@@ -44,7 +45,7 @@ K_SELECT_ALL_YEARS = "select_all_years"
 MIN_SCORE = 0.40  # keep > 0.40 filter in both engines
 
 # -----------------------------------------------------------------------------
-# Internal regex/token helpers for fallback search (unused here, but kept for consistency)
+# Internal regex/token helpers (fallback search)
 # -----------------------------------------------------------------------------
 _word_re = re.compile(r"[a-z0-9']+")
 
@@ -93,7 +94,7 @@ def question_picker(qdf: pd.DataFrame) -> List[str]:
     """
     UI:
       1) Dropdown multi-select (authoritative, max 5) with custom placeholder
-      2) Keyword search in a dropdown-style box whose label looks like an input placeholder
+      2) Keyword search in a dropdown-style box that visually matches the multiselect
       3) "Selected questions" list with quick unselect checkboxes
 
     Returns ordered list of selected question codes (max 5).
@@ -112,6 +113,57 @@ def question_picker(qdf: pd.DataFrame) -> List[str]:
     code_to_display = dict(zip(qdf["code"], qdf["display"]))
     display_to_code = {v: k for k, v in code_to_display.items()}
 
+    # ---------- Wrapper for consistent CSS scoping ----------
+    st.markdown('<div class="question-picker">', unsafe_allow_html=True)
+
+    # Tight CSS to match Streamlit select look and reduce space
+    st.markdown("""
+        <style>
+        /* Tighten spacing for first multiselect and the following "or" & expander */
+        .question-picker [data-testid="stMultiSelect"] { margin-bottom: 0.25rem !important; }
+        .question-picker .or-divider { margin: 0.15rem 0 0.15rem 0.5rem; }
+
+        /* Make the search expander summary look like the multiselect control */
+        .question-picker .kw-expander [data-testid="stExpander"] {
+            margin-bottom: 0.25rem;         /* tighter spacing after the box */
+        }
+        .question-picker .kw-expander details { margin: 0; }
+        .question-picker .kw-expander details > summary {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            width: 100%;
+            height: 38px;                                   /* approx. control height */
+            box-sizing: border-box;
+            padding: 0.375rem 0.75rem;                      /* match input padding */
+            border: 1px solid rgba(0,0,0,0.15);
+            border-radius: 6px;
+            background: var(--secondary-background-color, #F0F2F6) !important;
+            list-style: none;                               /* hide marker bullet */
+            font-family: inherit;                           /* match app font */
+            font-size: 0.875rem;                            /* ~14px like placeholders */
+            font-weight: 400;                               /* normal */
+            color: rgba(49,51,63,.6);                       /* placeholder grey */
+        }
+        /* Caret to mimic a select */
+        .question-picker .kw-expander details > summary::after {
+            content: '▾';
+            margin-left: .5rem;
+            color: rgba(49,51,63,.6);
+            font-size: 0.875rem;
+        }
+        .question-picker .kw-expander details[open] > summary {
+            border-color: rgba(0,0,0,0.35);
+        }
+        .question-picker .kw-expander details > summary:hover {
+            border-color: rgba(0,0,0,0.35);
+            cursor: pointer;
+        }
+        /* Remove default marker for cleaner look */
+        .question-picker .kw-expander details > summary::-webkit-details-marker { display: none; }
+        </style>
+    """, unsafe_allow_html=True)
+
     # ---------- 1) Dropdown multi-select (NO default=, only key=) ----------
     st.markdown('<div class="field-label">Pick up to 5 survey questions:</div>', unsafe_allow_html=True)
     all_displays = qdf["display"].tolist()
@@ -128,7 +180,6 @@ def question_picker(qdf: pd.DataFrame) -> List[str]:
     # ---------- Divider: "or" (left-aligned, same placeholder style) ----------
     st.markdown("""
         <div class="or-divider" style="
-            margin: .35rem 0 .35rem .5rem;    /* align with box's left padding */
             font-size: 0.875rem;              /* ~14px to match inputs */
             line-height: 1.4;
             font-weight: 400;
@@ -138,47 +189,6 @@ def question_picker(qdf: pd.DataFrame) -> List[str]:
     """, unsafe_allow_html=True)
 
     # ---------- 2) Keyword search (dropdown-style box that visually matches multiselect) ----------
-    # CSS: make the expander's summary mimic the multiselect placeholder look
-    st.markdown("""
-        <style>
-        /* Give the expander summary the same look & feel as the select box */
-        .kw-expander details > summary {
-            display: flex;
-            align-items: center;
-            justify-content: space-between;
-            width: 100%;
-            height: 38px;                                   /* typical input/select height */
-            border: 1px solid rgba(0,0,0,0.15);
-            border-radius: 6px;
-            padding: 0.375rem 0.75rem;                      /* match input padding */
-            background: var(--secondary-background-color, #F0F2F6);
-            list-style: none;                               /* hide marker bullet */
-            font-family: inherit;                           /* match app font */
-            font-size: 0.875rem;                            /* ~14px like placeholders */
-            font-weight: 400;                               /* normal */
-            color: rgba(49,51,63,.6);                       /* placeholder grey */
-            box-sizing: border-box;
-        }
-        /* Add a caret to the right to mimic a select */
-        .kw-expander details > summary::after {
-            content: '▾';
-            margin-left: .5rem;
-            color: rgba(49,51,63,.6);
-            font-size: 0.875rem;
-        }
-        .kw-expander details[open] > summary {
-            border-color: rgba(0,0,0,0.35);
-        }
-        .kw-expander details > summary:hover {
-            border-color: rgba(0,0,0,0.35);
-            cursor: pointer;
-        }
-        /* Hide default triangle for a cleaner select-like look */
-        .kw-expander details > summary::-webkit-details-marker { display: none; }
-        </style>
-    """, unsafe_allow_html=True)
-
-    # Wrap the expander in a div we can target
     st.markdown('<div class="kw-expander">', unsafe_allow_html=True)
     with st.expander("Search questionnaire by keywords or theme", expanded=False):
         query = st.text_input(
@@ -220,6 +230,9 @@ def question_picker(qdf: pd.DataFrame) -> List[str]:
                 checked = st.checkbox(label, value=default_checked, key=key)
                 if checked:
                     selected_from_hits.add(code)
+    st.markdown('</div>', unsafe_allow_html=True)
+
+    # Close wrapper
     st.markdown('</div>', unsafe_allow_html=True)
 
     # ---------- Merge selections (dropdown first, then hits), cap at 5 ----------
