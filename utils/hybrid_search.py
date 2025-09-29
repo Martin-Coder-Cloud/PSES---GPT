@@ -1,9 +1,9 @@
 # utils/hybrid_search.py
 # -------------------------------------------------------------------------
-# Hybrid search for survey questions (LOCAL, API-free, stricter)
+# Hybrid search for survey questions (LOCAL, API-free, stricter anchors)
 # - Semantic: sentence-transformer embeddings (if available)
-# - Lexical: exact code, substring, token coverage, Jaccard, bigram phrase
-# - STRICT LEXICAL GATE: require at least one lexical anchor from the query
+# - Lexical: exact code, whole-word anchor, token coverage, bigram phrase, Jaccard
+# - STRICT LEXICAL GATE: keep only items with an exact whole-word anchor from query
 # - Synonym bridge only when embeddings are unavailable
 # - Blended score; fixed threshold (>0.40)
 # -------------------------------------------------------------------------
@@ -17,7 +17,7 @@ from typing import Dict, List, Tuple, Optional
 import numpy as np
 import pandas as pd
 
-# Try to load a local sentence-embeddings model; fall back to lexical-only if unavailable
+# Try local sentence-transformers; fall back gracefully
 _ST_AVAILABLE = False
 try:
     from sentence_transformers import SentenceTransformer  # type: ignore
@@ -29,6 +29,7 @@ except Exception:
 # Normalization / token helpers
 # -----------------------------
 _word_re = re.compile(r"[a-z0-9']+")
+
 STOPWORDS = {
     "the","and","of","to","in","for","with","on","at","by","from",
     "a","an","is","are","was","were","be","been","being",
@@ -44,6 +45,12 @@ def _tokens(s: str) -> List[str]:
 def _tokset(s: str) -> set:
     return set(_tokens(s))
 
+def _has_whole_word(item_norm: str, token: str) -> bool:
+    # strict whole-word boundary match on normalized text
+    if not token:
+        return False
+    return re.search(rf"\b{re.escape(token)}\b", item_norm) is not None
+
 # -----------------------------
 # Lightweight synonym map (used ONLY if embeddings are not available)
 # -----------------------------
@@ -58,7 +65,6 @@ _SYNONYMS: Dict[str, List[str]] = {
     "inclusion": ["inclusion", "inclusive", "belonging", "equity"],
     "wellbeing": ["wellbeing", "well-being", "well being", "wellness"],
 }
-
 def _alts_for(tok: str) -> List[str]:
     t = tok.lower()
     return _SYNONYMS.get(t, [t])
@@ -68,8 +74,8 @@ def _alts_for(tok: str) -> List[str]:
 # -----------------------------
 _DEFAULT_MODEL_CANDIDATES = [
     os.environ.get("PSES_EMBED_MODEL") or "",
-    "paraphrase-multilingual-MiniLM-L12-v2",   # multilingual
-    "all-MiniLM-L6-v2",                        # fast English model
+    "paraphrase-multilingual-MiniLM-L12-v2",
+    "all-MiniLM-L6-v2",
 ]
 
 _MODEL: Optional["SentenceTransformer"] = None
@@ -144,43 +150,56 @@ def _get_index(qdf: pd.DataFrame) -> Dict[str, object]:
     return idx
 
 # -----------------------------
-# Lexical features + strict anchor
+# Lexical features + STRICT ANCHOR
 # -----------------------------
-def _lexical_features(q_norm: str, q_tokens_nostop: List[str], bigrams: List[str], item_norm: str, *, use_synonyms: bool) -> Dict[str, float]:
-    """
-    Compute:
-      - substr: whole-query substring present (0/1)
-      - coverage: fraction of NON-STOPWORD tokens present (prefix tolerant; synonyms only if use_synonyms=True)
-      - jaccard: symmetric token overlap (using all tokens, not expanded)
-      - bigram: any adjacent token phrase present (0/1)
-      - anchor: strict boolean gate → require substr OR coverage>0 OR bigram
-    """
-    substr = 1.0 if q_norm and (q_norm in item_norm) else 0.0
-    item_words = _tokset(item_norm)
+def _lexical_features(q_raw: str, item_norm: str, *, use_synonyms: bool) -> Dict[str, float]:
+    q_norm = _norm(q_raw)
+    q_tokens = _tokens(q_raw)
+    # non-stopword tokens (for anchor/coverage)
+    base_tokens = [t for t in q_tokens if t not in STOPWORDS]
+    bigrams = [" ".join(base_tokens[i:i+2]) for i in range(len(base_tokens) - 1)] if len(base_tokens) >= 2 else []
 
-    # coverage over non-stopword tokens
+    # strict anchor: full-phrase OR any bigram OR any whole-word token (len>=4)
+    has_anchor = False
+    if q_norm and q_norm in item_norm:
+        has_anchor = True
+    if not has_anchor and bigrams:
+        for bg in bigrams:
+            if re.search(rf"\b{re.escape(bg)}\b", item_norm):
+                has_anchor = True
+                break
+    if not has_anchor:
+        for tok in base_tokens:
+            if len(tok) >= 4 and _has_whole_word(item_norm, tok):
+                has_anchor = True
+                break
+
+    # coverage (can be synonym-aware ONLY when no embeddings)
+    item_words = _tokset(item_norm)
     matched = 0
-    for tok in q_tokens_nostop:
+    for tok in base_tokens:
         alts = _alts_for(tok) if use_synonyms else [tok]
         hit = False
         for a in alts:
-            if (a in item_norm) or any(w.startswith(a) or a.startswith(w) for w in item_words):
+            if _has_whole_word(item_norm, a):  # coverage also respects whole-word match
                 hit = True
                 break
         if hit:
             matched += 1
-    coverage = matched / max(len(q_tokens_nostop), 1)
+    coverage = matched / max(len(base_tokens), 1) if base_tokens else 0.0
 
-    # jaccard (unexpanded, all tokens)
-    qset_all = set(q_tokens_nostop)  # already non-stop
-    inter = len(qset_all & item_words)
-    union = len(qset_all | item_words) or 1
+    # jaccard on base tokens (no synonym expansion)
+    qset = set(base_tokens)
+    inter = len(qset & item_words)
+    union = len(qset | item_words) or 1
     jaccard = inter / union
 
-    bigram_hit = 1.0 if any(bg in item_norm for bg in bigrams) else 0.0
+    # bigram flag (already checked for anchor)
+    bigram_hit = 1.0 if any(re.search(rf"\b{re.escape(bg)}\b", item_norm) for bg in bigrams) else 0.0
 
-    anchor = (substr >= 1.0) or (coverage > 0.0) or (bigram_hit > 0.0)
-    return {"substr": substr, "coverage": coverage, "jaccard": jaccard, "bigram": bigram_hit, "anchor": float(anchor)}
+    substr = 1.0 if q_norm and (q_norm in item_norm) else 0.0
+
+    return {"anchor": float(has_anchor), "substr": substr, "coverage": coverage, "jaccard": jaccard, "bigram": bigram_hit}
 
 # -----------------------------
 # Main search (blended with strict gating)
@@ -201,9 +220,6 @@ def hybrid_question_search(
 
     q_raw = str(query).strip()
     q_norm = _norm(q_raw)
-    # non-stopword tokens for stricter gating/coverage
-    q_tokens_nostop = [t for t in _tokens(q_raw) if t not in STOPWORDS]
-    bigrams = [" ".join(q_tokens_nostop[i:i+2]) for i in range(len(q_tokens_nostop) - 1)] if len(q_tokens_nostop) >= 2 else []
 
     # Build/retrieve index & embeddings
     idx = _get_index(qdf)
@@ -232,11 +248,10 @@ def hybrid_question_search(
     for code, text, disp, item_norm, in_vec in zip(codes, texts, displays, norms, (vecs if has_semantic else [None]*len(codes))):
         exact_code = 1.0 if q_norm.upper() == code.upper() else 0.0
 
-        # Lexical features & STRICT ANCHOR
-        lf = _lexical_features(q_norm, q_tokens_nostop, bigrams, item_norm, use_synonyms=use_synonyms)
+        # Strict lexical gate
+        lf = _lexical_features(q_raw, item_norm, use_synonyms=use_synonyms)
         if lf["anchor"] < 1.0:
-            # Reject purely semantic matches with no lexical anchor from the query
-            continue
+            continue  # reject purely semantic matches with no whole-word anchor
 
         # Semantic cosine sim (0..1)
         sim = 0.0
