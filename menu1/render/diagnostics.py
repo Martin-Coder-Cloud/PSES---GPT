@@ -4,6 +4,7 @@ Diagnostics panels for Menu 1:
 - Parameters preview snapshot
 - App setup status (engine, cached data, metadata counts)
 - AI status (key/model presence; simple checks)
+- Search status (embeddings availability & model)
 - Last query timings
 - Tabbed wrapper to show all of the above neatly
 """
@@ -13,6 +14,7 @@ from typing import Any, Dict, Optional
 from datetime import datetime
 import json
 import os
+import importlib.util
 
 import pandas as pd
 import streamlit as st
@@ -39,7 +41,10 @@ except Exception:
 
 def _json_box(obj: Dict[str, Any], title: str) -> None:
     st.markdown(f"#### {title}")
-    st.markdown(f"<div class='diag-box'><pre>{json.dumps(obj, ensure_ascii=False, indent=2)}</pre></div>", unsafe_allow_html=True)
+    st.markdown(
+        f"<div class='diag-box'><pre>{json.dumps(obj, ensure_ascii=False, indent=2)}</pre></div>",
+        unsafe_allow_html=True
+    )
 
 
 # --------------------------------------------------------------------------------------
@@ -121,13 +126,10 @@ def backend_info_panel(qdf: pd.DataFrame, sdf: pd.DataFrame, demo_df: pd.DataFra
 
 
 # --------------------------------------------------------------------------------------
-# AI status panel
+# AI status panel (chat/narratives)
 # --------------------------------------------------------------------------------------
 def ai_status_panel() -> None:
-    """
-    Lightweight health check for AI configuration (no API calls).
-    Shows presence of key/model and basic environment hints.
-    """
+    """Lightweight health check for AI configuration (no API calls)."""
     key = (st.secrets.get("OPENAI_API_KEY", "") or os.environ.get("OPENAI_API_KEY", ""))
     model = (st.secrets.get("OPENAI_MODEL", "") or os.environ.get("OPENAI_MODEL", ""))
     status = {
@@ -136,8 +138,41 @@ def ai_status_panel() -> None:
         "how_to_set_key": "Set OPENAI_API_KEY in Streamlit secrets or environment.",
         "how_to_set_model": "Optionally set OPENAI_MODEL to override the default model.",
     }
-    # Present clearly but compactly
-    _json_box(status, "AI status")
+    _json_box(status, "AI status (summaries)")
+
+
+# --------------------------------------------------------------------------------------
+# Search status panel (embeddings)
+# --------------------------------------------------------------------------------------
+def search_status_panel() -> None:
+    """
+    Show whether local sentence-transformer embeddings are available & active.
+    Falls back to import check if the search module helper isn't present.
+    """
+    status: Dict[str, Any] = {}
+    # Try the helper exposed by utils/hybrid_search.py
+    try:
+        from utils.hybrid_search import get_embedding_status  # type: ignore
+        status = get_embedding_status() or {}
+    except Exception:
+        status = {}
+
+    # If helper missing, do a simple package probe
+    if not status:
+        try:
+            have_st = importlib.util.find_spec("sentence_transformers") is not None
+        except Exception:
+            have_st = False
+        status = {
+            "sentence_transformers_installed": have_st,
+            "model_loaded": False,
+            "model_name": None,
+            "catalogues_indexed": 0,
+        }
+
+    # Add environment hints
+    status["PSES_EMBED_MODEL_env"] = os.environ.get("PSES_EMBED_MODEL", None)
+    _json_box(status, "Search status (semantic embeddings)")
 
 
 # --------------------------------------------------------------------------------------
@@ -154,12 +189,7 @@ def mark_last_query(
     engine: Optional[str] = None,
     extra: Optional[Dict[str, Any]] = None,
 ) -> None:
-    """
-    Convenience helper to record the latest query timing.
-    - Pass started_ts and finished_ts (epoch seconds) to compute elapsed.
-    - 'engine' is optional (falls back to get_backend_info).
-    - 'extra' can include any additional fields you want to display.
-    """
+    """Record latest query timing."""
     try:
         eng = engine or (get_backend_info() or {}).get("engine", "unknown")
     except Exception:
@@ -187,9 +217,9 @@ def mark_last_query(
 def render_diagnostics_tabs(qdf: pd.DataFrame, sdf: pd.DataFrame, demo_df: pd.DataFrame) -> None:
     """
     Render diagnostics inside tabs:
-      • Parameters • App setup • AI status • Last query
+      • Parameters • App setup • AI status • Search status • Last query
     """
-    tabs = st.tabs(["Parameters", "App setup", "AI status", "Last query"])
+    tabs = st.tabs(["Parameters", "App setup", "AI status", "Search status", "Last query"])
     with tabs[0]:
         parameters_preview(qdf, demo_df)
     with tabs[1]:
@@ -197,4 +227,6 @@ def render_diagnostics_tabs(qdf: pd.DataFrame, sdf: pd.DataFrame, demo_df: pd.Da
     with tabs[2]:
         ai_status_panel()
     with tabs[3]:
+        search_status_panel()
+    with tabs[4]:
         last_query_panel()
