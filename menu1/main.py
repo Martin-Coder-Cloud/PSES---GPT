@@ -95,11 +95,9 @@ def run() -> None:
         sdf = load_scales()
         demo_df = load_demographics()
 
-        # Optional diagnostics
+        # Diagnostics (tabs)
         if show_diag:
-            diagnostics.parameters_preview(qdf, demo_df)
-            diagnostics.backend_info_panel(qdf, sdf, demo_df)
-            diagnostics.last_query_panel()
+            diagnostics.render_diagnostics_tabs(qdf, sdf, demo_df)
 
         # Controls
         question_codes = controls.question_picker(qdf)  # -> List[str] (codes)
