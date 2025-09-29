@@ -1,9 +1,10 @@
 # utils/hybrid_search.py
 # -------------------------------------------------------------------------
-# Hybrid search for survey questions (LOCAL, API-free)
+# Hybrid search for survey questions (LOCAL, API-free, stricter)
 # - Semantic: sentence-transformer embeddings (if available)
 # - Lexical: exact code, substring, token coverage, Jaccard, bigram phrase
-# - Synonym bridge (only when embeddings are unavailable)
+# - STRICT LEXICAL GATE: require at least one lexical anchor from the query
+# - Synonym bridge only when embeddings are unavailable
 # - Blended score; fixed threshold (>0.40)
 # -------------------------------------------------------------------------
 
@@ -28,6 +29,11 @@ except Exception:
 # Normalization / token helpers
 # -----------------------------
 _word_re = re.compile(r"[a-z0-9']+")
+STOPWORDS = {
+    "the","and","of","to","in","for","with","on","at","by","from",
+    "a","an","is","are","was","were","be","been","being",
+    "as","it","its","this","that","these","those","overall"
+}
 
 def _norm(s: str) -> str:
     return re.sub(r"[^a-z0-9\s]", " ", str(s).lower()).strip()
@@ -67,7 +73,7 @@ _DEFAULT_MODEL_CANDIDATES = [
 ]
 
 _MODEL: Optional["SentenceTransformer"] = None
-_MODEL_NAME: Optional[str] = None           # <-- keep a stable, non-null name
+_MODEL_NAME: Optional[str] = None
 _INDEX_CACHE: Dict[str, Dict[str, object]] = {}
 
 def _load_model() -> Optional["SentenceTransformer"]:
@@ -125,7 +131,7 @@ def _build_index(qdf: pd.DataFrame) -> Dict[str, object]:
         "displays": displays,
         "norms": norms,
         "vecs": vecs,                 # np.ndarray or None
-        "model_name": _MODEL_NAME,    # <-- report the name we attempted to load
+        "model_name": _MODEL_NAME,
     }
 
 def _get_index(qdf: pd.DataFrame) -> Dict[str, object]:
@@ -138,19 +144,23 @@ def _get_index(qdf: pd.DataFrame) -> Dict[str, object]:
     return idx
 
 # -----------------------------
-# Lexical features (with synonym-aware coverage when no embeddings)
+# Lexical features + strict anchor
 # -----------------------------
-def _lexical_features(q_raw: str, item_norm: str, use_synonyms: bool) -> Dict[str, float]:
-    q_norm = _norm(q_raw)
-    q_tokens = _tokens(q_raw)
-    bigrams = [" ".join(q_tokens[i:i+2]) for i in range(len(q_tokens) - 1)] if len(q_tokens) >= 2 else []
-
+def _lexical_features(q_norm: str, q_tokens_nostop: List[str], bigrams: List[str], item_norm: str, *, use_synonyms: bool) -> Dict[str, float]:
+    """
+    Compute:
+      - substr: whole-query substring present (0/1)
+      - coverage: fraction of NON-STOPWORD tokens present (prefix tolerant; synonyms only if use_synonyms=True)
+      - jaccard: symmetric token overlap (using all tokens, not expanded)
+      - bigram: any adjacent token phrase present (0/1)
+      - anchor: strict boolean gate → require substr OR coverage>0 OR bigram
+    """
     substr = 1.0 if q_norm and (q_norm in item_norm) else 0.0
-
     item_words = _tokset(item_norm)
 
+    # coverage over non-stopword tokens
     matched = 0
-    for tok in q_tokens:
+    for tok in q_tokens_nostop:
         alts = _alts_for(tok) if use_synonyms else [tok]
         hit = False
         for a in alts:
@@ -159,19 +169,21 @@ def _lexical_features(q_raw: str, item_norm: str, use_synonyms: bool) -> Dict[st
                 break
         if hit:
             matched += 1
-    coverage = matched / max(len(q_tokens), 1)
+    coverage = matched / max(len(q_tokens_nostop), 1)
 
-    qset = set(q_tokens)
-    inter = len(qset & item_words)
-    union = len(qset | item_words) or 1
+    # jaccard (unexpanded, all tokens)
+    qset_all = set(q_tokens_nostop)  # already non-stop
+    inter = len(qset_all & item_words)
+    union = len(qset_all | item_words) or 1
     jaccard = inter / union
 
     bigram_hit = 1.0 if any(bg in item_norm for bg in bigrams) else 0.0
 
-    return {"substr": substr, "coverage": coverage, "jaccard": jaccard, "bigram": bigram_hit}
+    anchor = (substr >= 1.0) or (coverage > 0.0) or (bigram_hit > 0.0)
+    return {"substr": substr, "coverage": coverage, "jaccard": jaccard, "bigram": bigram_hit, "anchor": float(anchor)}
 
 # -----------------------------
-# Main search (blended)
+# Main search (blended with strict gating)
 # -----------------------------
 def hybrid_question_search(
     qdf: pd.DataFrame,
@@ -188,6 +200,10 @@ def hybrid_question_search(
         return qdf.head(0)
 
     q_raw = str(query).strip()
+    q_norm = _norm(q_raw)
+    # non-stopword tokens for stricter gating/coverage
+    q_tokens_nostop = [t for t in _tokens(q_raw) if t not in STOPWORDS]
+    bigrams = [" ".join(q_tokens_nostop[i:i+2]) for i in range(len(q_tokens_nostop) - 1)] if len(q_tokens_nostop) >= 2 else []
 
     # Build/retrieve index & embeddings
     idx = _get_index(qdf)
@@ -211,40 +227,42 @@ def hybrid_question_search(
             has_semantic = False
 
     rows: List[Tuple[float, str, str, str, str]] = []
-    use_synonyms = not has_semantic  # only expand synonyms if we lack embeddings
+    use_synonyms = not has_semantic  # synonym expansion only without embeddings
 
     for code, text, disp, item_norm, in_vec in zip(codes, texts, displays, norms, (vecs if has_semantic else [None]*len(codes))):
-        exact_code = 1.0 if _norm(query).upper() == code.upper() else 0.0
-        lf = _lexical_features(q_raw, item_norm, use_synonyms=use_synonyms)
+        exact_code = 1.0 if q_norm.upper() == code.upper() else 0.0
 
+        # Lexical features & STRICT ANCHOR
+        lf = _lexical_features(q_norm, q_tokens_nostop, bigrams, item_norm, use_synonyms=use_synonyms)
+        if lf["anchor"] < 1.0:
+            # Reject purely semantic matches with no lexical anchor from the query
+            continue
+
+        # Semantic cosine sim (0..1)
         sim = 0.0
         if has_semantic and qvec is not None and in_vec is not None:
-            sim = float(np.dot(in_vec, qvec))  # cosine in [0,1] after L2-norm
+            sim = float(np.dot(in_vec, qvec))
 
+        # Blend (semantic dominates once anchor is satisfied)
         if has_semantic:
-            # Heavier weight on semantic similarity so synonyms cross the 0.40 bar
             score = (
-                0.80 * sim +
-                0.10 * lf["substr"] +
-                0.06 * lf["coverage"] +
-                0.02 * lf["bigram"] +
+                0.75 * sim +
+                0.12 * lf["substr"] +
+                0.08 * lf["coverage"] +
+                0.03 * lf["bigram"] +
                 0.02 * lf["jaccard"]
             )
-            # Nudge borderline good semantic matches over the line
-            if sim >= 0.50:
-                score += 0.05
             if exact_code >= 1.0:
-                score += 0.35
+                score += 0.30
         else:
-            # Lexical-only path (with synonym bridge in coverage)
             score = (
-                0.20 * lf["substr"] +
+                0.25 * lf["substr"] +
                 0.50 * lf["coverage"] +
-                0.20 * lf["bigram"] +
+                0.15 * lf["bigram"] +
                 0.10 * lf["jaccard"]
             )
             if exact_code >= 1.0:
-                score += 0.35
+                score += 0.30
 
         if score <= min_score:
             continue
@@ -276,20 +294,13 @@ def get_embedding_status() -> dict:
     status = {
         "sentence_transformers_installed": bool(_ST_AVAILABLE),
         "model_loaded": False,
-        "model_name": _MODEL_NAME,                  # <-- non-null once loaded
+        "model_name": _MODEL_NAME,
         "catalogues_indexed": len(_INDEX_CACHE),
     }
     if _ST_AVAILABLE:
         try:
             m = _load_model()
             status["model_loaded"] = bool(m)
-            # if model is loaded but name somehow None, fallback from any cached index
-            if status["model_loaded"] and not status["model_name"]:
-                for idx in _INDEX_CACHE.values():
-                    name = idx.get("model_name")
-                    if name:
-                        status["model_name"] = name  # type: ignore
-                        break
         except Exception:
             pass
     return status
