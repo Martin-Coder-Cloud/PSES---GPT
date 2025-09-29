@@ -7,9 +7,9 @@ Controls for Menu 1:
 - Demographic category & subgroup selector
 - Search button enablement helper
 
-Behavior:
-- Fixed min score threshold (> 0.40) for BOTH the external hybrid search and the local fallback
-- Multi-keyword support with partial/typo tolerance in the fallback
+Updates:
+- Deduplicate search results by question code (keeps highest score) → prevents repeated items like Q43
+- Fixed-threshold filtering (> 0.40) for both hybrid and fallback search
 - Clear "no results" feedback
 """
 
@@ -19,7 +19,7 @@ import re
 import pandas as pd
 import streamlit as st
 
-# Try to import the hybrid search; we'll wrap it and also provide a robust fallback
+# Try to import the hybrid search; provide a robust fallback as well
 try:
     from utils.hybrid_search import hybrid_question_search  # type: ignore
 except Exception:
@@ -31,7 +31,7 @@ except Exception:
 K_MULTI_QUESTIONS = "menu1_multi_questions"  # List[str] of "display" labels picked in the dropdown
 K_SELECTED_CODES  = "menu1_selected_codes"   # Ordered List[str] of codes (multi + hits merged)
 K_KW_QUERY        = "menu1_kw_query"         # str
-K_HITS            = "menu1_hits"             # List[{"code","text"}] from last search
+K_HITS            = "menu1_hits"             # List[{"code","text","score"}] from last search (deduped)
 K_FIND_HITS_BTN   = "menu1_find_hits"        # button key
 K_SEARCH_DONE     = "menu1_search_done"      # bool: did user click Search questions?
 K_LAST_QUERY      = "menu1_last_search_query"# str: what query was used last time
@@ -104,25 +104,44 @@ def _fallback_search(qdf: pd.DataFrame, query: str, top_k: int = 120) -> pd.Data
     out = pd.DataFrame(rows).sort_values("score", ascending=False)
     return out.head(top_k)
 
+def _dedupe_hits(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Keep the highest-scoring row per question code. Ensures unique widget keys and no visual duplicates.
+    """
+    if not isinstance(df, pd.DataFrame) or df.empty:
+        return pd.DataFrame(columns=["code", "text", "display", "score"])
+    out = df.copy()
+    # Ensure required cols exist
+    if "score" not in out.columns:
+        out["score"] = 0.0
+    out["code"] = out["code"].astype(str)
+    out = out.sort_values("score", ascending=False)
+    out = out.drop_duplicates(subset=["code"], keep="first")
+    # Respect global threshold if score column present
+    try:
+        out = out[out["score"] > MIN_SCORE]
+    except Exception:
+        pass
+    return out
 
 def _run_keyword_search(qdf: pd.DataFrame, query: str, top_k: int = 120) -> pd.DataFrame:
     """
     Wrapper that:
       1) Calls external hybrid_question_search if available (min_score=MIN_SCORE)
-      2) Falls back to our tolerant multi-keyword search
+      2) Dedupes by code and re-applies threshold
+      3) Falls back to our tolerant multi-keyword search (also deduped)
     """
     # Try external search first (if available)
     if callable(hybrid_question_search):
         try:
             hits_df = hybrid_question_search(qdf, query, top_k=top_k, min_score=MIN_SCORE)  # type: ignore
             if isinstance(hits_df, pd.DataFrame) and not hits_df.empty:
-                return hits_df
+                return _dedupe_hits(hits_df).head(top_k)
         except Exception:
             pass  # ignore and fallback
 
     # Fallback (multi-keyword tolerant, fixed threshold)
-    return _fallback_search(qdf, query, top_k=top_k)
-
+    return _dedupe_hits(_fallback_search(qdf, query, top_k=top_k)).head(top_k)
 
 # -----------------------------------------------------------------------------
 # Internal helper: resolve demographic codes & display map
@@ -170,7 +189,6 @@ def _resolve_demcodes(demo_df: pd.DataFrame, category_label: str, subgroup_label
         return labels, {l: l for l in labels}, True
 
     return [None], {None: "All respondents"}, False
-
 
 # -----------------------------------------------------------------------------
 # Question picker (dropdown + keyword search) → returns List[str] (codes)
@@ -220,7 +238,9 @@ def question_picker(qdf: pd.DataFrame) -> List[str]:
             hits_df = _run_keyword_search(qdf, query, top_k=120)
             st.session_state[K_SEARCH_DONE] = True
             st.session_state[K_LAST_QUERY] = query
-            st.session_state[K_HITS] = hits_df[["code", "text"]].to_dict(orient="records") if isinstance(hits_df, pd.DataFrame) and not hits_df.empty else []
+            # Dedup and keep only the columns we show
+            hits_df = _dedupe_hits(hits_df)
+            st.session_state[K_HITS] = hits_df[["code", "text", "display", "score"]].to_dict(orient="records") if isinstance(hits_df, pd.DataFrame) and not hits_df.empty else []
 
         selected_from_hits: Set[str] = set()
         hits = st.session_state.get(K_HITS, [])
@@ -240,10 +260,11 @@ def question_picker(qdf: pd.DataFrame) -> List[str]:
             st.info('Enter keywords and click "Search questions" to see matches.')
 
         if hits:
+            # Render each unique hit with a stable, unique key (per code)
             for rec in hits:
                 code = rec["code"]; text = rec["text"]
                 label = f"{code} — {text}"
-                key = f"kwhit_{code}"
+                key = f"kwhit_{code}"   # unique per code after dedupe
                 default_checked = st.session_state.get(key, False) or (code in selected_from_multi)
                 checked = st.checkbox(label, value=default_checked, key=key)
                 if checked:
@@ -288,7 +309,6 @@ def question_picker(qdf: pd.DataFrame) -> List[str]:
 
     return st.session_state[K_SELECTED_CODES]
 
-
 # -----------------------------------------------------------------------------
 # Years selector → returns List[int]
 # -----------------------------------------------------------------------------
@@ -305,7 +325,6 @@ def year_picker() -> List[int]:
             if st.checkbox(str(yr), value=default_checked, key=f"year_{yr}"):
                 selected_years.append(yr)
     return sorted(selected_years)
-
 
 # -----------------------------------------------------------------------------
 # Demographic picker → returns (demo_selection, sub_selection, demcodes, disp_map, category_in_play)
@@ -331,7 +350,6 @@ def demographic_picker(demo_df: pd.DataFrame):
 
     demcodes, disp_map, category_in_play = _resolve_demcodes(demo_df, demo_selection, sub_selection)
     return demo_selection, sub_selection, demcodes, disp_map, category_in_play
-
 
 # -----------------------------------------------------------------------------
 # Search button enabled?
