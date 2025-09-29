@@ -237,7 +237,7 @@ def _get_scale_labels(scales_df: pd.DataFrame, question_code: str):
             if not candidates.empty:
                 break
     pairs = []
-    for i in range(1, 8):
+    for i in range(1, 7 + 1):
         col = f"answer{i}"
         lbl = None
         if not candidates.empty and col in candidates.columns:
@@ -364,7 +364,11 @@ def _reset_menu1_state():
     exact = [
         "menu1_selected_codes","menu1_hits","menu1_kw_query","menu1_multi_questions",
         "menu1_ai_toggle","menu1_show_diag","select_all_years","demo_main","menu1_find_hits",
-        "last_query_info"
+        "last_query_info",
+        # results stash keys (added for centering fix)
+        "m1_has_results","m1_tab_labels","m1_pivot","m1_per_q_disp",
+        "m1_per_q_metric_col","m1_per_q_metric_label","m1_code_to_text",
+        "m1_selected_years","m1_demo_selection","m1_sub_selection"
     ] + year_keys
     prefixes = ["kwhit_","sel_","sub_"]
     _delete_keys(prefixes, exact)
@@ -375,6 +379,8 @@ def _reset_menu1_state():
     st.session_state.setdefault("menu1_ai_toggle", True)     # default ON
     st.session_state.setdefault("menu1_show_diag", False)    # default OFF
     st.session_state.setdefault("last_query_info", None)
+    # results flags
+    st.session_state["m1_has_results"] = False
 
 # -----------------------------
 # AI payload builders
@@ -479,6 +485,7 @@ def run_menu1():
     st.session_state.setdefault("menu1_ai_toggle", True)
     st.session_state.setdefault("menu1_show_diag", False)
     st.session_state.setdefault("last_query_info", None)
+    st.session_state.setdefault("m1_has_results", False)
 
     demo_df = _load_demographics()
     qdf = _load_questions()
@@ -684,6 +691,10 @@ def run_menu1():
         # ---------- Action row ----------
         st.markdown("<div class='action-row'>", unsafe_allow_html=True)
         colA, colB = st.columns([1, 1])
+
+        # NOTE: Only the SEARCH BUTTON remains inside colA.
+        # All RESULTS RENDERING has been moved BELOW (still inside the `center` column),
+        # so results occupy the full center width instead of the left half.
         with colA:
             disable_search = (not question_codes) or (not selected_years)
             if st.button("Search", disabled=disable_search):
@@ -759,12 +770,13 @@ def run_menu1():
                     "engine": (get_backend_info() or {}).get("engine", "unknown"),
                 }
 
-                if not per_q_disp:
-                    st.info("No data found for your selection.")
-                else:
+                # --------- STASH RESULTS FOR CENTERED RENDERING ---------
+                if per_q_disp:
                     # Build long for summary using the detected metric per question
                     long_rows = []
-                    for qcode, df_disp in per_q_disp.items():
+                    tab_labels = [qc for qc in question_codes if qc in per_q_disp]
+                    for qcode in tab_labels:
+                        df_disp = per_q_disp[qcode]
                         metric_col = per_q_metric_col[qcode]
                         metric_label = per_q_metric_label[qcode]
                         qlabel = f"{qcode} — {code_to_text.get(qcode, '')} [{metric_label}]".strip().rstrip(" —")
@@ -780,130 +792,31 @@ def run_menu1():
                         t = t.rename(columns={metric_col: "Value"})
                         long_rows.append(t[["QuestionLabel","Demographic","Year","Value"]])
 
-                    long_df = pd.concat(long_rows, ignore_index=True)
+                    if long_rows:
+                        long_df = pd.concat(long_rows, ignore_index=True)
+                        # Index: Question×Demographic when category selected (no single subgroup); else Question
+                        if (demo_selection != "All respondents") and (sub_selection is None) and long_df["Demographic"].notna().any():
+                            idx_cols = ["QuestionLabel","Demographic"]
+                        else:
+                            idx_cols = ["QuestionLabel"]
+                        pivot = long_df.pivot_table(index=idx_cols, columns="Year", values="Value", aggfunc="mean")
+                        pivot = pivot.reindex(selected_years, axis=1)
 
-                    # Index: Question×Demographic when category selected (no single subgroup); else Question
-                    if (demo_selection != "All respondents") and (sub_selection is None) and long_df["Demographic"].notna().any():
-                        idx_cols = ["QuestionLabel","Demographic"]
+                        # Save everything needed to render results outside colA
+                        st.session_state["m1_has_results"] = True
+                        st.session_state["m1_tab_labels"] = tab_labels
+                        st.session_state["m1_pivot"] = pivot
+                        st.session_state["m1_per_q_disp"] = per_q_disp
+                        st.session_state["m1_per_q_metric_col"] = per_q_metric_col
+                        st.session_state["m1_per_q_metric_label"] = per_q_metric_label
+                        st.session_state["m1_code_to_text"] = code_to_text
+                        st.session_state["m1_selected_years"] = selected_years
+                        st.session_state["m1_demo_selection"] = demo_selection
+                        st.session_state["m1_sub_selection"] = sub_selection
                     else:
-                        idx_cols = ["QuestionLabel"]
-
-                    pivot = long_df.pivot_table(index=idx_cols, columns="Year", values="Value", aggfunc="mean")
-
-                    # Ensure all selected years appear as columns (even if blank)
-                    pivot = pivot.reindex(selected_years, axis=1)
-
-                    # -------------------------------
-                    # Tabs: Summary first, then per-Q
-                    # -------------------------------
-                    tab_labels = [qc for qc in question_codes if qc in per_q_disp]
-                    tabs = st.tabs(["Summary table"] + tab_labels)
-
-                    # Summary tab
-                    with tabs[0]:
-                        st.markdown("### Summary table")
-                        st.markdown("<div class='tiny-note'>Rows include the metric used per question in brackets.</div>", unsafe_allow_html=True)
-                        st.dataframe(pivot.round(1).reset_index(), use_container_width=True)
-
-                        # Overall Summary Analysis (only when multi-question)
-                        if len(tab_labels) > 1:
-                            if st.session_state.get("menu1_ai_toggle", True):
-                                with st.spinner("Generating Overall Summary Analysis…"):
-                                    # Build mapping by label for AI context
-                                    q_to_metric = {f"{q} — {code_to_text.get(q,'')} [{per_q_metric_label[q]}]": per_q_metric_label[q] for q in tab_labels}
-                                    content, hint = _call_openai_json(
-                                        system=AI_SYSTEM_PROMPT,
-                                        user=_user_prompt_overall(list(q_to_metric.keys()), pivot, q_to_metric),
-                                        model=OPENAI_MODEL,
-                                        temperature=0.2
-                                    )
-                                if content:
-                                    try:
-                                        j = json.loads(content)
-                                        if isinstance(j, dict) and j.get("narrative"):
-                                            st.markdown("### Overall Summary Analysis")
-                                            st.write(j["narrative"])
-                                            st.caption(f"Generated by OpenAI • model: {OPENAI_MODEL}")
-                                        else:
-                                            st.caption("AI returned no narrative.")
-                                    except Exception:
-                                        st.caption("AI returned non-JSON content.")
-                                else:
-                                    st.caption(f"AI unavailable ({hint}).")
-                            else:
-                                st.info("No AI summary generated.")
-
-                        # Open Data link (footer)
-                        st.caption(
-                            "Source: 2024 Public Service Employee Survey Results – Open Government Portal "
-                            "https://open.canada.ca/data/en/dataset/7f625e97-9d02-4c12-a756-1ddebb50e69f"
-                        )
-
-                    # Per-question tabs
-                    for idx, qcode in enumerate(tab_labels, start=1):
-                        with tabs[idx]:
-                            qtext = code_to_text.get(qcode, "")
-                            st.subheader(f"{qcode} — {qtext}")
-                            st.dataframe(per_q_disp[qcode], use_container_width=True)
-
-                            metric_col = per_q_metric_col[qcode]
-                            metric_label = per_q_metric_label[qcode]
-
-                            # Per-question AI Summary Analysis
-                            if st.session_state.get("menu1_ai_toggle", True):
-                                with st.spinner("Generating Summary Analysis…"):
-                                    content, hint = _call_openai_json(
-                                        system=AI_SYSTEM_PROMPT,
-                                        user=_user_prompt_per_q(qcode, qtext, per_q_disp[qcode], metric_col, metric_label, (demo_selection != "All respondents")),
-                                        model=OPENAI_MODEL,
-                                        temperature=0.2
-                                    )
-                                if content:
-                                    try:
-                                        j = json.loads(content)
-                                        if isinstance(j, dict) and j.get("narrative"):
-                                            st.markdown("### Summary Analysis")
-                                            st.write(j["narrative"])
-                                            st.caption(f"Generated by OpenAI • model: {OPENAI_MODEL}")
-                                        else:
-                                            st.caption("AI returned no narrative.")
-                                    except Exception:
-                                        st.caption("AI returned non-JSON content.")
-                                else:
-                                    st.caption(f"AI unavailable ({hint}).")
-                            else:
-                                st.info("No AI summary generated.")
-
-                            # Footer: Open Data link
-                            st.caption(
-                                "Source: 2024 Public Service Employee Survey Results – Open Government Portal "
-                                "https://open.canada.ca/data/en/dataset/7f625e97-9d02-4c12-a756-1ddebb50e69f"
-                            )
-
-                    # -----------------------------------
-                    # Excel export: Summary + each Q
-                    # -----------------------------------
-                    with io.BytesIO() as buf:
-                        with pd.ExcelWriter(buf, engine="xlsxwriter") as writer:
-                            pivot.round(1).reset_index().to_excel(writer, sheet_name="Summary_Table", index=False)
-                            for q, df_disp in per_q_disp.items():
-                                safe = q[:28]
-                                df_disp.to_excel(writer, sheet_name=f"{safe}", index=False)
-                            ctx = {
-                                "Questions": ", ".join(question_codes),
-                                "Years": ", ".join(map(str, selected_years)),
-                                "Category": demo_selection,
-                                "Subgroup": sub_selection or "(all in category)" if demo_selection != "All respondents" else "All respondents",
-                                "Generated at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                            }
-                            pd.DataFrame(list(ctx.items()), columns=["Field","Value"]).to_excel(writer, sheet_name="Context", index=False)
-                        data = buf.getvalue()
-                    st.download_button(
-                        label="Download Excel (Summary + all tabs)",
-                        data=data,
-                        file_name=f"PSES_multiQ_{'-'.join(map(str, selected_years))}.xlsx",
-                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                    )
+                        st.session_state["m1_has_results"] = False
+                else:
+                    st.session_state["m1_has_results"] = False
 
         with colB:
             if st.button("Reset all parameters"):
@@ -911,6 +824,128 @@ def run_menu1():
                 st.experimental_rerun()
         st.markdown("</div>", unsafe_allow_html=True)
 
+        # =========================
+        # CENTERED RESULTS RENDERING
+        # =========================
+        if st.session_state.get("m1_has_results", False):
+            tab_labels = st.session_state["m1_tab_labels"]
+            pivot = st.session_state["m1_pivot"]
+            per_q_disp = st.session_state["m1_per_q_disp"]
+            per_q_metric_col = st.session_state["m1_per_q_metric_col"]
+            per_q_metric_label = st.session_state["m1_per_q_metric_label"]
+            code_to_text_local = st.session_state["m1_code_to_text"]
+            selected_years = st.session_state["m1_selected_years"]
+            demo_selection = st.session_state["m1_demo_selection"]
+            sub_selection = st.session_state["m1_sub_selection"]
+
+            # Tabs: Summary first, then per-Q
+            tabs = st.tabs(["Summary table"] + tab_labels)
+
+            # Summary tab
+            with tabs[0]:
+                st.markdown("### Summary table")
+                st.markdown("<div class='tiny-note'>Rows include the metric used per question in brackets.</div>", unsafe_allow_html=True)
+                st.dataframe(pivot.round(1).reset_index(), use_container_width=True)
+
+                # Overall Summary Analysis (only when multi-question)
+                if len(tab_labels) > 1:
+                    if st.session_state.get("menu1_ai_toggle", True):
+                        with st.spinner("Generating Overall Summary Analysis…"):
+                            # Build mapping by label for AI context
+                            q_to_metric = {f"{q} — {code_to_text_local.get(q,'')} [{per_q_metric_label[q]}]": per_q_metric_label[q] for q in tab_labels}
+                            content, hint = _call_openai_json(
+                                system=AI_SYSTEM_PROMPT,
+                                user=_user_prompt_overall(list(q_to_metric.keys()), pivot, q_to_metric),
+                                model=OPENAI_MODEL,
+                                temperature=0.2
+                            )
+                        if content:
+                            try:
+                                j = json.loads(content)
+                                if isinstance(j, dict) and j.get("narrative"):
+                                    st.markdown("### Overall Summary Analysis")
+                                    st.write(j["narrative"])
+                                    st.caption(f"Generated by OpenAI • model: {OPENAI_MODEL}")
+                                else:
+                                    st.caption("AI returned no narrative.")
+                            except Exception:
+                                st.caption("AI returned non-JSON content.")
+                        else:
+                            st.caption(f"AI unavailable ({hint}).")
+                    else:
+                        st.info("No AI summary generated.")
+
+                # Open Data link (footer)
+                st.caption(
+                    "Source: 2024 Public Service Employee Survey Results – Open Government Portal "
+                    "https://open.canada.ca/data/en/dataset/7f625e97-9d02-4c12-a756-1ddebb50e69f"
+                )
+
+            # Per-question tabs
+            for idx, qcode in enumerate(tab_labels, start=1):
+                with tabs[idx]:
+                    qtext = code_to_text_local.get(qcode, "")
+                    st.subheader(f"{qcode} — {qtext}")
+                    st.dataframe(per_q_disp[qcode], use_container_width=True)
+
+                    metric_col = per_q_metric_col[qcode]
+                    metric_label = per_q_metric_label[qcode]
+
+                    # Per-question AI Summary Analysis
+                    if st.session_state.get("menu1_ai_toggle", True):
+                        with st.spinner("Generating Summary Analysis…"):
+                            content, hint = _call_openai_json(
+                                system=AI_SYSTEM_PROMPT,
+                                user=_user_prompt_per_q(qcode, qtext, per_q_disp[qcode], metric_col, metric_label, (demo_selection != "All respondents")),
+                                model=OPENAI_MODEL,
+                                temperature=0.2
+                            )
+                        if content:
+                            try:
+                                j = json.loads(content)
+                                if isinstance(j, dict) and j.get("narrative"):
+                                    st.markdown("### Summary Analysis")
+                                    st.write(j["narrative"])
+                                    st.caption(f"Generated by OpenAI • model: {OPENAI_MODEL}")
+                                else:
+                                    st.caption("AI returned no narrative.")
+                            except Exception:
+                                st.caption("AI returned non-JSON content.")
+                        else:
+                            st.caption(f"AI unavailable ({hint}).")
+                    else:
+                        st.info("No AI summary generated.")
+
+                    # Footer: Open Data link
+                    st.caption(
+                        "Source: 2024 Public Service Employee Survey Results – Open Government Portal "
+                        "https://open.canada.ca/data/en/dataset/7f625e97-9d02-4c12-a756-1ddebb50e69f"
+                    )
+
+            # -----------------------------------
+            # Excel export: Summary + each Q
+            # -----------------------------------
+            with io.BytesIO() as buf:
+                with pd.ExcelWriter(buf, engine="xlsxwriter") as writer:
+                    pivot.round(1).reset_index().to_excel(writer, sheet_name="Summary_Table", index=False)
+                    for q, df_disp in per_q_disp.items():
+                        safe = q[:28]
+                        df_disp.to_excel(writer, sheet_name=f"{safe}", index=False)
+                    ctx = {
+                        "Questions": ", ".join(tab_labels),
+                        "Years": ", ".join(map(str, selected_years)),
+                        "Category": demo_selection,
+                        "Subgroup": sub_selection or "(all in category)" if demo_selection != "All respondents" else "All respondents",
+                        "Generated at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                    }
+                    pd.DataFrame(list(ctx.items()), columns=["Field","Value"]).to_excel(writer, sheet_name="Context", index=False)
+                data = buf.getvalue()
+            st.download_button(
+                label="Download Excel (Summary + all tabs)",
+                data=data,
+                file_name=f"PSES_multiQ_{'-'.join(map(str, selected_years))}.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            )
 
 if __name__ == "__main__":
     run_menu1()
