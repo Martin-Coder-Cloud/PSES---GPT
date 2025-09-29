@@ -1,15 +1,18 @@
-# app/menu1/render/diagnostics.py
+# menu1/render/diagnostics.py
 """
 Diagnostics panels for Menu 1:
 - Parameters preview snapshot
-- Backend info panel (engine, cached data, metadata counts)
+- App setup status (engine, cached data, metadata counts)
+- AI status (key/model presence; simple checks)
 - Last query timings
+- Tabbed wrapper to show all of the above neatly
 """
 
 from __future__ import annotations
 from typing import Any, Dict, Optional
 from datetime import datetime
 import json
+import os
 
 import pandas as pd
 import streamlit as st
@@ -118,12 +121,31 @@ def backend_info_panel(qdf: pd.DataFrame, sdf: pd.DataFrame, demo_df: pd.DataFra
 
 
 # --------------------------------------------------------------------------------------
+# AI status panel
+# --------------------------------------------------------------------------------------
+def ai_status_panel() -> None:
+    """
+    Lightweight health check for AI configuration (no API calls).
+    Shows presence of key/model and basic environment hints.
+    """
+    key = (st.secrets.get("OPENAI_API_KEY", "") or os.environ.get("OPENAI_API_KEY", ""))
+    model = (st.secrets.get("OPENAI_MODEL", "") or os.environ.get("OPENAI_MODEL", ""))
+    status = {
+        "api_key_present": bool(key),
+        "model_name": model or "(default/unspecified)",
+        "how_to_set_key": "Set OPENAI_API_KEY in Streamlit secrets or environment.",
+        "how_to_set_model": "Optionally set OPENAI_MODEL to override the default model.",
+    }
+    # Present clearly but compactly
+    _json_box(status, "AI status")
+
+
+# --------------------------------------------------------------------------------------
 # Last query panel + helper
 # --------------------------------------------------------------------------------------
 def last_query_panel() -> None:
     last = get_last_query_info() or {"status": "No query yet"}
     _json_box(last, "Last query")
-
 
 def mark_last_query(
     *,
@@ -157,3 +179,22 @@ def mark_last_query(
         payload.update(extra)
 
     set_last_query_info(payload)
+
+
+# --------------------------------------------------------------------------------------
+# Tabs wrapper
+# --------------------------------------------------------------------------------------
+def render_diagnostics_tabs(qdf: pd.DataFrame, sdf: pd.DataFrame, demo_df: pd.DataFrame) -> None:
+    """
+    Render diagnostics inside tabs:
+      • Parameters • App setup • AI status • Last query
+    """
+    tabs = st.tabs(["Parameters", "App setup", "AI status", "Last query"])
+    with tabs[0]:
+        parameters_preview(qdf, demo_df)
+    with tabs[1]:
+        backend_info_panel(qdf, sdf, demo_df)
+    with tabs[2]:
+        ai_status_panel()
+    with tabs[3]:
+        last_query_panel()
