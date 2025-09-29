@@ -4,7 +4,8 @@ Results rendering for Menu 1:
 - Summary table tab (rows: question code only, or code×demographic if applicable)
 - One tab per question with the detailed distribution table
 - Source caption appears directly under each table (before AI narratives)
-- Selected questions & metrics legend (code → text · metric) under the Summary table (small font)
+- Selected questions & metrics legend (code → text · metric) shown in small font
+  • Location: between the "Summary table" title and the tabulation
 - AI narratives:
     • On Summary tab:
         - Per-question "Summary Analysis" for every question shown
@@ -85,11 +86,8 @@ def tabs_summary_and_per_q(
     # -----------------------
     with tabs[0]:
         st.markdown("### Summary table")
-        st.dataframe(pivot.round(1).reset_index(), use_container_width=True)
-        # Source directly under the table (before AI)
-        source_caption(source_url=source_url, source_title=source_title)
 
-        # Legend: code → text · metric (SMALL FONT, compact)
+        # --- Small-font legend placed BEFORE the table ---
         if tab_labels:
             items_html = "".join(
                 f"<li><strong>{q}</strong> — {code_to_text.get(q, '')} "
@@ -98,8 +96,8 @@ def tabs_summary_and_per_q(
             )
             st.markdown(
                 f"""
-                <div style="font-size:13px;color:#444;margin-top:6px;margin-bottom:8px;">
-                  <div style="font-weight:600;margin-bottom:4px;">Selected questions &amp; metrics</div>
+                <div style="font-size:12px;color:#555;margin-top:4px;margin-bottom:8px;">
+                  <div style="font-weight:600;margin-bottom:2px;">Selected questions &amp; metrics</div>
                   <ul style="margin:0 0 0 18px;padding:0;list-style:disc;">
                     {items_html}
                   </ul>
@@ -107,6 +105,11 @@ def tabs_summary_and_per_q(
                 """,
                 unsafe_allow_html=True,
             )
+
+        # Tabulation
+        st.dataframe(pivot.round(1).reset_index(), use_container_width=True)
+        # Source directly under the table (before AI)
+        source_caption(source_url=source_url, source_title=source_title)
 
         # --- AI Summary section (per question, then optional overall) ---
         if ai_on and tab_labels:
