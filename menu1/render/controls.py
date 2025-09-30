@@ -125,17 +125,17 @@ def question_picker(qdf: pd.DataFrame) -> List[str]:
     )
     selected_from_multi: Set[str] = set(display_to_code[d] for d in st.session_state[K_MULTI_QUESTIONS] if d in display_to_code)
 
-    # ---------- Divider: "or" ----------
+    # ---------- Divider: "or" (tighter spacing) ----------
     st.markdown("""
         <div style="
-            margin: .25rem 0 .25rem .5rem;
+            margin: .2rem 0 .2rem .5rem;
             font-size: 0.9rem; font-weight: 600;
             color: rgba(49,51,63,.8); font-family: inherit;
         ">or</div>
     """, unsafe_allow_html=True)
 
     # ---------- 2) Keyword search ----------
-    # Header styled modestly
+    # Header
     st.markdown("<div class='field-label'>Search questionnaire by keywords or theme</div>", unsafe_allow_html=True)
 
     # Search input + button (button always visible; disabled when empty)
@@ -155,29 +155,40 @@ def question_picker(qdf: pd.DataFrame) -> List[str]:
             st.session_state[K_LAST_QUERY] = query
             st.session_state[K_HITS] = hits_df[["code", "text", "display", "score"]].to_dict(orient="records") \
                                        if isinstance(hits_df, pd.DataFrame) and not hits_df.empty else []
-            # IMPORTANT: do not clear previous ticks unless the code is no longer in results
+            # Keep only ticks that still exist in the new results
             current_codes = {h["code"] for h in st.session_state[K_HITS]}
             st.session_state[K_HITS_SELECTED] = [c for c in st.session_state[K_HITS_SELECTED] if c in current_codes]
 
-    # Results area (persistent across reruns until a new search or reset)
+    # Results area (now hides warnings/results when input box is empty — fixes lingering message after reset)
     hits = st.session_state.get(K_HITS, [])
-    if st.session_state.get(K_SEARCH_DONE, False):
-        if not hits:
-            q = (st.session_state.get(K_LAST_QUERY) or "").strip()
-            safe_q = q if q else "your search"
-            st.warning(
-                f"No questions matched “{safe_q}”. "
-                "Try broader or different keywords (e.g., synonyms), split phrases (e.g., “career advancement” → “career”), "
-                "or search by a question code like “Q01”."
-            )
-        else:
-            st.write(f"Top {len(hits)} matches meeting the quality threshold:")
-    else:
+    current_query = (st.session_state.get(K_KW_QUERY) or "").strip()
+    last_query = (st.session_state.get(K_LAST_QUERY) or "").strip()
+
+    if not current_query:
+        # After a reset the input is empty; do not show prior warnings/results
         st.info('Enter keywords and click "Search the questionnaire" to see matches.')
+        show_hits_list = False
+    else:
+        # Show results/warning only if the displayed input matches the last executed query
+        if st.session_state.get(K_SEARCH_DONE, False) and current_query == last_query:
+            if not hits:
+                st.warning(
+                    f"No questions matched “{current_query}”. "
+                    "Try broader or different keywords (e.g., synonyms), split phrases (e.g., “career advancement” → “career”), "
+                    "or search by a question code like “Q01”."
+                )
+                show_hits_list = False
+            else:
+                st.write(f"Results for “{last_query}”: Top {len(hits)} matches meeting the quality threshold:")
+                show_hits_list = True
+        else:
+            # User has typed/edited but not searched yet
+            st.caption("Type your keywords, then click **Search the questionnaire**.")
+            show_hits_list = False
 
     # Multi-tick checkboxes for hits (do NOT clear on additional selections)
     selected_from_hits: Set[str] = set()
-    if hits:
+    if show_hits_list:
         for rec in hits:
             code = rec["code"]; text = rec["text"]
             label = f"{code} — {text}"
@@ -201,124 +212,4 @@ def question_picker(qdf: pd.DataFrame) -> List[str]:
     for c in selected_from_hits:
         if c not in combined_order:
             combined_order.append(c)
-    if len(combined_order) > 5:
-        combined_order = combined_order[:5]
-        st.warning("Limit is 5 questions; extra selections were ignored.")
-    st.session_state[K_SELECTED_CODES] = combined_order
-
-    # ---------- 3) Selected list with quick unselect ----------
-    if st.session_state[K_SELECTED_CODES]:
-        st.markdown('<div class="field-label">Selected questions:</div>', unsafe_allow_html=True)
-        updated = list(st.session_state[K_SELECTED_CODES])
-        cols = st.columns(min(5, len(updated)))
-        for idx, code in enumerate(list(updated)):
-            with cols[idx % len(cols)]:
-                label = code_to_display.get(code, code)
-                keep = st.checkbox(label, value=True, key=f"sel_{code}")
-                if not keep:
-                    # remove from current selection
-                    updated = [c for c in updated if c != code]
-                    # uncheck corresponding search hit and remove from persistent list
-                    hk = f"kwhit_{code}"
-                    if hk in st.session_state:
-                        st.session_state[hk] = False
-                    if code in st.session_state[K_HITS_SELECTED]:
-                        st.session_state[K_HITS_SELECTED] = [c for c in st.session_state[K_HITS_SELECTED] if c != code]
-                    # remove from dropdown selected list
-                    disp = code_to_display.get(code)
-                    if disp:
-                        st.session_state[K_MULTI_QUESTIONS] = [d for d in st.session_state[K_MULTI_QUESTIONS] if d != disp]
-        if updated != st.session_state[K_SELECTED_CODES]:
-            st.session_state[K_SELECTED_CODES] = updated
-
-    return st.session_state[K_SELECTED_CODES]
-
-# -----------------------------------------------------------------------------
-# Years selector → returns List[int]
-# -----------------------------------------------------------------------------
-def year_picker() -> List[int]:
-    st.markdown('<div class="field-label">Select survey year(s):</div>', unsafe_allow_html=True)
-    st.session_state.setdefault(K_SELECT_ALL_YEARS, True)
-    select_all = st.checkbox("All years", key=K_SELECT_ALL_YEARS)
-
-    selected_years: List[int] = []
-    year_cols = st.columns(len(DEFAULT_YEARS))
-    for idx, yr in enumerate(DEFAULT_YEARS):
-        with year_cols[idx]:
-            default_checked = True if select_all else st.session_state.get(f"year_{yr}", False)
-            if st.checkbox(str(yr), value=default_checked, key=f"year_{yr}"):
-                selected_years.append(yr)
-    return sorted(selected_years)
-
-# -----------------------------------------------------------------------------
-# Demographic picker → returns (demo_selection, sub_selection, demcodes, disp_map, category_in_play)
-# -----------------------------------------------------------------------------
-def demographic_picker(demo_df: pd.DataFrame):
-    st.markdown('<div class="field-label">Select a demographic category (optional):</div>', unsafe_allow_html=True)
-    DEMO_CAT_COL = "DEMCODE Category"
-    LABEL_COL = "DESCRIP_E"
-
-    demo_categories = ["All respondents"] + sorted(demo_df[DEMO_CAT_COL].dropna().astype(str).unique().tolist())
-    st.session_state.setdefault("demo_main", "All respondents")
-    demo_selection = st.selectbox("Demographic category", demo_categories, key="demo_main", label_visibility="collapsed")
-
-    sub_selection = None
-    if demo_selection != "All respondents":
-        st.markdown(f'<div class="field-label">Subgroup ({demo_selection}) (optional):</div>', unsafe_allow_html=True)
-        sub_items = demo_df.loc[demo_df[DEMO_CAT_COL] == demo_selection, LABEL_COL].dropna().astype(str).unique().tolist()
-        sub_items = sorted(sub_items)
-        sub_key = f"sub_{demo_selection.replace(' ', '_')}"
-        sub_selection = st.selectbox("(leave blank to include all subgroups in this category)", [""] + sub_items, key=sub_key, label_visibility="collapsed")
-        if sub_selection == "":
-            sub_selection = None
-
-    demcodes, disp_map, category_in_play = _resolve_demcodes(demo_df, demo_selection, sub_selection)
-    return demo_selection, sub_selection, demcodes, disp_map, category_in_play
-
-# -----------------------------------------------------------------------------
-# Internal helper: resolve demographic codes & display map
-# -----------------------------------------------------------------------------
-def _resolve_demcodes(demo_df: pd.DataFrame, category_label: str, subgroup_label: Optional[str]):
-    DEMO_CAT_COL = "DEMCODE Category"
-    LABEL_COL = "DESCRIP_E"
-
-    if not category_label or category_label == "All respondents":
-        return [None], {None: "All respondents"}, False
-
-    code_col = None
-    for c in ["DEMCODE", "DemCode", "CODE", "Code", "CODE_E", "Demographic code"]:
-        if c in demo_df.columns:
-            code_col = c
-            break
-
-    df_cat = demo_df[demo_df[DEMO_CAT_COL] == category_label] if DEMO_CAT_COL in demo_df.columns else demo_df.copy()
-    if df_cat.empty:
-        return [None], {None: "All respondents"}, False
-
-    if subgroup_label:
-        if code_col and LABEL_COL in df_cat.columns:
-            r = df_cat[df_cat[LABEL_COL] == subgroup_label]
-            if not r.empty:
-                code = str(r.iloc[0][code_col])
-                return [code], {code: subgroup_label}, True
-        return [subgroup_label], {subgroup_label: subgroup_label}, True
-
-    if code_col and LABEL_COL in df_cat.columns:
-        codes = df_cat[code_col].astype(str).tolist()
-        labels = df_cat[LABEL_COL].astype(str).tolist()
-        keep = [(c, l) for c, l in zip(codes, labels) if str(c).strip() != ""]
-        codes = [c for c, _ in keep]
-        disp_map = {c: l for c, l in keep}
-        return codes, disp_map, True
-
-    if LABEL_COL in df_cat.columns:
-        labels = df_cat[LABEL_COL].astype(str).tolist()
-        return labels, {l: l for l in labels}, True
-
-    return [None], {None: "All respondents"}, False
-
-# -----------------------------------------------------------------------------
-# Search button enabled?
-# -----------------------------------------------------------------------------
-def search_button_enabled(question_codes: List[str], years: List[int]) -> bool:
-    return bool(question_codes) and bool(years)
+   
