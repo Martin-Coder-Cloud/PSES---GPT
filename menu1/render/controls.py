@@ -7,11 +7,13 @@ Controls for Menu 1:
 - Demographic category & subgroup selector
 - Search button enablement helper
 
-Updates:
-  • Box 1: no placeholder text; Q01 listed first (not auto-selected)
-  • Bold 'or' subtitle between Box 1 and Box 2
-  • Box 2: live search as user types via on_change callback (no Enter, no button)
-  • Safe unselect flow via 'pending removal' buffer (no widget-state mutation error)
+Updates per request:
+  • Box 1 shows the first question's label (Q01 if present) as placeholder (not selected)
+  • Box 2 triggers search ONLY when "Search the questionnaire" is clicked (no Enter)
+  • After clicking Search, Box 2 clears automatically while results remain
+  • Selecting any question (Box 1 or search results) resets Box 2 and search results
+  • Bold "or" between the two boxes, aligned with subtitles
+  • Safe unselect flow to avoid mutating multiselect value after widget instantiation
 """
 
 from __future__ import annotations
@@ -29,12 +31,13 @@ except Exception:
 # -----------------------------
 # Session-state keys (Menu 1)
 # -----------------------------
-K_MULTI_QUESTIONS  = "menu1_multi_questions"          # List[str] (display labels) chosen in the dropdown
-K_SELECTED_CODES   = "menu1_selected_codes"           # Ordered List[str] of codes (multi + hits merged)
-K_KW_QUERY         = "menu1_kw_query"                 # str
-K_HITS             = "menu1_hits"                     # List[{"code","text","display","score"}]
-K_LAST_QUERY       = "menu1_last_search_query"        # str
-K_PENDING_REMOVE   = "menu1_pending_remove_from_multi"  # List[str] (display labels to remove next run)
+K_MULTI_QUESTIONS   = "menu1_multi_questions"       # List[str] (display labels) chosen in the dropdown
+K_SELECTED_CODES    = "menu1_selected_codes"        # Ordered List[str] of codes (multi + hits merged)
+K_KW_QUERY          = "menu1_kw_query"              # str
+K_HITS              = "menu1_hits"                  # List[{"code","text","display","score"}]
+K_LAST_QUERY        = "menu1_last_search_query"     # str
+K_PENDING_REMOVE    = "menu1_pending_remove_from_multi"  # List[str] (display labels to remove next run)
+K_PREV_MULTI        = "menu1_prev_multi_snapshot"   # snapshot of Box 1 value for change detection
 
 # Years
 DEFAULT_YEARS = [2024, 2022, 2020, 2019]
@@ -92,9 +95,13 @@ def _run_keyword_search(qdf: pd.DataFrame, query: str, top_k: int = 120) -> pd.D
 def question_picker(qdf: pd.DataFrame) -> List[str]:
     """
     UI:
-      1) Box 1: Dropdown multi-select with sub-title (Q01 listed first; not auto-selected; no placeholder text)
-      2) Box 2: Text input with sub-title; search runs live as user types (no Enter/button required)
+      1) Box 1: Dropdown multi-select with sub-title
+         • Q01 moved to the top of the list
+         • The first item's label is shown as placeholder text (not selected)
+      2) Box 2: Text input with sub-title; search runs ONLY by clicking the button
+         • After clicking Search, the text box clears but results remain
       3) "Selected questions" list with quick unselect checkboxes
+         • Selecting any question clears Box 2 and search results
 
     Returns ordered list of selected question codes (max 5).
     """
@@ -104,8 +111,9 @@ def question_picker(qdf: pd.DataFrame) -> List[str]:
     st.session_state.setdefault(K_HITS, [])
     st.session_state.setdefault(K_LAST_QUERY, "")
     st.session_state.setdefault(K_PENDING_REMOVE, [])
+    st.session_state.setdefault(K_PREV_MULTI, None)
 
-    # If there are pending removals AND the multiselect already exists in state, apply them BEFORE rendering the widget
+    # If the multiselect already exists and there are pending removals, apply them BEFORE rendering the widget
     if K_MULTI_QUESTIONS in st.session_state and st.session_state[K_PENDING_REMOVE]:
         current = st.session_state.get(K_MULTI_QUESTIONS, [])
         if isinstance(current, list):
@@ -140,64 +148,70 @@ def question_picker(qdf: pd.DataFrame) -> List[str]:
         all_displays.remove(q01_disp)
         all_displays.insert(0, q01_disp)
 
-    # IMPORTANT:
-    #  - Do NOT pass default= and do NOT pre-set st.session_state[K_MULTI_QUESTIONS] before this widget
-    #    to avoid the "default value + Session State" warning.
+    # Placeholder shows the first item (Q01 if present) WITHOUT selecting it
+    first_disp = all_displays[0] if all_displays else ""
     st.multiselect(
         "Choose one or more from the official list",
         all_displays,
         max_selections=5,
         label_visibility="collapsed",
-        key=K_MULTI_QUESTIONS,                 # value is stored here automatically by Streamlit
-        placeholder="",                        # blank inside the box (no duplicate subtitle text)
+        key=K_MULTI_QUESTIONS,                 # Streamlit holds value in session_state
+        placeholder=first_disp,                # <-- show first item label in the box (not selected)
+        # no 'default=' to avoid conflicts/warnings
     )
 
     selected_from_multi: Set[str] = set()
-    for d in st.session_state.get(K_MULTI_QUESTIONS, []):
+    current_multi = st.session_state.get(K_MULTI_QUESTIONS, [])
+    for d in current_multi:
         c = display_to_code.get(d)
         if c:
             selected_from_multi.add(c)
 
+    # Detect changes in Box 1 and clear Box 2 if the selection changed
+    prev_multi = st.session_state.get(K_PREV_MULTI)
+    if prev_multi is None:
+        st.session_state[K_PREV_MULTI] = list(current_multi)
+    elif prev_multi != current_multi:
+        # Clear search query/results when Box 1 changed
+        st.session_state[K_KW_QUERY] = ""
+        st.session_state[K_LAST_QUERY] = ""
+        st.session_state[K_HITS] = []
+        st.session_state[K_PREV_MULTI] = list(current_multi)
+
     # ---------- "or" as a bold subtitle ----------
     st.markdown('<div class="sub-title">or</div>', unsafe_allow_html=True)
 
-    # ---------- 2) Box 2: Live search while typing (no Enter/button) ----------
+    # ---------- 2) Box 2: Button-triggered search only ----------
     st.markdown('<div class="sub-title tight-gap">Search questionnaire by keywords or theme</div>', unsafe_allow_html=True)
 
-    def _on_kw_change():
-        q = (st.session_state.get(K_KW_QUERY, "") or "").strip()
-        if q:
-            hits_df = _run_keyword_search(qdf, q, top_k=120)
-            st.session_state[K_LAST_QUERY] = q
-            st.session_state[K_HITS] = hits_df[["code", "text", "display", "score"]].to_dict(orient="records") \
-                                       if isinstance(hits_df, pd.DataFrame) and not hits_df.empty else []
-        else:
-            st.session_state[K_LAST_QUERY] = ""
-            st.session_state[K_HITS] = []
-
-    st.text_input(
+    # Plain text input (typing alone does nothing)
+    query = st.text_input(
         "Enter keywords",
         key=K_KW_QUERY,
         label_visibility="collapsed",
         placeholder='Type keywords like “career advancement”, “harassment”, “recognition”…',
-        on_change=_on_kw_change,  # triggers search on each keystroke/change
-    )
+    ).strip()
+
+    # Click to search (no Enter needed). Button is always visible; disabled if empty.
+    do_search = st.button("Search the questionnaire", key="menu1_do_kw_search", disabled=(len(query) == 0))
+
+    if do_search and query:
+        hits_df = _run_keyword_search(qdf, query, top_k=120)
+        st.session_state[K_LAST_QUERY] = query
+        st.session_state[K_HITS] = hits_df[["code", "text", "display", "score"]].to_dict(orient="records") \
+                                   if isinstance(hits_df, pd.DataFrame) and not hits_df.empty else []
+        # Immediately clear the text box for next search (results remain visible)
+        st.session_state[K_KW_QUERY] = ""
+        try:
+            st.rerun()
+        except Exception:
+            st.experimental_rerun()
 
     hits = st.session_state.get(K_HITS, [])
     selected_from_hits: Set[str] = set()
 
-    if st.session_state.get(K_KW_QUERY, "").strip():
-        if not hits:
-            q = st.session_state.get(K_LAST_QUERY, "")
-            st.warning(
-                f'No questions matched “{q}”. '
-                "Try broader or different keywords (e.g., synonyms), split phrases (e.g., “career advancement” → “career”), "
-                "or search by a question code like “Q01”."
-            )
-        else:
-            st.write(f"Top {len(hits)} matches meeting the quality threshold:")
-
     if hits:
+        st.write(f"Top {len(hits)} matches meeting the quality threshold:")
         for rec in hits:
             code = rec["code"]; text = rec["text"]
             label = f"{code} — {text}"
@@ -206,6 +220,15 @@ def question_picker(qdf: pd.DataFrame) -> List[str]:
             checked = st.checkbox(label, value=default_checked, key=key)
             if checked:
                 selected_from_hits.add(code)
+
+    # If user performed a search but got no matches, show guidance
+    if (st.session_state.get(K_LAST_QUERY, "") != "") and not hits and not query:
+        q = st.session_state[K_LAST_QUERY]
+        st.warning(
+            f'No questions matched “{q}”. '
+            "Try broader or different keywords (e.g., synonyms), split phrases (e.g., “career advancement” → “career”), "
+            "or search by a question code like “Q01”."
+        )
 
     # ---------- Merge selections (dropdown first, then hits), cap at 5 ----------
     combined_order: List[str] = []
@@ -221,37 +244,15 @@ def question_picker(qdf: pd.DataFrame) -> List[str]:
         st.warning("Limit is 5 questions; extra selections were ignored.")
     st.session_state[K_SELECTED_CODES] = combined_order
 
-    # ---------- 3) Selected list with quick unselect ----------
-    if st.session_state[K_SELECTED_CODES]:
-        st.markdown('<div class="sub-title">Selected questions</div>', unsafe_allow_html=True)
-        updated = list(st.session_state[K_SELECTED_CODES])
-        to_remove_from_multi: List[str] = []
-        cols = st.columns(min(5, len(updated)))
-        for idx, code in enumerate(list(updated)):
-            with cols[idx % len(cols)]:
-                label = code_to_display.get(code, code)
-                keep = st.checkbox(label, value=True, key=f"sel_{code}")
-                if not keep:
-                    updated = [c for c in updated if c != code]
-                    hk = f"kwhit_{code}"
-                    if hk in st.session_state:
-                        st.session_state[hk] = False
-                    disp = code_to_display.get(code)
-                    if disp:
-                        to_remove_from_multi.append(disp)
-
-        if updated != st.session_state[K_SELECTED_CODES]:
-            st.session_state[K_SELECTED_CODES] = updated
-
-        if to_remove_from_multi:
-            # Queue removal and rerun; applied BEFORE widget next run if the key exists
-            st.session_state[K_PENDING_REMOVE] = list(
-                set(st.session_state.get(K_PENDING_REMOVE, [])) | set(to_remove_from_multi)
-            )
-            try:
-                st.rerun()
-            except Exception:
-                st.experimental_rerun()
+    # If any hit got selected, clear search results & box for the next query
+    if selected_from_hits:
+        st.session_state[K_HITS] = []
+        st.session_state[K_LAST_QUERY] = ""
+        st.session_state[K_KW_QUERY] = ""
+        try:
+            st.rerun()
+        except Exception:
+            st.experimental_rerun()
 
     return st.session_state[K_SELECTED_CODES]
 
