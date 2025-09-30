@@ -70,9 +70,54 @@ def _build_summary_pivot(
     return pivot
 
 
+def _clear_keyword_search_state() -> None:
+    """Remove all keys related to the keyword search so no stale warnings remain."""
+    for k in [
+        "menu1_hits",
+        "menu1_search_done",
+        "menu1_last_search_query",
+        "menu1_kw_query",
+    ]:
+        st.session_state.pop(k, None)
+    # Clear dynamic checkbox keys from previous hits and selections
+    for k in list(st.session_state.keys()):
+        if k.startswith("kwhit_") or k.startswith("sel_"):
+            st.session_state.pop(k, None)
+
+
 def run() -> None:
     # NOTE: st.set_page_config() is intentionally NOT called here
     # to avoid double-calling it (root main.py calls it once).
+
+    # Global button styling: make buttons clearly visible (Search is intended to stand out).
+    # If you prefer only the main Search button to be red, we can scope this differently,
+    # but Streamlit component isolation makes per-button scoping brittle.
+    st.markdown(
+        """
+        <style>
+          /* Tighten the action row spacing */
+          .action-row { margin-top: .25rem; margin-bottom: .35rem; }
+          /* Make all buttons prominent (solid red, white text) for consistency */
+          div.stButton > button {
+            background-color: #e03131 !important;
+            color: #ffffff !important;
+            border: 1px solid #c92a2a !important;
+            font-weight: 600 !important;
+          }
+          div.stButton > button:hover {
+            background-color: #c92a2a !important;
+            border-color: #a61e1e !important;
+          }
+          div.stButton > button:disabled {
+            opacity: 0.50 !important;
+            filter: saturate(0.85);
+            color: #ffffff !important;
+            background-color: #e03131 !important;
+          }
+        </style>
+        """,
+        unsafe_allow_html=True
+    )
 
     left, center, right = layout.centered_page(CENTER_COLUMNS)
     with center:
@@ -102,40 +147,13 @@ def run() -> None:
         years = controls.year_picker()                  # -> List[int]
         demo_selection, sub_selection, demcodes, disp_map, category_in_play = controls.demographic_picker(demo_df)
 
-        # Action row: Search / Reset
+        # Action row: Search / Reset (side-by-side, aligned)
         st.markdown("<div class='action-row'>", unsafe_allow_html=True)
         colA, colB = st.columns([1, 1])
+
         with colA:
-            # --- RED/WHITE styling for the main Search button ---
-            st.markdown(
-                """
-                <style>
-                  .menu1-runsearch .stButton > button {
-                    background-color: #e03131 !important;
-                    color: #ffffff !important;
-                    border: 1px solid #c92a2a !important;
-                    font-weight: 600 !important;
-                  }
-                  .menu1-runsearch .stButton > button:hover {
-                    background-color: #c92a2a !important;
-                    border-color: #a61e1e !important;
-                  }
-                  .menu1-runsearch .stButton > button:disabled {
-                    opacity: 0.50 !important;
-                    filter: saturate(0.85);
-                    color: #ffffff !important;
-                    background-color: #e03131 !important;
-                  }
-                </style>
-                """,
-                unsafe_allow_html=True
-            )
-
             can_search = controls.search_button_enabled(question_codes, years)
-
-            st.markdown('<div class="menu1-runsearch">', unsafe_allow_html=True)
             run_clicked = st.button("Search the survey results", key="menu1_run_query", disabled=not can_search)
-            st.markdown('</div>', unsafe_allow_html=True)
 
             if run_clicked:
                 t0 = time.time()
@@ -197,13 +215,21 @@ def run() -> None:
                 )
 
         with colB:
-            if st.button("Reset all parameters"):
+            if st.button("Reset all parameters", key="menu1_reset_all"):
+                # Reset core menu state
                 state.reset_menu1_state()
-                # st.rerun() is preferred in newer Streamlit versions:
+                # Also clear keyword-search UI state so no stale "No questions matched…" persists
+                _clear_keyword_search_state()
+                # Clear AI caches (to prevent re-runs from showing stale narratives)
+                st.session_state.pop("menu1_ai_cache", None)
+                st.session_state.pop("menu1_ai_narr_per_q", None)
+                st.session_state.pop("menu1_ai_narr_overall", None)
+                # Rerun
                 try:
                     st.rerun()
                 except Exception:
                     st.experimental_rerun()
+
         st.markdown("</div>", unsafe_allow_html=True)
 
         # Results (center area)
