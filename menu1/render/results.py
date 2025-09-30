@@ -1,14 +1,14 @@
-# app/menu1/render/results.py
+# menu1/render/results.py
 """
 Menu 1: Results rendering
 - Summary tab (code-only rows; years as columns)
 - Per-question tabs with distribution tables
-- Source link shown directly under each tabulation (as a clickable title, no raw URL)
+- Source link under each tabulation (clickable title, no raw URL)
 - AI summaries:
     • One short paragraph per question
     • Overall summary only when multiple questions are selected
 - Excel export (Summary + each question + AI Summary)
-- Start a new search button beside the download to fully reset parameters/state
+- "Start a new search" button beside the download (clears all state + AI cache)
 - AI cache to prevent re-calling on reruns/navigations with unchanged results
 """
 
@@ -24,10 +24,11 @@ import streamlit as st
 # ----- small helpers ----------------------------------------------------------
 
 def _hash_key(obj: Any) -> str:
-    """Stable hash for cache keys (works with dicts/lists/pandas)."""
+    """Stable hash for cache keys (works with dicts/lists/pandas) without mutating dtypes."""
     try:
         if isinstance(obj, pd.DataFrame):
-            payload = obj.reset_index(drop=True).to_csv(index=False)
+            # Serialize with a stable NA representation to avoid injecting strings into Float32 columns.
+            payload = obj.reset_index(drop=True).to_csv(index=False, na_rep="NA")
         else:
             payload = json.dumps(obj, sort_keys=True, ensure_ascii=False, default=str)
     except Exception:
@@ -44,7 +45,7 @@ def _ai_cache_put(key: str, value: dict):
     st.session_state["menu1_ai_cache"] = cache
 
 def _source_link_line(source_title: str, source_url: str) -> None:
-    # Requirements: show the title as a clickable link (no raw URL), placed directly under the table.
+    # Show the title as a clickable link (no raw URL), directly under the table.
     st.markdown(
         f"<div style='margin-top:6px; font-size:0.9rem;'>Source: "
         f"<a href='{source_url}' target='_blank'>{source_title}</a></div>",
@@ -64,7 +65,7 @@ def tabs_summary_and_per_q(
     source_title: str,
 ) -> None:
     """
-    payload keys (as stashed in state):
+    payload keys:
       - per_q_disp: Dict[qcode, DataFrame]
       - per_q_metric_col: Dict[qcode, str]
       - per_q_metric_label: Dict[qcode, str]
@@ -92,7 +93,7 @@ def tabs_summary_and_per_q(
         "demo_selection": demo_selection,
         "sub_selection": sub_selection,
         "metric_labels": {q: per_q_metric_label[q] for q in tab_labels},
-        "pivot_sig": _hash_key(pivot.fillna("∅")),  # compact signature of numbers only
+        "pivot_sig": _hash_key(pivot),  # safe serialization (no fillna with strings)
     }
     ai_key = "menu1_ai_" + _hash_key(ai_sig)
 
@@ -142,15 +143,16 @@ def tabs_summary_and_per_q(
                     metric_label = per_q_metric_label[q]
                     qtext = code_to_text.get(q, "")
                     with st.spinner(f"AI — analyzing {q}…"):
+                        # CHANGE 2: positional args (no kwargs) to match your existing ai.py
                         content, _hint = call_openai_json(
-                            system=None,  # encapsulated in the helper
+                            system=None,  # default system prompt inside helper
                             user=build_per_q_prompt(
-                                qcode=q,
-                                qtext=qtext,
-                                df_disp=df_disp,
-                                metric_col=metric_col,
-                                metric_label=metric_label,
-                                category_in_play=(demo_selection != "All respondents")
+                                q,              # qcode
+                                qtext,          # qtext
+                                df_disp,        # df_disp
+                                metric_col,     # metric_col
+                                metric_label,   # metric_label
+                                (demo_selection != "All respondents")  # category_in_play
                             )
                         )
                     try:
@@ -162,12 +164,13 @@ def tabs_summary_and_per_q(
                 # Compute overall only if multiple questions
                 if len(tab_labels) > 1:
                     with st.spinner("AI — synthesizing overall pattern…"):
+                        # CHANGE 2: positional args (no kwargs)
                         content, _hint = call_openai_json(
                             system=None,
                             user=build_overall_prompt(
-                                tab_labels=tab_labels,
-                                pivot=pivot,
-                                per_q_metric_label=per_q_metric_label
+                                tab_labels,              # tab_labels
+                                pivot,                   # pivot
+                                per_q_metric_label       # per_q_metric_label
                             )
                         )
                     try:
@@ -234,8 +237,7 @@ def tabs_summary_and_per_q(
             # Source line directly under the tabulation
             _source_link_line(source_title, source_url)
 
-            # (No per-tab AI; per-question narratives are shown in the Summary tab under "AI Summary")
-
+            # (Per-question AI narratives are shown in the Summary tab under "AI Summary")
 
 # ----- Excel export with AI Summary sheet ------------------------------------
 
