@@ -21,13 +21,15 @@ import hashlib
 import pandas as pd
 import streamlit as st
 
+from ..ai import AI_SYSTEM_PROMPT  # use the exact system prompt your ai.py defines
+
 # ----- small helpers ----------------------------------------------------------
 
 def _hash_key(obj: Any) -> str:
-    """Stable hash for cache keys (works with dicts/lists/pandas)."""
+    """Stable hash for cache keys (works with dicts/lists/pandas) without mutating dtypes."""
     try:
         if isinstance(obj, pd.DataFrame):
-            payload = obj.reset_index(drop=True).to_csv(index=False)
+            payload = obj.to_csv(index=True, na_rep="")
         else:
             payload = json.dumps(obj, sort_keys=True, ensure_ascii=False, default=str)
     except Exception:
@@ -85,25 +87,14 @@ def tabs_summary_and_per_q(
     sub_selection                      = payload["sub_selection"]
     code_to_text                       = payload["code_to_text"]
 
-    # Import the system prompt from ai.py (no circular load issues at runtime)
-    try:
-        from ..ai import AI_SYSTEM_PROMPT
-    except Exception:
-        AI_SYSTEM_PROMPT = "You are an assistant that returns JSON with a 'narrative' field."
-
     # Build a stable "result signature" so we do NOT recompute AI on benign reruns
-    # IMPORTANT: avoid string fill on Float32 columns → use numeric sentinel
-    try:
-        pivot_numeric = pivot.astype("float64").fillna(-9999.0)
-    except Exception:
-        pivot_numeric = pivot.copy()
     ai_sig = {
         "tab_labels": tab_labels,
         "years": years,
         "demo_selection": demo_selection,
         "sub_selection": sub_selection,
         "metric_labels": {q: per_q_metric_label[q] for q in tab_labels},
-        "pivot_sig": _hash_key(pivot_numeric),
+        "pivot_sig": _hash_key(pivot),  # compact signature of numbers only
     }
     ai_key = "menu1_ai_" + _hash_key(ai_sig)
 
@@ -114,7 +105,7 @@ def tabs_summary_and_per_q(
     with tabs[0]:
         st.markdown("### Summary table")
 
-        # Small list of questions and metric used (lightweight)
+        # Small list of questions and metric used (lightweight) — shown above the table
         if tab_labels:
             st.markdown("<div style='font-size:0.9rem; color:#444; margin-bottom:4px;'>"
                         "Questions & metrics included:</div>", unsafe_allow_html=True)
@@ -172,9 +163,9 @@ def tabs_summary_and_per_q(
 
                 # Compute overall only if multiple questions
                 if len(tab_labels) > 1:
-                    # Map question -> metric label for the overall prompt
-                    q_to_metric = {q: per_q_metric_label.get(q, "% positive") for q in tab_labels}
                     with st.spinner("AI — synthesizing overall pattern…"):
+                        # map qcode -> metric label for the overall payload
+                        q_to_metric = {q: per_q_metric_label[q] for q in tab_labels}
                         content, _hint = call_openai_json(
                             system=AI_SYSTEM_PROMPT,
                             user=build_overall_prompt(
@@ -218,20 +209,35 @@ def tabs_summary_and_per_q(
 
         with col_new:
             if st.button("Start a new search", key="menu1_new_search"):
-                # Full reset and rerun
+                # Full reset: core params/state
                 try:
-                    from .. import state  # local import to avoid circulars at module load
+                    from .. import state  # local import to avoid circulars
                     state.reset_menu1_state()
                 except Exception:
-                    # best-effort fallback: clear known result keys
                     for k in [
-                        "menu1_selected_codes", "menu1_hits", "menu1_kw_query",
-                        "menu1_multi_questions", "menu1_ai_toggle", "menu1_show_diag",
+                        "menu1_selected_codes", "menu1_multi_questions",
+                        "menu1_ai_toggle", "menu1_show_diag",
                         "select_all_years", "demo_main", "last_query_info",
                     ]:
-                        if k in st.session_state:
-                            del st.session_state[k]
+                        st.session_state.pop(k, None)
+
+                # ALSO clear keyword-search area so no stale warning appears
+                for k in [
+                    "menu1_hits", "menu1_hit_codes_selected",
+                    "menu1_search_done", "menu1_last_search_query",
+                    "menu1_kw_query",
+                ]:
+                    st.session_state.pop(k, None)
+
+                # Remove dynamic checkbox keys from previous searches/selections
+                for k in list(st.session_state.keys()):
+                    if k.startswith("kwhit_") or k.startswith("sel_"):
+                        st.session_state.pop(k, None)
+
+                # Clear AI cache
                 st.session_state.pop("menu1_ai_cache", None)
+
+                # Rerun
                 try:
                     st.rerun()
                 except Exception:
