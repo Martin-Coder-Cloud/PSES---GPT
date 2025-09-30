@@ -3,8 +3,8 @@
 # Hybrid search for survey questions (LOCAL, API-free by default)
 # - Lexical: phrase→AND→OR(coverage)→fuzzy cascade + normalized coverage score
 # - Semantic (optional): sentence-transformer embeddings if available
-# - Final score: blend(semantic, lexical); strict threshold (> min_score)
-# - Dedupe by code; returns [code, text, display, score]
+# - Final score: blend(lexical, semantic) with anchor-evidence cap for drift
+# - Strict threshold (> min_score), dedupe by code; supports +include/-exclude
 # -------------------------------------------------------------------------
 
 from __future__ import annotations
@@ -41,30 +41,41 @@ _stop = {
 def _norm(s: str) -> str:
     s = s.lower()
     s = re.sub(r"\s+", " ", s)
-    s = s.strip()
-    return s
+    return s.strip()
 
 def _tokens(s: str) -> List[str]:
     return [t for t in _word_re.findall(_norm(s)) if t and t not in _stop]
 
 def _uniq_preserve(seq: List[str]) -> List[str]:
-    seen = set()
-    out = []
+    seen = set(); out = []
     for x in seq:
         if x not in seen:
-            seen.add(x)
-            out.append(x)
+            seen.add(x); out.append(x)
     return out
 
+def _anchor_stem(t: str) -> str:
+    # very light stemming for anchor evidence
+    for suf in ("ments","ment","ingly","ingly","ings","ing","ities","ity","ions","ion","ally","al","ness","ships","ship","ed","es","s"):
+        if t.endswith(suf) and len(t) - len(suf) >= 4:
+            return t[: len(t) - len(suf)]
+    return t
+
+def _anchor_stems(tokens: List[str]) -> List[str]:
+    stems = [_anchor_stem(t) for t in tokens]
+    # special short maps
+    stems = ["harass" if t.startswith("harass") else t for t in stems]
+    return _uniq_preserve([t for t in stems if len(t) >= 3])
+
 # -----------------------------
-# Light synonym bridge (only if semantic missing)
+# Light synonyms bridge (used only if semantic missing)
 # -----------------------------
 _SYNONYMS: Dict[str, List[str]] = {
-    "harassment": ["harassment","respect","civility","bullying","discrimination","racism","microaggressions"],
-    "recognition": ["recognition","appreciation","acknowledgement","reward","praise"],
+    # conservative lists; avoid pulling in broad categories like "discrimination"
+    "harassment": ["harassment","harass","bullying","violence","sexual harassment"],
+    "recognition": ["recognition","recognize","appreciation","acknowledgement","reward","praise"],
     "onboarding": ["onboarding","orientation","induction","new hire","integration"],
     "career": ["career","advancement","promotion","development","progression","mobility"],
-    "workload": ["workload","overtime","burnout","capacity","demand","pressure","work-life"],
+    "workload": ["workload","overtime","capacity","demand","pressure","work-life"],
     "psychological": ["psychological","mental health","well-being","stress","burnout","respect"],
 }
 
@@ -74,6 +85,27 @@ def _expand_with_synonyms(qtoks: List[str]) -> List[str]:
         if t in _SYNONYMS:
             expanded.extend(_SYNONYMS[t])
     return _uniq_preserve(expanded)
+
+# -----------------------------
+# Include/Exclude operators
+# -----------------------------
+def _parse_req_exc(raw_q: str) -> Tuple[str, List[str], List[str]]:
+    """
+    Extract +include / -exclude tokens (substring checks).
+    Returns: cleaned_query, includes[], excludes[]
+    """
+    parts = raw_q.split()
+    includes: List[str] = []
+    excludes: List[str] = []
+    kept: List[str] = []
+    for p in parts:
+        if p.startswith("+") and len(p) > 1:
+            includes.append(_norm(p[1:]))
+        elif p.startswith("-") and len(p) > 1:
+            excludes.append(_norm(p[1:]))
+        else:
+            kept.append(p)
+    return " ".join(kept).strip(), includes, excludes
 
 # -----------------------------
 # Indexing & (optional) embeddings cache
@@ -88,7 +120,6 @@ def _index_key(texts: List[str]) -> str:
     return h.hexdigest()
 
 def _get_semantic_matrix(texts: List[str]) -> Optional["np.ndarray"]:
-    """Build/retrieve embeddings for texts if ST is available."""
     if not _ST_OK:
         return None
     global _ST_MODEL
@@ -109,16 +140,12 @@ def _get_semantic_matrix(texts: List[str]) -> Optional["np.ndarray"]:
     return mat
 
 def _cosine_sim(vecA: "np.ndarray", matB: "np.ndarray") -> "np.ndarray":
-    # Both already normalized
-    return (matB @ vecA)
+    return (matB @ vecA)  # both normalized
 
 # -----------------------------
 # Lexical scoring cascade
 # -----------------------------
 def _phrase_hits(q: str, items: List[str]) -> List[bool]:
-    if not q:
-        return [False]*len(items)
-    # quoted phrases first
     phrases = re.findall(r'"([^"]+)"', q)
     marks = [False]*len(items)
     if not phrases:
@@ -127,14 +154,11 @@ def _phrase_hits(q: str, items: List[str]) -> List[bool]:
         ntxt = _norm(txt)
         for ph in phrases:
             if _norm(ph) and _norm(ph) in ntxt:
-                marks[i] = True
-                break
+                marks[i] = True; break
     return marks
 
 def _coverage_and(tokens: List[str], items: List[str]) -> Tuple[List[int], List[int]]:
-    # require all tokens
-    cov = [0]*len(items)
-    tot = [len(tokens)]*len(items)
+    cov = [0]*len(items); tot = [len(tokens)]*len(items)
     tset = set(tokens)
     for i, txt in enumerate(items):
         toks = set(_tokens(txt))
@@ -143,41 +167,32 @@ def _coverage_and(tokens: List[str], items: List[str]) -> Tuple[List[int], List[
     return cov, tot
 
 def _coverage_or(tokens: List[str], items: List[str]) -> Tuple[List[int], List[int]]:
-    cov = [0]*len(items)
-    tot = [len(tokens)]*len(items)
+    cov = [0]*len(items); tot = [len(tokens)]*len(items)
     for i, txt in enumerate(items):
         toks = set(_tokens(txt))
         cov[i] = len(set(tokens) & toks)
     return cov, tot
 
 def _coverage_or_fuzzy(tokens: List[str], items: List[str]) -> Tuple[List[int], List[int]]:
-    # very light fuzzy (edit distance 1) to tolerate minor typos
     def ed1(a: str, b: str) -> bool:
         if abs(len(a)-len(b)) > 1:
             return False
-        # simple DP-free check
-        mismatches = 0
-        ia = ib = 0
+        mismatches = 0; ia = ib = 0
         while ia < len(a) and ib < len(b):
             if a[ia] == b[ib]:
                 ia += 1; ib += 1
             else:
                 mismatches += 1
                 if mismatches > 1: return False
-                if len(a) == len(b):
-                    ia += 1; ib += 1
-                elif len(a) > len(b):
-                    ia += 1
-                else:
-                    ib += 1
+                if len(a) == len(b): ia += 1; ib += 1
+                elif len(a) > len(b): ia += 1
+                else: ib += 1
         mismatches += (len(a)-ia) + (len(b)-ib)
         return mismatches <= 1
 
-    cov = [0]*len(items)
-    tot = [len(tokens)]*len(items)
+    cov = [0]*len(items); tot = [len(tokens)]*len(items)
     for i, txt in enumerate(items):
-        toks = set(_tokens(txt))
-        score = 0
+        toks = set(_tokens(txt)); score = 0
         for t in tokens:
             if t in toks or any(ed1(t, w) for w in toks):
                 score += 1
@@ -187,10 +202,7 @@ def _coverage_or_fuzzy(tokens: List[str], items: List[str]) -> Tuple[List[int], 
 def _normalize_cov(cov: List[int], tot: List[int]) -> List[float]:
     out: List[float] = []
     for c, t in zip(cov, tot):
-        if t <= 0:
-            out.append(0.0)
-        else:
-            out.append(max(0.0, min(1.0, c / t)))
+        out.append(0.0 if t <= 0 else max(0.0, min(1.0, c / t)))
     return out
 
 # -----------------------------
@@ -208,64 +220,56 @@ def hybrid_question_search(
     Returns DataFrame[code, text, display, score].
     - Lexical cascade ensures multi-keyword queries yield results.
     - Semantic (if available) surfaces related questions beyond exact words.
-    - Dedupe by code; strict threshold (> min_score).
+    - Anchor-evidence cap reins in semantic drift (e.g., discrimination on 'harassment').
+    - Dedupe by code; strict threshold (> min_score). Supports +include/-exclude.
     """
     if qdf is None or qdf.empty or not query or not str(query).strip():
         return qdf.head(0)
 
-    # Columns must exist
     for col in ("code", "text", "display"):
         if col not in qdf.columns:
             raise ValueError(f"qdf missing required column: {col}")
 
-    # Prepare core arrays
-    codes: List[str]   = qdf["code"].astype(str).tolist()
-    texts: List[str]   = qdf["text"].astype(str).tolist()
-    shows: List[str]   = qdf["display"].astype(str).tolist()
+    codes = qdf["code"].astype(str).tolist()
+    texts = qdf["text"].astype(str).tolist()
+    shows = qdf["display"].astype(str).tolist()
 
+    # Parse +include / -exclude operators
     q_raw = str(query).strip()
-    q_norm = _norm(q_raw)
+    q_clean, includes, excludes = _parse_req_exc(q_raw)
+
+    q_norm = _norm(q_clean)
+    qtoks = _uniq_preserve(_tokens(q_norm))
+    anchors = _anchor_stems(qtoks)
 
     # ----------------- LEXICAL SCORE -----------------
-    qtoks = _tokens(q_norm)
-    qtoks = _uniq_preserve(qtoks)
-
-    # Phrase hits (quoted phrases only)
     phrase_marks = _phrase_hits(q_raw, texts)
+    cov_and, tot_and = _coverage_and(qtoks, texts); and_norm = _normalize_cov(cov_and, tot_and)
+    cov_or,  tot_or  = _coverage_or(qtoks, texts);  or_norm  = _normalize_cov(cov_or,  tot_or)
 
-    # AND coverage
-    cov_and, tot_and = _coverage_and(qtoks, texts)
-    and_norm = _normalize_cov(cov_and, tot_and)
-
-    # OR coverage (graceful fallback if AND yields zero)
-    cov_or, tot_or = _coverage_or(qtoks, texts)
-    or_norm = _normalize_cov(cov_or, tot_or)
-
-    # If AND totally empty and OR too sparse, allow fuzzy OR
+    # Fallback fuzzy only if AND empty and OR sparse
     if max(and_norm or [0]) == 0 and max(or_norm or [0]) <= 0.34:
         cov_fz, tot_fz = _coverage_or_fuzzy(qtoks, texts)
         fz_norm = _normalize_cov(cov_fz, tot_fz)
     else:
-        fz_norm = [0.0]*len(texts)
+        cov_fz = [0]*len(texts); fz_norm = [0.0]*len(texts)
 
-    # Coverage gate: require at least ceil(60% of tokens) for OR/fuzzy paths if AND fails
-    need = max(1, math.ceil(0.60 * max(1, len(qtoks))))
+    # Coverage gate: default 60%, but 80% for short queries (≤2 tokens)
+    base_gate = 0.80 if len(qtoks) <= 2 else 0.60
+    need = max(1, math.ceil(base_gate * max(1, len(qtoks))))
     or_gate = [c >= need for c in cov_or]
-    fz_gate = [c >= need for c in cov_fz] if 'cov_fz' in locals() else [False]*len(texts)
+    fz_gate = [c >= need for c in cov_fz]
 
-    # Lexical score: max of (phrase boost, AND, gated OR, gated fuzzy)
+    # Lexical score per item
     lex_scores: List[float] = []
     for i in range(len(texts)):
         base = and_norm[i]
-        if or_gate[i]:
-            base = max(base, or_norm[i] * 0.9)
-        if fz_gate[i]:
-            base = max(base, fz_norm[i] * 0.8)
-        if phrase_marks[i]:
-            base = max(base, 1.0)  # strong signal
+        if or_gate[i]: base = max(base, or_norm[i] * 0.9)
+        if fz_gate[i]: base = max(base, fz_norm[i] * 0.8)
+        if phrase_marks[i]: base = max(base, 1.0)
         lex_scores.append(max(0.0, min(1.0, base)))
 
-    # If semantic is unavailable, lightly expand query with synonyms to avoid literal-only bias
+    # If semantic unavailable, conservative synonym expansion (no broad categories)
     if not _ST_OK and qtoks:
         expanded = _expand_with_synonyms(qtoks)
         if len(expanded) > len(qtoks):
@@ -280,9 +284,8 @@ def hybrid_question_search(
             try:
                 global _ST_MODEL
                 qvec = _ST_MODEL.encode([q_raw], normalize_embeddings=True)[0]
-                sim = _cosine_sim(qvec, mat)  # [-1,1] but normalized vectors → [-1,1], clamp to [0,1]
-                sim = (sim + 1.0) / 2.0
-                sem_scores = sim.tolist()
+                sim = _cosine_sim(qvec, mat)           # [-1,1]
+                sem_scores = ((sim + 1.0) / 2.0).tolist()  # [0,1]
             except Exception:
                 sem_scores = [0.0]*len(texts)
         else:
@@ -290,29 +293,50 @@ def hybrid_question_search(
     else:
         sem_scores = [0.0]*len(texts)
 
-    # ----------------- BLEND & RANK -----------------
-    # Blend prioritizes meaning while keeping lexical precision
-    blended = [min(1.0, max(0.0, 0.60 * s + 0.40 * l)) for s, l in zip(sem_scores, lex_scores)]
+    # ----------------- BLEND & CONSTRAINTS -----------------
+    # Slightly favor lexical to reduce drift
+    blended = [min(1.0, max(0.0, 0.55 * l + 0.45 * s)) for l, s in zip(lex_scores, sem_scores)]
 
-    # Build frame
-    df = pd.DataFrame({
-        "code": codes,
-        "text": texts,
-        "display": shows,
-        "score": blended,
-    })
+    # Apply +include / -exclude constraints (substring checks on normalized display+text)
+    norm_displays = [_norm(d) for d in shows]
+    norm_texts    = [_norm(t) for t in texts]
 
-    # Dedupe by code (keep highest score)
+    def _contains_any(hay: str, needles: List[str]) -> bool:
+        return any(n and n in hay for n in needles)
+
+    # Build per-item combined haystack (display + text)
+    haystacks = [f"{d} {t}" for d, t in zip(norm_displays, norm_texts)]
+
+    # Exclude: if any excluded token is present, kill the score
+    if excludes:
+        for i, hay in enumerate(haystacks):
+            if _contains_any(hay, excludes):
+                blended[i] = 0.0
+
+    # Include: require ALL includes to appear, else kill score
+    if includes:
+        for i, hay in enumerate(haystacks):
+            if not all(inc in hay for inc in includes):
+                blended[i] = 0.0
+
+    # Anchor-evidence cap:
+    # If there is NO lexical coverage (and/or/or/fuzzy == 0) AND no anchor substring in text,
+    # cap final score at 0.45 to prevent semantic-only drift.
+    if anchors:
+        for i, (lsc, hay) in enumerate(zip(lex_scores, haystacks)):
+            has_lex = lsc > 0.0
+            has_anchor = any(a in hay for a in anchors)
+            if (not has_lex) and (not has_anchor):
+                blended[i] = min(blended[i], 0.45)
+
+    # ----------------- RANK & FILTER -----------------
+    df = pd.DataFrame({"code": codes, "text": texts, "display": shows, "score": blended})
     df = df.sort_values("score", ascending=False).drop_duplicates(subset=["code"], keep="first")
 
-    # Strict threshold (> min_score)
-    df = df[df["score"] > float(min_score)]
+    df = df[df["score"] > float(min_score)]  # strict threshold
 
-    # Top-K
     if top_k is not None and top_k > 0:
         df = df.head(top_k)
 
-    # Stable order for ties
     df = df.sort_values(["score", "code"], ascending=[False, True]).reset_index(drop=True)
-
     return df
