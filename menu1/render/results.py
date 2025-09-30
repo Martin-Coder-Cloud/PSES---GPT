@@ -1,339 +1,276 @@
-# menu1/render/results.py
+# app/menu1/render/results.py
 """
-Results rendering for Menu 1:
-- Summary table tab (rows: question code only, or code×demographic if applicable)
-- One tab per question with the detailed distribution table
-- Source caption appears directly under each table (before AI narratives)
-- Selected questions & metrics legend (code → text · metric) shown in small font
-  • Location: between the "Summary table" title and the tabulation
-- AI narratives:
-    • On Summary tab:
-        - Per-question "Summary Analysis" for every question shown
-        - If >1 questions selected → add an "Overall Summary Analysis"
-    • On each per-question tab:
-        - Per-question "Summary Analysis" (reuses the Summary tab narrative if available)
-- Excel export (Summary + each question + Context + AI_Summary when available)
+Menu 1: Results rendering
+- Summary tab (code-only rows; years as columns)
+- Per-question tabs with distribution tables
+- Source link shown directly under each tabulation (as a clickable title, no raw URL)
+- AI summaries:
+    • One short paragraph per question
+    • Overall summary only when multiple questions are selected
+- Excel export (Summary + each question + AI Summary)
+- Start a new search button beside the download to fully reset parameters/state
+- AI cache to prevent re-calling on reruns/navigations with unchanged results
 """
 
 from __future__ import annotations
-from typing import Dict, List, Optional, Any
+from typing import Dict, Callable, Any
 import io
-from datetime import datetime
+import json
+import hashlib
 
 import pandas as pd
 import streamlit as st
 
-from ..ai import AI_SYSTEM_PROMPT, extract_narrative
-from ..constants import DEFAULT_OPENAI_MODEL
+# ----- small helpers ----------------------------------------------------------
 
+def _hash_key(obj: Any) -> str:
+    """Stable hash for cache keys (works with dicts/lists/pandas)."""
+    try:
+        if isinstance(obj, pd.DataFrame):
+            payload = obj.reset_index(drop=True).to_csv(index=False)
+        else:
+            payload = json.dumps(obj, sort_keys=True, ensure_ascii=False, default=str)
+    except Exception:
+        payload = str(obj)
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()[:16]
 
-# -----------------------------------------------------------------------------
-# Source caption
-# -----------------------------------------------------------------------------
-def source_caption(*, source_url: str, source_title: str) -> None:
-    """Show only a clickable title (no raw URL), placed directly under a table."""
-    st.caption(f"Source: [{source_title}]({source_url})")
+def _ai_cache_get(key: str):
+    cache = st.session_state.get("menu1_ai_cache", {})
+    return cache.get(key)
 
+def _ai_cache_put(key: str, value: dict):
+    cache = st.session_state.get("menu1_ai_cache", {})
+    cache[key] = value
+    st.session_state["menu1_ai_cache"] = cache
 
-# -----------------------------------------------------------------------------
-# Main tabs renderer
-# -----------------------------------------------------------------------------
+def _source_link_line(source_title: str, source_url: str) -> None:
+    # Requirements: show the title as a clickable link (no raw URL), placed directly under the table.
+    st.markdown(
+        f"<div style='margin-top:6px; font-size:0.9rem;'>Source: "
+        f"<a href='{source_url}' target='_blank'>{source_title}</a></div>",
+        unsafe_allow_html=True
+    )
+
+# ----- main renderer ----------------------------------------------------------
+
 def tabs_summary_and_per_q(
     *,
     payload: Dict[str, Any],
     ai_on: bool,
-    build_overall_prompt,
-    build_per_q_prompt,
-    call_openai_json,
+    build_overall_prompt: Callable[..., str],
+    build_per_q_prompt: Callable[..., str],
+    call_openai_json: Callable[..., tuple],
     source_url: str,
     source_title: str,
 ) -> None:
     """
-    Render Summary + per-question tabs from stashed payload.
-    Required payload keys:
-      - tab_labels: List[str]               # question codes in order
-      - pivot: pd.DataFrame                 # summary table (index=question code or question×demo; columns=years)
-      - per_q_disp: Dict[str, pd.DataFrame] # display tables per question
-      - per_q_metric_col: Dict[str, str]
-      - per_q_metric_label: Dict[str, str]
-      - code_to_text: Dict[str, str]
+    payload keys (as stashed in state):
+      - per_q_disp: Dict[qcode, DataFrame]
+      - per_q_metric_col: Dict[qcode, str]
+      - per_q_metric_label: Dict[qcode, str]
+      - pivot: DataFrame
+      - tab_labels: List[qcode]
       - years: List[int]
-      - demo_selection: str
-      - sub_selection: Optional[str]
+      - demo_selection: str | None
+      - sub_selection: str | None
+      - code_to_text: Dict[qcode, text]
     """
-    tab_labels: List[str] = payload.get("tab_labels", [])
-    pivot: pd.DataFrame = payload.get("pivot")
-    per_q_disp: Dict[str, pd.DataFrame] = payload.get("per_q_disp", {})
-    per_q_metric_col: Dict[str, str] = payload.get("per_q_metric_col", {})
-    per_q_metric_label: Dict[str, str] = payload.get("per_q_metric_label", {})
-    code_to_text: Dict[str, str] = payload.get("code_to_text", {})
-    years: List[int] = payload.get("years", [])
-    demo_selection: Optional[str] = payload.get("demo_selection")
-    sub_selection: Optional[str] = payload.get("sub_selection")
+    per_q_disp: Dict[str, pd.DataFrame] = payload["per_q_disp"]
+    per_q_metric_col: Dict[str, str]   = payload["per_q_metric_col"]
+    per_q_metric_label: Dict[str, str] = payload["per_q_metric_label"]
+    pivot: pd.DataFrame                = payload["pivot"]
+    tab_labels                         = payload["tab_labels"]
+    years                              = payload["years"]
+    demo_selection                     = payload["demo_selection"]
+    sub_selection                      = payload["sub_selection"]
+    code_to_text                       = payload["code_to_text"]
 
-    if pivot is None or not isinstance(pivot, pd.DataFrame):
-        st.info("No data found for your selection.")
-        return
+    # Build a stable "result signature" so we do NOT recompute AI on benign reruns
+    ai_sig = {
+        "tab_labels": tab_labels,
+        "years": years,
+        "demo_selection": demo_selection,
+        "sub_selection": sub_selection,
+        "metric_labels": {q: per_q_metric_label[q] for q in tab_labels},
+        "pivot_sig": _hash_key(pivot.fillna("∅")),  # compact signature of numbers only
+    }
+    ai_key = "menu1_ai_" + _hash_key(ai_sig)
 
-    # Build tabs (Summary first, then each question code)
+    # UI tabs: first Summary, then one per question
     tabs = st.tabs(["Summary table"] + tab_labels)
 
-    # Cache to avoid duplicate LLM calls across tabs
-    ai_summaries: Dict[str, str] = {}
-    overall_ai_summary: Optional[str] = None
-
-    # -----------------------
-    # Summary tab
-    # -----------------------
+    # ------------------------- Summary tab -------------------------
     with tabs[0]:
         st.markdown("### Summary table")
 
-        # --- Small-font legend placed BEFORE the table ---
+        # Small list of questions and metric used (lightweight)
         if tab_labels:
-            items_html = "".join(
-                f"<li><strong>{q}</strong> — {code_to_text.get(q, '')} "
-                f"<span style='opacity:0.8'>· {per_q_metric_label.get(q, '% positive')}</span></li>"
-                for q in tab_labels
-            )
-            st.markdown(
-                f"""
-                <div style="font-size:12px;color:#555;margin-top:4px;margin-bottom:8px;">
-                  <div style="font-weight:600;margin-bottom:2px;">Selected questions &amp; metrics</div>
-                  <ul style="margin:0 0 0 18px;padding:0;list-style:disc;">
-                    {items_html}
-                  </ul>
-                </div>
-                """,
-                unsafe_allow_html=True,
-            )
-
-        # Tabulation
-        st.dataframe(pivot.round(1).reset_index(), use_container_width=True)
-        # Source directly under the table (before AI)
-        source_caption(source_url=source_url, source_title=source_title)
-
-        # --- AI Summary section (per question, then optional overall) ---
-        if ai_on and tab_labels:
-            st.markdown("### AI Summary")
-
-            # Per-question narratives (for each question shown in the Summary table)
-            category_in_play = (demo_selection is not None) and (demo_selection != "All respondents")
+            st.markdown("<div style='font-size:0.9rem; color:#444; margin-bottom:4px;'>"
+                        "Questions & metrics included:</div>", unsafe_allow_html=True)
             for q in tab_labels:
-                df_disp = per_q_disp.get(q)
-                if df_disp is None or df_disp.empty:
-                    continue
+                qtext = code_to_text.get(q, "")
+                mlabel = per_q_metric_label.get(q, "% positive")
+                st.markdown(
+                    f"<div style='font-size:0.85rem; color:#555;'>"
+                    f"<strong>{q}</strong>: {qtext} "
+                    f"<span style='opacity:.85;'>[{mlabel}]</span>"
+                    f"</div>",
+                    unsafe_allow_html=True
+                )
 
-                metric_col = per_q_metric_col.get(q, "Positive")
-                metric_label = per_q_metric_label.get(q, "% positive")
-                q_text = code_to_text.get(q, "")
+        # The table (rows are codes or code×demographic; columns are years)
+        st.dataframe(pivot.round(1).reset_index(), use_container_width=True)
 
-                with st.spinner(f"Generating Summary Analysis for {q}…"):
-                    user_payload = build_per_q_prompt(
-                        question_code=q,
-                        question_text=q_text,
-                        df_disp=df_disp,
-                        metric_col=metric_col,
-                        metric_label=metric_label,
-                        category_in_play=category_in_play,
-                    )
-                    content, hint = call_openai_json(
-                        system=AI_SYSTEM_PROMPT,
-                        user=user_payload,
-                        model=DEFAULT_OPENAI_MODEL,
-                        temperature=0.2,
-                        max_retries=2,
-                    )
-                narrative = extract_narrative(content)
-                if narrative:
-                    ai_summaries[q] = narrative
-                    st.markdown(f"**{q} — {q_text}**")
-                    st.write(narrative)
-                    st.caption(f"Generated by OpenAI • model: {DEFAULT_OPENAI_MODEL}")
-                else:
-                    st.caption(f"{q}: AI unavailable or returned no narrative ({hint or 'no content'}).")
+        # Source line directly under the tabulation
+        _source_link_line(source_title, source_url)
 
-            # Overall narrative only when multiple questions are selected
-            if len(tab_labels) > 1:
-                with st.spinner("Generating Overall Summary Analysis…"):
-                    q_to_metric = {q: per_q_metric_label.get(q, "% positive") for q in tab_labels}
-                    user_payload = build_overall_prompt(
-                        tab_labels=tab_labels,
-                        pivot_df=pivot,
-                        q_to_metric=q_to_metric,
-                    )
-                    content, hint = call_openai_json(
-                        system=AI_SYSTEM_PROMPT,
-                        user=user_payload,
-                        model=DEFAULT_OPENAI_MODEL,
-                        temperature=0.2,
-                        max_retries=2,
-                    )
-                narrative = extract_narrative(content)
-                if narrative:
-                    overall_ai_summary = narrative
-                    st.markdown("**Overall Summary Analysis**")
-                    st.write(narrative)
-                    st.caption(f"Generated by OpenAI • model: {DEFAULT_OPENAI_MODEL}")
-                else:
-                    st.caption(f"Overall summary: AI unavailable or returned no narrative ({hint or 'no content'}).")
+        # ----- AI Summary area -----
+        per_q_narratives: Dict[str, str] = {}
+        overall_narrative: str | None = None
 
-    # -----------------------
-    # Per-question tabs
-    # -----------------------
-    category_in_play = (demo_selection is not None) and (demo_selection != "All respondents")
+        if ai_on:
+            # Check AI cache first
+            cached = _ai_cache_get(ai_key)
+            if cached:
+                per_q_narratives = cached.get("per_q", {})
+                overall_narrative = cached.get("overall")
+            else:
+                # Compute per-question narratives
+                for q in tab_labels:
+                    df_disp = per_q_disp[q]
+                    metric_col = per_q_metric_col[q]
+                    metric_label = per_q_metric_label[q]
+                    qtext = code_to_text.get(q, "")
+                    with st.spinner(f"AI — analyzing {q}…"):
+                        content, _hint = call_openai_json(
+                            system=None,  # encapsulated in the helper
+                            user=build_per_q_prompt(
+                                qcode=q,
+                                qtext=qtext,
+                                df_disp=df_disp,
+                                metric_col=metric_col,
+                                metric_label=metric_label,
+                                category_in_play=(demo_selection != "All respondents")
+                            )
+                        )
+                    try:
+                        j = json.loads(content) if content else {}
+                        per_q_narratives[q] = (j.get("narrative") or "").strip()
+                    except Exception:
+                        per_q_narratives[q] = ""
 
+                # Compute overall only if multiple questions
+                if len(tab_labels) > 1:
+                    with st.spinner("AI — synthesizing overall pattern…"):
+                        content, _hint = call_openai_json(
+                            system=None,
+                            user=build_overall_prompt(
+                                tab_labels=tab_labels,
+                                pivot=pivot,
+                                per_q_metric_label=per_q_metric_label
+                            )
+                        )
+                    try:
+                        j = json.loads(content) if content else {}
+                        overall_narrative = (j.get("narrative") or "").strip()
+                    except Exception:
+                        overall_narrative = None
+
+                # Stash in cache to avoid recomputation on reruns
+                _ai_cache_put(ai_key, {"per_q": per_q_narratives, "overall": overall_narrative})
+
+            # Render AI section
+            st.markdown("---")
+            st.markdown("### AI Summary")
+            for q in tab_labels:
+                if per_q_narratives.get(q):
+                    st.markdown(f"**{q} — {code_to_text.get(q, '')}**")
+                    st.write(per_q_narratives[q])
+            if overall_narrative and len(tab_labels) > 1:
+                st.markdown("**Overall**")
+                st.write(overall_narrative)
+
+        # ----- Export & New Search row -----
+        st.markdown("<div style='margin-top:10px;'></div>", unsafe_allow_html=True)
+        col_dl, col_new = st.columns([1, 1])
+
+        with col_dl:
+            _render_excel_download(
+                pivot=pivot,
+                per_q_disp=per_q_disp,
+                tab_labels=tab_labels,
+                per_q_narratives=per_q_narratives,
+                overall_narrative=overall_narrative,
+            )
+
+        with col_new:
+            if st.button("Start a new search", key="menu1_new_search"):
+                # Full reset and rerun
+                try:
+                    from .. import state  # local import to avoid circulars at module load
+                    state.reset_menu1_state()
+                except Exception:
+                    # best-effort fallback: clear known result keys
+                    for k in [
+                        "menu1_selected_codes", "menu1_hits", "menu1_kw_query",
+                        "menu1_multi_questions", "menu1_ai_toggle", "menu1_show_diag",
+                        "select_all_years", "demo_main", "last_query_info",
+                    ]:
+                        if k in st.session_state:
+                            del st.session_state[k]
+                st.session_state.pop("menu1_ai_cache", None)
+                try:
+                    st.rerun()
+                except Exception:
+                    st.experimental_rerun()
+
+    # ---------------------- Per-question tabs ----------------------
     for idx, qcode in enumerate(tab_labels, start=1):
         with tabs[idx]:
             qtext = code_to_text.get(qcode, "")
             st.subheader(f"{qcode} — {qtext}")
+            st.dataframe(per_q_disp[qcode], use_container_width=True)
 
-            df_disp = per_q_disp.get(qcode)
-            if df_disp is None or df_disp.empty:
-                st.info("No data for this question.")
-                continue
+            # Source line directly under the tabulation
+            _source_link_line(source_title, source_url)
 
-            st.dataframe(df_disp, use_container_width=True)
-            # Source directly under the table (before AI)
-            source_caption(source_url=source_url, source_title=source_title)
-
-            if ai_on:
-                # Reuse narrative computed on the Summary tab if available
-                if qcode in ai_summaries:
-                    st.markdown("### Summary Analysis")
-                    st.write(ai_summaries[qcode])
-                    st.caption(f"Generated by OpenAI • model: {DEFAULT_OPENAI_MODEL}")
-                else:
-                    with st.spinner("Generating Summary Analysis…"):
-                        metric_col = per_q_metric_col.get(qcode, "Positive")
-                        metric_label = per_q_metric_label.get(qcode, "% positive")
-                        user_payload = build_per_q_prompt(
-                            question_code=qcode,
-                            question_text=code_to_text.get(qcode, ""),
-                            df_disp=df_disp,
-                            metric_col=metric_col,
-                            metric_label=metric_label,
-                            category_in_play=category_in_play
-                        )
-                        content, hint = call_openai_json(
-                            system=AI_SYSTEM_PROMPT,
-                            user=user_payload,
-                            model=DEFAULT_OPENAI_MODEL,
-                            temperature=0.2,
-                            max_retries=2,
-                        )
-                    narrative = extract_narrative(content)
-                    if narrative:
-                        st.markdown("### Summary Analysis")
-                        st.write(narrative)
-                        st.caption(f"Generated by OpenAI • model: {DEFAULT_OPENAI_MODEL}")
-                    else:
-                        st.caption(f"AI unavailable or returned no narrative ({hint or 'no content'}).")
-            else:
-                st.info("No AI summary generated.")
-
-    # -----------------------
-    # Excel export
-    # -----------------------
-    _download_excel_section(
-        per_q_disp=per_q_disp,
-        pivot=pivot,
-        tab_labels=tab_labels,
-        years=years,
-        demo_selection=demo_selection,
-        sub_selection=sub_selection,
-        # NEW: pass AI narratives + metadata for the AI_Summary sheet
-        ai_per_q=ai_summaries,
-        ai_overall=overall_ai_summary,
-        code_to_text=code_to_text,
-        per_q_metric_label=per_q_metric_label,
-    )
+            # (No per-tab AI; per-question narratives are shown in the Summary tab under "AI Summary")
 
 
-# -----------------------------------------------------------------------------
-# Excel download (Summary + each Q + Context + AI_Summary)
-# -----------------------------------------------------------------------------
-def _download_excel_section(
+# ----- Excel export with AI Summary sheet ------------------------------------
+
+def _render_excel_download(
     *,
-    per_q_disp: Dict[str, pd.DataFrame],
     pivot: pd.DataFrame,
-    tab_labels: List[str],
-    years: List[int],
-    demo_selection: Optional[str],
-    sub_selection: Optional[str],
-    ai_per_q: Dict[str, str],
-    ai_overall: Optional[str],
-    code_to_text: Dict[str, str],
-    per_q_metric_label: Dict[str, str],
+    per_q_disp: Dict[str, pd.DataFrame],
+    tab_labels: list[str],
+    per_q_narratives: Dict[str, str],
+    overall_narrative: str | None,
 ) -> None:
-    """Create and expose an Excel file containing the summary, each question, context, and AI summaries."""
-    if (not tab_labels) or (pivot is None):
-        return
-
+    # Build the workbook in-memory
     with io.BytesIO() as buf:
         with pd.ExcelWriter(buf, engine="xlsxwriter") as writer:
-            # Summary sheet
+            # Summary
             pivot.round(1).reset_index().to_excel(writer, sheet_name="Summary_Table", index=False)
-
-            # One sheet per question (use a short, safe name)
+            # Per-question sheets
             for q, df_disp in per_q_disp.items():
-                safe = q[:28] or "Q"
-                # avoid boolean evaluation of DataFrame
-                df_to_write = df_disp if isinstance(df_disp, pd.DataFrame) else pd.DataFrame()
-                df_to_write.to_excel(writer, sheet_name=f"{safe}", index=False)
-
-            # Context sheet
-            ctx = {
-                "Questions": ", ".join(tab_labels),
-                "Years": ", ".join(map(str, years or [])),
-                "Category": demo_selection or "All respondents",
-                "Subgroup": (
-                    sub_selection or "(all in category)"
-                    if (demo_selection and demo_selection != "All respondents")
-                    else "All respondents"
-                ),
-                "Generated at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-            }
-            pd.DataFrame(list(ctx.items()), columns=["Field", "Value"]).to_excel(
-                writer, sheet_name="Context", index=False
-            )
-
-            # AI Summary sheet (only if there is at least one narrative)
-            if ai_per_q or ai_overall:
-                rows = []
-                # Per-question narratives in the order of tab_labels
-                for q in tab_labels:
-                    rows.append({
-                        "Question": f"{q} — {code_to_text.get(q, '')}",
-                        "Metric": per_q_metric_label.get(q, "% positive"),
-                        "Narrative": ai_per_q.get(q, ""),
-                    })
-                # Add overall (if present and multiple questions were selected)
-                if ai_overall:
-                    rows.append({
-                        "Question": "Overall Summary Analysis",
-                        "Metric": "",
-                        "Narrative": ai_overall,
-                    })
-
-                df_ai = pd.DataFrame(rows, columns=["Question", "Metric", "Narrative"])
-                df_ai.to_excel(writer, sheet_name="AI_Summary", index=False)
-
-                # Optional: make the AI sheet readable (wrap text, set widths)
-                try:
-                    workbook  = writer.book
-                    worksheet = writer.sheets["AI_Summary"]
-                    wrap = workbook.add_format({"text_wrap": True, "valign": "top"})
-                    worksheet.set_column("A:A", 48)   # Question
-                    worksheet.set_column("B:B", 18)   # Metric
-                    worksheet.set_column("C:C", 100, wrap)  # Narrative (wrapped)
-                except Exception:
-                    pass  # formatting is best-effort
-
+                safe = q[:28]
+                df_disp.to_excel(writer, sheet_name=f"{safe}", index=False)
+            # AI Summary sheet
+            rows = []
+            for q in tab_labels:
+                if per_q_narratives.get(q):
+                    rows.append({"Section": q, "Narrative": per_q_narratives[q]})
+            if overall_narrative and len(tab_labels) > 1:
+                rows.append({"Section": "Overall", "Narrative": overall_narrative})
+            ai_df = pd.DataFrame(rows, columns=["Section", "Narrative"])
+            ai_df.to_excel(writer, sheet_name="AI Summary", index=False)
         data = buf.getvalue()
 
     st.download_button(
-        label="Download data and AI summaries",  # <-- updated label
+        label="Download data and AI summaries",
         data=data,
-        file_name=f"PSES_multiQ_{'-'.join(map(str, years or []))}.xlsx",
+        file_name="PSES_results_with_AI.xlsx",
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        key="menu1_excel_download",
     )
