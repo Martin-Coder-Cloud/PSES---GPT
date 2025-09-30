@@ -19,7 +19,7 @@ K_HITS            = "menu1_hits"                # Search hits (list[dict])
 K_FIND_HITS_BTN   = "menu1_find_hits"           # Button key
 K_SEARCH_DONE     = "menu1_search_done"         # Bool: did search run?
 K_LAST_QUERY      = "menu1_last_search_query"   # Last query (string)
-K_HITS_TO_SHOW    = "menu1_hits_to_show"        # NEW: how many hits to render (paging)
+K_HITS_TO_SHOW    = "menu1_hits_to_show"        # How many hits are currently rendered (paging)
 
 # Years
 DEFAULT_YEARS = [2024, 2022, 2020, 2019]
@@ -67,7 +67,7 @@ def question_picker(qdf: pd.DataFrame) -> List[str]:
     st.session_state.setdefault(K_HITS, [])
     st.session_state.setdefault(K_SEARCH_DONE, False)
     st.session_state.setdefault(K_LAST_QUERY, "")
-    st.session_state.setdefault(K_HITS_TO_SHOW, 20)  # default page size
+    st.session_state.setdefault(K_HITS_TO_SHOW, 10)  # default page size (was 20)
 
     code_to_display = dict(zip(qdf["code"], qdf["display"]))
     display_to_code = {v: k for k, v in code_to_display.items()}
@@ -126,7 +126,7 @@ def question_picker(qdf: pd.DataFrame) -> List[str]:
                 st.session_state[K_HITS] = hits_df[["code", "text", "display", "score"]].to_dict(orient="records") \
                                            if isinstance(hits_df, pd.DataFrame) and not hits_df.empty else []
                 # reset paging each time a new search runs
-                st.session_state[K_HITS_TO_SHOW] = 20
+                st.session_state[K_HITS_TO_SHOW] = 10  # was 20
 
         # Results list
         hits = st.session_state.get(K_HITS, [])
@@ -141,7 +141,7 @@ def question_picker(qdf: pd.DataFrame) -> List[str]:
                 )
             else:
                 total = len(hits)
-                to_show = int(st.session_state.get(K_HITS_TO_SHOW, 20)) or 20
+                to_show = int(st.session_state.get(K_HITS_TO_SHOW, 10)) or 10
                 to_show = max(1, min(to_show, total))
 
                 st.write(f"Top {total} matches meeting the quality threshold:")
@@ -158,8 +158,7 @@ def question_picker(qdf: pd.DataFrame) -> List[str]:
                 # Show more button when there are more results beyond current slice
                 if total > to_show:
                     if st.button("Show more results", key="menu1_show_more_hits"):
-                        st.session_state[K_HITS_TO_SHOW] = min(total, to_show + 20)
-                        # re-render happens naturally on next run
+                        st.session_state[K_HITS_TO_SHOW] = min(total, to_show + 10)  # was +20
 
     # Merge selections (multiselect first, then currently checked hits), cap 5
     combined_order: List[str] = []
@@ -254,8 +253,7 @@ def demographic_picker(demo_df: pd.DataFrame):
             code_col = c
             break
 
-    df_cat = demo_df[demo_df[DEMOCODE_COL if False else "DEMCODE Category"] == demo_selection] if "DEMCODE Category" in demo_df.columns else demo_df.copy()
-    # The above line keeps compatibility; simpler explicit form:
+    # Explicit, safe form (remove stray DEMOCODE_COL reference)
     if "DEMCODE Category" in demo_df.columns:
         df_cat = demo_df[demo_df["DEMCODE Category"] == demo_selection]
     else:
@@ -274,7 +272,7 @@ def demographic_picker(demo_df: pd.DataFrame):
 
     if code_col and LABEL_COL in df_cat.columns:
         codes = df_cat[code_col].astype(str).tolist()
-        labels = df_cat[LABEL_COL].astype str().tolist()
+        labels = df_cat[LABEL_COL].astype(str).tolist()
         keep = [(c, l) for c, l in zip(codes, labels) if str(c).strip() != ""]
         codes = [c for c, _ in keep]
         disp_map = {c: l for c, l in keep}
