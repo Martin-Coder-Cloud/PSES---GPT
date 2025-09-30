@@ -121,8 +121,7 @@ def question_picker(qdf: pd.DataFrame) -> List[str]:
     st.markdown('<div class="field-label">Step 1: Pick up to 5 survey questions:</div>', unsafe_allow_html=True)
 
     # ---------- Begin INDENTED scope for the two sub-options (via spacer columns) ----------
-    # Left column is a small spacer; right column holds the sub-options.
-    cols = st.columns([0.08, 0.92])
+    cols = st.columns([0.08, 0.92])  # left spacer, right content
     with cols[1]:
         # Subtitle above the multiselect; increase top margin for better separation
         st.markdown(
@@ -152,30 +151,27 @@ def question_picker(qdf: pd.DataFrame) -> List[str]:
             unsafe_allow_html=True
         )
 
-        # Keyword search
+        # Keyword search (stacked: no nested columns to avoid Streamlit nesting error)
         st.markdown("<div class='field-label'>Search questionnaire by keywords or theme</div>", unsafe_allow_html=True)
-        c1, c2 = st.columns([3, 1])
-        with c1:
-            query = st.text_input(
-                "Enter keywords (e.g., harassment, recognition, onboarding)",
-                key=K_KW_QUERY,
-                label_visibility="collapsed",
-                placeholder="Type keywords like “career advancement”, “harassment”, “recognition”…",
-            )
-        with c2:
-            if st.button("Search the questionnaire", key=K_FIND_HITS_BTN):
-                q = (query or "").strip()
-                if not q:
-                    st.warning("Please enter at least one keyword to search the questionnaire.")
-                else:
-                    hits_df = _run_keyword_search(qdf, q, top_k=120)
-                    st.session_state[K_SEARCH_DONE] = True
-                    st.session_state[K_LAST_QUERY] = q
-                    st.session_state[K_HITS] = hits_df[["code", "text", "display", "score"]].to_dict(orient="records") \
-                                               if isinstance(hits_df, pd.DataFrame) and not hits_df.empty else []
-                    # Keep only still-valid checked hits after a new search
-                    current_codes = {h["code"] for h in st.session_state[K_HITS]}
-                    st.session_state[K_HITS_SELECTED] = [c for c in st.session_state[K_HITS_SELECTED] if c in current_codes]
+        query = st.text_input(
+            "Enter keywords (e.g., harassment, recognition, onboarding)",
+            key=K_KW_QUERY,
+            label_visibility="collapsed",
+            placeholder="Type keywords like “career advancement”, “harassment”, “recognition”…",
+        )
+        if st.button("Search the questionnaire", key=K_FIND_HITS_BTN):
+            q = (query or "").strip()
+            if not q:
+                st.warning("Please enter at least one keyword to search the questionnaire.")
+            else:
+                hits_df = _run_keyword_search(qdf, q, top_k=120)
+                st.session_state[K_SEARCH_DONE] = True
+                st.session_state[K_LAST_QUERY] = q
+                st.session_state[K_HITS] = hits_df[["code", "text", "display", "score"]].to_dict(orient="records") \
+                                           if isinstance(hits_df, pd.DataFrame) and not hits_df.empty else []
+                # Keep only still-valid checked hits after a new search
+                current_codes = {h["code"] for h in st.session_state[K_HITS]}
+                st.session_state[K_HITS_SELECTED] = [c for c in st.session_state[K_HITS_SELECTED] if c in current_codes]
 
         # Results area (persistent across reruns until a new search or reset)
         hits = st.session_state.get(K_HITS, [])
@@ -192,7 +188,6 @@ def question_picker(qdf: pd.DataFrame) -> List[str]:
                 st.write(f"Top {len(hits)} matches meeting the quality threshold:")
 
     # ---------- Selected list with quick unselect (NOT indented) ----------
-    # Build the selected set AFTER rendering sub-options so checkboxes reflect latest state.
     selected_from_multi: Set[str] = set(display_to_code[d] for d in st.session_state[K_MULTI_QUESTIONS] if d in display_to_code)
     selected_from_hits: Set[str] = set(st.session_state.get(K_HITS_SELECTED, []))
 
@@ -327,7 +322,7 @@ def _resolve_demcodes(demo_df: pd.DataFrame, category_label: str, subgroup_label
 
     if code_col and LABEL_COL in df_cat.columns:
         codes = df_cat[code_col].astype(str).tolist()
-        labels = df_cat[LABEL_COL].astype(str).tolist()
+        labels = df_cat[LABEL_COL].astype str().tolist()
         keep = [(c, l) for c, l in zip(codes, labels) if str(c).strip() != ""]
         codes = [c for c, _ in keep]
         disp_map = {c: l for c, l in keep}
