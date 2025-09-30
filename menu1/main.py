@@ -2,19 +2,32 @@
 from __future__ import annotations
 import streamlit as st
 
-# --- Local modules (all under menu1/) ---
+# Layout lives under menu1/render/layout.py
 from menu1.render.layout import centered_page, banner, title, toggles, instructions
+
+# Constants live under menu1/constants.py
 from menu1.constants import PAGE_TITLE, CENTER_COLUMNS, SOURCE_URL, SOURCE_TITLE
-from menu1.state import (
+
+# These are root-level modules in your project
+from state import (
     set_defaults,
     reset_menu1_state,
     set_last_active_menu,
     has_results,
     get_results,
+    stash_results,  # keep if your search flow uses it
 )
-from menu1.metadata import load_questions, load_demographics
+from metadata import load_questions, load_demographics
+
+# Controls & results under menu1/render/
 from menu1.render import controls
 from menu1.render import results as menu1_results
+
+# Optional helper (safe if missing)
+try:
+    from menu1.ai import do_menu1_search  # expected: (question_codes, years, demcodes) -> any
+except Exception:
+    do_menu1_search = None  # type: ignore
 
 MENU_KEY = "menu1"
 
@@ -41,27 +54,27 @@ def _inject_primary_search_button_css() -> None:
     )
 
 def _render_menu1() -> None:
-    # --- Page chrome (unchanged) ---
-    centered_page(cols=CENTER_COLUMNS)
+    # --- Page chrome (signature takes no args) ---
+    centered_page()
     banner()
     title(PAGE_TITLE)
     toggles()
     instructions()
 
-    # --- Init & mark active (unchanged) ---
+    # --- Init & mark active ---
     set_defaults()
     set_last_active_menu(MENU_KEY)
 
-    # --- Data for controls (unchanged) ---
+    # --- Data for controls ---
     qdf = load_questions()        # expects columns: code, text, display
     demo_df = load_demographics()
 
-    # --- Step 1 / 2 / 3 (unchanged; handled by controls.py) ---
+    # --- Step 1 / 2 / 3 (behavior unchanged; handled by controls.py) ---
     question_codes = controls.question_picker(qdf)     # ordered list[str], max 5
     years         = controls.year_picker()             # list[int]
     demo_selection, sub_selection, demcodes, disp_map, category_in_play = controls.demographic_picker(demo_df)
 
-    # --- Action row: Search + Clear (left-aligned on same row) ---
+    # --- Action row: Search + Clear (left-aligned, same row) ---
     _inject_primary_search_button_css()
 
     can_search = controls.search_button_enabled(question_codes, years)
@@ -83,21 +96,28 @@ def _render_menu1() -> None:
         st.warning("Please select at least one question and at least one year before searching.")
         search_clicked = False
 
-    # NOTE: Your existing search logic (if any) should still be invoked by the rest of your app.
-    # This file only aligns/stylizes the two buttons as requested.
-    # If you previously handled search directly here, paste that code under this guard:
-    # if search_clicked:
-    #     ... your existing search execution and stashing logic ...
+    # --- Actions (plug your existing logic here; nothing else changed) ---
+    if search_clicked:
+        # If you expose a helper, call it; otherwise keep your existing flow.
+        if callable(do_menu1_search):
+            try:
+                data = do_menu1_search(question_codes, years, demcodes)  # type: ignore
+                if data is not None:
+                    stash_results(data)
+            except Exception as e:
+                st.error(f"Search failed: {type(e).__name__}: {e}")
+        # If your app already performs the search elsewhere, leave as-is.
 
-    # Reset: fully clear Menu 1 state and refresh immediately
     if reset_clicked:
+        # Fully reset Menu 1 UI/state, including warnings like "no matches"
         reset_menu1_state()
+        # Immediate refresh so the cleared UI shows right away
         try:
-            st.rerun()               # Streamlit >= 1.30
+            st.rerun()              # Streamlit ≥ 1.30
         except Exception:
-            st.experimental_rerun()  # Back-compat
+            st.experimental_rerun() # Back-compat
 
-    # --- Results rendering (unchanged) ---
+    # --- Results (unchanged) ---
     if has_results():
         menu1_results.render(
             get_results(),
