@@ -124,13 +124,11 @@ def question_picker(qdf: pd.DataFrame) -> List[str]:
                 hits_df = _run_keyword_search(qdf, q, top_k=120)
                 st.session_state[K_SEARCH_DONE] = True
                 st.session_state[K_LAST_QUERY] = q
-                # always force a list (not None) to guarantee no-hits warning renders
+                # Always set to a list; DO NOT raise a warning here (avoid duplicates)
                 if isinstance(hits_df, pd.DataFrame) and not hits_df.empty:
                     st.session_state[K_HITS] = hits_df[["code", "text", "display", "score"]].to_dict(orient="records")
                 else:
                     st.session_state[K_HITS] = []
-                    # immediate no-hits warning (belt and suspenders)
-                    st.warning(f'No questions matched “{q}”. Try broader/different keywords, split phrases, or a code like “Q01”.')
                 # reset paging each time a new search runs
                 st.session_state[K_HITS_PAGE] = 0
 
