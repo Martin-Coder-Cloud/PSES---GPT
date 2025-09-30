@@ -7,12 +7,13 @@ Controls for Menu 1:
 - Demographic category & subgroup selector
 - Search button enablement helper
 
-Updates per request:
-  • Box 1 shows the first question's label (Q01 if present) as placeholder (not selected)
-  • Box 2 triggers search ONLY when "Search the questionnaire" is clicked (no Enter)
-  • After clicking Search, Box 2 clears automatically while results remain
-  • Selecting any question (Box 1 or search results) resets Box 2 and search results
-  • Bold "or" between the two boxes, aligned with subtitles
+Updates:
+  • Box 1: shows the first question's label (Q01 if present) as placeholder (not selected)
+  • Box 2: "Search the questionnaire" button is ALWAYS visible
+      - Clicking with empty input shows a warning (no Enter required)
+      - Clicking with text runs search, clears the input, keeps results
+  • Selecting any question (Box 1 or Box 2 hits) clears Box 2 input & results
+  • Bold "or" between boxes, aligned with subtitles
   • Safe unselect flow to avoid mutating multiselect value after widget instantiation
 """
 
@@ -38,6 +39,7 @@ K_HITS              = "menu1_hits"                  # List[{"code","text","displ
 K_LAST_QUERY        = "menu1_last_search_query"     # str
 K_PENDING_REMOVE    = "menu1_pending_remove_from_multi"  # List[str] (display labels to remove next run)
 K_PREV_MULTI        = "menu1_prev_multi_snapshot"   # snapshot of Box 1 value for change detection
+K_EMPTY_WARN        = "menu1_empty_search_warn"     # bool: show “enter keywords” warning after click
 
 # Years
 DEFAULT_YEARS = [2024, 2022, 2020, 2019]
@@ -99,9 +101,10 @@ def question_picker(qdf: pd.DataFrame) -> List[str]:
          • Q01 moved to the top of the list
          • The first item's label is shown as placeholder text (not selected)
       2) Box 2: Text input with sub-title; search runs ONLY by clicking the button
-         • After clicking Search, the text box clears but results remain
+         • Button is always visible; empty click shows a warning
+         • After clicking Search with text, the text box clears but results remain
       3) "Selected questions" list with quick unselect checkboxes
-         • Selecting any question clears Box 2 and search results
+         • Selecting any question clears Box 2 input & results
 
     Returns ordered list of selected question codes (max 5).
     """
@@ -112,6 +115,7 @@ def question_picker(qdf: pd.DataFrame) -> List[str]:
     st.session_state.setdefault(K_LAST_QUERY, "")
     st.session_state.setdefault(K_PENDING_REMOVE, [])
     st.session_state.setdefault(K_PREV_MULTI, None)
+    st.session_state.setdefault(K_EMPTY_WARN, False)
 
     # If the multiselect already exists and there are pending removals, apply them BEFORE rendering the widget
     if K_MULTI_QUESTIONS in st.session_state and st.session_state[K_PENDING_REMOVE]:
@@ -156,7 +160,7 @@ def question_picker(qdf: pd.DataFrame) -> List[str]:
         max_selections=5,
         label_visibility="collapsed",
         key=K_MULTI_QUESTIONS,                 # Streamlit holds value in session_state
-        placeholder=first_disp,                # <-- show first item label in the box (not selected)
+        placeholder=first_disp,                # show first item label (not selected)
         # no 'default=' to avoid conflicts/warnings
     )
 
@@ -176,36 +180,46 @@ def question_picker(qdf: pd.DataFrame) -> List[str]:
         st.session_state[K_KW_QUERY] = ""
         st.session_state[K_LAST_QUERY] = ""
         st.session_state[K_HITS] = []
+        st.session_state[K_EMPTY_WARN] = False
         st.session_state[K_PREV_MULTI] = list(current_multi)
 
     # ---------- "or" as a bold subtitle ----------
     st.markdown('<div class="sub-title">or</div>', unsafe_allow_html=True)
 
-    # ---------- 2) Box 2: Button-triggered search only ----------
+    # ---------- 2) Box 2: Button-triggered search only (button always visible) ----------
     st.markdown('<div class="sub-title tight-gap">Search questionnaire by keywords or theme</div>', unsafe_allow_html=True)
 
-    # Plain text input (typing alone does nothing)
+    # Plain text input
     query = st.text_input(
         "Enter keywords",
         key=K_KW_QUERY,
         label_visibility="collapsed",
         placeholder='Type keywords like “career advancement”, “harassment”, “recognition”…',
-    ).strip()
+    )
 
-    # Click to search (no Enter needed). Button is always visible; disabled if empty.
-    do_search = st.button("Search the questionnaire", key="menu1_do_kw_search", disabled=(len(query) == 0))
+    # Button is ALWAYS rendered; clicking with empty input shows warning
+    clicked = st.button("Search the questionnaire", key="menu1_do_kw_search")
 
-    if do_search and query:
-        hits_df = _run_keyword_search(qdf, query, top_k=120)
-        st.session_state[K_LAST_QUERY] = query
-        st.session_state[K_HITS] = hits_df[["code", "text", "display", "score"]].to_dict(orient="records") \
-                                   if isinstance(hits_df, pd.DataFrame) and not hits_df.empty else []
-        # Immediately clear the text box for next search (results remain visible)
-        st.session_state[K_KW_QUERY] = ""
-        try:
-            st.rerun()
-        except Exception:
-            st.experimental_rerun()
+    if clicked:
+        q = (query or "").strip()
+        if not q:
+            st.session_state[K_EMPTY_WARN] = True
+        else:
+            # Run search, clear the input, keep results
+            hits_df = _run_keyword_search(qdf, q, top_k=120)
+            st.session_state[K_LAST_QUERY] = q
+            st.session_state[K_HITS] = hits_df[["code", "text", "display", "score"]].to_dict(orient="records") \
+                                       if isinstance(hits_df, pd.DataFrame) and not hits_df.empty else []
+            st.session_state[K_KW_QUERY] = ""      # clear input after search
+            st.session_state[K_EMPTY_WARN] = False
+            try:
+                st.rerun()
+            except Exception:
+                st.experimental_rerun()
+
+    # Show empty-search warning if needed
+    if st.session_state.get(K_EMPTY_WARN, False):
+        st.warning("Please enter one or more keywords to search the questionnaire.")
 
     hits = st.session_state.get(K_HITS, [])
     selected_from_hits: Set[str] = set()
@@ -244,11 +258,12 @@ def question_picker(qdf: pd.DataFrame) -> List[str]:
         st.warning("Limit is 5 questions; extra selections were ignored.")
     st.session_state[K_SELECTED_CODES] = combined_order
 
-    # If any hit got selected, clear search results & box for the next query
+    # If any hit got selected, clear search results & input for the next query
     if selected_from_hits:
         st.session_state[K_HITS] = []
         st.session_state[K_LAST_QUERY] = ""
         st.session_state[K_KW_QUERY] = ""
+        st.session_state[K_EMPTY_WARN] = False
         try:
             st.rerun()
         except Exception:
