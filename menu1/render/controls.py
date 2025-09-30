@@ -8,8 +8,9 @@ Controls for Menu 1:
 - Search button enablement helper
 
 UI tweaks kept:
-  • Multiselect placeholder: "Choose a question from the list below"
-  • Search box header styled similarly
+  • Subtitle above the multiselect: "Choose a question from the list below"
+  • Multiselect placeholder is empty (doesn't duplicate the subtitle)
+  • Keyword search button is always enabled; warns if textbox is empty
   • "or" label for visual separation
 """
 
@@ -92,7 +93,7 @@ def _run_keyword_search(qdf: pd.DataFrame, query: str, top_k: int = 120) -> pd.D
 def question_picker(qdf: pd.DataFrame) -> List[str]:
     """
     UI:
-      1) Dropdown multi-select (authoritative, max 5) with custom placeholder
+      1) Dropdown multi-select (authoritative, max 5) with separate subtitle above the box
       2) Keyword search section with persistent results + multi-tick checkboxes
       3) "Selected questions" list with quick unselect checkboxes
 
@@ -114,6 +115,9 @@ def question_picker(qdf: pd.DataFrame) -> List[str]:
 
     # ---------- 1) Dropdown multi-select ----------
     st.markdown('<div class="field-label">Pick up to 5 survey questions:</div>', unsafe_allow_html=True)
+    # Subtitle above the multiselect; placeholder inside the box is intentionally empty
+    st.markdown('<div style="margin: 2px 0 4px 0; font-weight:600; color:#222;">Choose a question from the list below</div>', unsafe_allow_html=True)
+
     all_displays = qdf["display"].tolist()
     st.multiselect(
         "Choose one or more from the official list",
@@ -121,7 +125,7 @@ def question_picker(qdf: pd.DataFrame) -> List[str]:
         max_selections=5,
         label_visibility="collapsed",
         key=K_MULTI_QUESTIONS,
-        placeholder="Choose a question from the list below",
+        placeholder="",  # empty to avoid duplicating the subtitle inside the box
     )
     selected_from_multi: Set[str] = set(display_to_code[d] for d in st.session_state[K_MULTI_QUESTIONS] if d in display_to_code)
 
@@ -135,10 +139,10 @@ def question_picker(qdf: pd.DataFrame) -> List[str]:
     """, unsafe_allow_html=True)
 
     # ---------- 2) Keyword search ----------
-    # Header styled modestly
+    # Title above the input
     st.markdown("<div class='field-label'>Search questionnaire by keywords or theme</div>", unsafe_allow_html=True)
 
-    # Search input + button (button always visible; disabled when empty)
+    # Search input + button (button ALWAYS enabled; warns if empty)
     c1, c2 = st.columns([3, 1])
     with c1:
         query = st.text_input(
@@ -148,16 +152,19 @@ def question_picker(qdf: pd.DataFrame) -> List[str]:
             placeholder="Type keywords like “career advancement”, “harassment”, “recognition”…",
         )
     with c2:
-        btn_disabled = (not (query or "").strip())
-        if st.button("Search the questionnaire", key=K_FIND_HITS_BTN, disabled=btn_disabled):
-            hits_df = _run_keyword_search(qdf, query, top_k=120)
-            st.session_state[K_SEARCH_DONE] = True
-            st.session_state[K_LAST_QUERY] = query
-            st.session_state[K_HITS] = hits_df[["code", "text", "display", "score"]].to_dict(orient="records") \
-                                       if isinstance(hits_df, pd.DataFrame) and not hits_df.empty else []
-            # IMPORTANT: do not clear previous ticks unless the code is no longer in results
-            current_codes = {h["code"] for h in st.session_state[K_HITS]}
-            st.session_state[K_HITS_SELECTED] = [c for c in st.session_state[K_HITS_SELECTED] if c in current_codes]
+        if st.button("Search the questionnaire", key=K_FIND_HITS_BTN):
+            q = (query or "").strip()
+            if not q:
+                st.warning("Please enter at least one keyword to search the questionnaire.")
+            else:
+                hits_df = _run_keyword_search(qdf, q, top_k=120)
+                st.session_state[K_SEARCH_DONE] = True
+                st.session_state[K_LAST_QUERY] = q
+                st.session_state[K_HITS] = hits_df[["code", "text", "display", "score"]].to_dict(orient="records") \
+                                           if isinstance(hits_df, pd.DataFrame) and not hits_df.empty else []
+                # Keep only still-valid checked hits after a new search
+                current_codes = {h["code"] for h in st.session_state[K_HITS]}
+                st.session_state[K_HITS_SELECTED] = [c for c in st.session_state[K_HITS_SELECTED] if c in current_codes]
 
     # Results area (persistent across reruns until a new search or reset)
     hits = st.session_state.get(K_HITS, [])
@@ -241,12 +248,21 @@ def year_picker() -> List[int]:
     st.session_state.setdefault(K_SELECT_ALL_YEARS, True)
     select_all = st.checkbox("All years", key=K_SELECT_ALL_YEARS)
 
+    # IMPORTANT: pre-set per-year checkbox values BEFORE rendering them,
+    # so toggling "All years" doesn't cause session mutation-after-instantiation errors.
+    if select_all:
+        for yr in DEFAULT_YEARS:
+            st.session_state[f"year_{yr}"] = True
+    else:
+        for yr in DEFAULT_YEARS:
+            st.session_state.setdefault(f"year_{yr}", False)
+
     selected_years: List[int] = []
     year_cols = st.columns(len(DEFAULT_YEARS))
     for idx, yr in enumerate(DEFAULT_YEARS):
         with year_cols[idx]:
-            default_checked = True if select_all else st.session_state.get(f"year_{yr}", False)
-            if st.checkbox(str(yr), value=default_checked, key=f"year_{yr}"):
+            val = bool(st.session_state.get(f"year_{yr}", select_all))
+            if st.checkbox(str(yr), value=val, key=f"year_{yr}"):
                 selected_years.append(yr)
     return sorted(selected_years)
 
