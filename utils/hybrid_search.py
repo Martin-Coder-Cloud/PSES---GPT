@@ -1,321 +1,318 @@
 # utils/hybrid_search.py
 # -------------------------------------------------------------------------
-# Hybrid search for survey questions (LOCAL, API-free, stricter anchors)
-# - Semantic: sentence-transformer embeddings (if available)
-# - Lexical: exact code, whole-word anchor, token coverage, bigram phrase, Jaccard
-# - STRICT LEXICAL GATE: keep only items with an exact whole-word anchor from query
-# - Synonym bridge only when embeddings are unavailable
-# - Blended score; fixed threshold (>0.40)
+# Hybrid search for survey questions (LOCAL, API-free by default)
+# - Lexical: phrase→AND→OR(coverage)→fuzzy cascade + normalized coverage score
+# - Semantic (optional): sentence-transformer embeddings if available
+# - Final score: blend(semantic, lexical); strict threshold (> min_score)
+# - Dedupe by code; returns [code, text, display, score]
 # -------------------------------------------------------------------------
 
 from __future__ import annotations
+from typing import Dict, List, Tuple, Optional
+import hashlib
+import math
 import os
 import re
-import hashlib
-from typing import Dict, List, Tuple, Optional
 
-import numpy as np
 import pandas as pd
 
-# Try local sentence-transformers; fall back gracefully
-_ST_AVAILABLE = False
+# Optional semantic support (gracefully degrades if unavailable)
+_ST_OK = False
+_ST_MODEL = None  # lazy-initialized
+_ST_NAME = os.environ.get("MENU1_EMBED_MODEL", "all-MiniLM-L6-v2")
+
 try:
     from sentence_transformers import SentenceTransformer  # type: ignore
-    _ST_AVAILABLE = True
+    import numpy as np  # type: ignore
+    _ST_OK = True
 except Exception:
-    _ST_AVAILABLE = False
+    _ST_OK = False
 
 # -----------------------------
 # Normalization / token helpers
 # -----------------------------
 _word_re = re.compile(r"[a-z0-9']+")
-
-STOPWORDS = {
+_stop = {
     "the","and","of","to","in","for","with","on","at","by","from",
-    "a","an","is","are","was","were","be","been","being",
-    "as","it","its","this","that","these","those","overall"
+    "a","an","is","are","was","were","be","been","being","or","as",
+    "it","that","this","these","those","i","you","we","they","he","she",
 }
 
 def _norm(s: str) -> str:
-    return re.sub(r"[^a-z0-9\s]", " ", str(s).lower()).strip()
+    s = s.lower()
+    s = re.sub(r"\s+", " ", s)
+    s = s.strip()
+    return s
 
 def _tokens(s: str) -> List[str]:
-    return _word_re.findall(_norm(s))
+    return [t for t in _word_re.findall(_norm(s)) if t and t not in _stop]
 
-def _tokset(s: str) -> set:
-    return set(_tokens(s))
-
-def _has_whole_word(item_norm: str, token: str) -> bool:
-    # strict whole-word boundary match on normalized text
-    if not token:
-        return False
-    return re.search(rf"\b{re.escape(token)}\b", item_norm) is not None
+def _uniq_preserve(seq: List[str]) -> List[str]:
+    seen = set()
+    out = []
+    for x in seq:
+        if x not in seen:
+            seen.add(x)
+            out.append(x)
+    return out
 
 # -----------------------------
-# Lightweight synonym map (used ONLY if embeddings are not available)
+# Light synonym bridge (only if semantic missing)
 # -----------------------------
 _SYNONYMS: Dict[str, List[str]] = {
-    "career": ["career", "job", "work", "profession", "employment", "occupational"],
-    "advancement": ["advancement", "progression", "promotion", "advance", "advancing", "development", "growth"],
-    "progression": ["progression", "advancement", "promotion", "career growth", "development"],
-    "promotion": ["promotion", "promotions", "promote", "promoted", "advancement", "progression"],
-    "satisfaction": ["satisfaction", "satisfied", "satisfying", "overall satisfaction"],
-    "recognition": ["recognition", "appreciation", "acknowledgment", "acknowledgement"],
-    "leadership": ["leadership", "leaders", "management", "manager"],
-    "inclusion": ["inclusion", "inclusive", "belonging", "equity"],
-    "wellbeing": ["wellbeing", "well-being", "well being", "wellness"],
+    "harassment": ["harassment","respect","civility","bullying","discrimination","racism","microaggressions"],
+    "recognition": ["recognition","appreciation","acknowledgement","reward","praise"],
+    "onboarding": ["onboarding","orientation","induction","new hire","integration"],
+    "career": ["career","advancement","promotion","development","progression","mobility"],
+    "workload": ["workload","overtime","burnout","capacity","demand","pressure","work-life"],
+    "psychological": ["psychological","mental health","well-being","stress","burnout","respect"],
 }
-def _alts_for(tok: str) -> List[str]:
-    t = tok.lower()
-    return _SYNONYMS.get(t, [t])
+
+def _expand_with_synonyms(qtoks: List[str]) -> List[str]:
+    expanded = list(qtoks)
+    for t in qtoks:
+        if t in _SYNONYMS:
+            expanded.extend(_SYNONYMS[t])
+    return _uniq_preserve(expanded)
 
 # -----------------------------
-# Embedding model & cache
+# Indexing & (optional) embeddings cache
 # -----------------------------
-_DEFAULT_MODEL_CANDIDATES = [
-    os.environ.get("PSES_EMBED_MODEL") or "",
-    "paraphrase-multilingual-MiniLM-L12-v2",
-    "all-MiniLM-L6-v2",
-]
+_EMBED_CACHE: Dict[str, "np.ndarray"] = {}  # key: md5 of concatenated texts
+_TXT_CACHE: Dict[str, List[str]] = {}       # mirror to validate cache key
 
-_MODEL: Optional["SentenceTransformer"] = None
-_MODEL_NAME: Optional[str] = None
-_INDEX_CACHE: Dict[str, Dict[str, object]] = {}
+def _index_key(texts: List[str]) -> str:
+    h = hashlib.md5()
+    for t in texts:
+        h.update((_norm(t) + "\n").encode("utf-8"))
+    return h.hexdigest()
 
-def _load_model() -> Optional["SentenceTransformer"]:
-    global _MODEL, _MODEL_NAME
-    if not _ST_AVAILABLE:
+def _get_semantic_matrix(texts: List[str]) -> Optional["np.ndarray"]:
+    """Build/retrieve embeddings for texts if ST is available."""
+    if not _ST_OK:
         return None
-    if _MODEL is not None:
-        return _MODEL
-    for name in _DEFAULT_MODEL_CANDIDATES:
-        if not name:
-            continue
+    global _ST_MODEL
+    if _ST_MODEL is None:
         try:
-            m = SentenceTransformer(name)
-            _MODEL = m
-            _MODEL_NAME = name
-            return _MODEL
+            _ST_MODEL = SentenceTransformer(_ST_NAME)
         except Exception:
-            continue
+            return None
+    key = _index_key(texts)
+    if key in _EMBED_CACHE and _TXT_CACHE.get(key) == texts:
+        return _EMBED_CACHE[key]
     try:
-        m = SentenceTransformer("all-MiniLM-L6-v2")
-        _MODEL = m
-        _MODEL_NAME = "all-MiniLM-L6-v2"
-        return _MODEL
+        mat = _ST_MODEL.encode(texts, normalize_embeddings=True)
     except Exception:
-        _MODEL = None
-        _MODEL_NAME = None
         return None
+    _EMBED_CACHE[key] = mat
+    _TXT_CACHE[key] = texts
+    return mat
 
-def _hash_qdf(qdf: pd.DataFrame) -> str:
-    if qdf is None or qdf.empty:
-        return "empty"
-    parts = (qdf["code"].astype(str) + "||" + qdf["text"].astype(str)).tolist()
-    return hashlib.sha256(("\n".join(parts)).encode("utf-8")).hexdigest()
-
-def _build_index(qdf: pd.DataFrame) -> Dict[str, object]:
-    model = _load_model()
-    codes = qdf["code"].astype(str).tolist()
-    texts = qdf["text"].astype(str).tolist()
-    displays = qdf["display"].astype(str).tolist()
-    norms = [f"{_norm(c)} — {_norm(t)}" for c, t in zip(codes, texts)]
-    emb_strings = [f"{c} — {t}" for c, t in zip(codes, texts)]
-
-    vecs = None
-    if model is not None:
-        try:
-            arr = np.array(model.encode(emb_strings, convert_to_numpy=True, show_progress_bar=False))
-            norms_arr = np.linalg.norm(arr, axis=1, keepdims=True) + 1e-12
-            vecs = arr / norms_arr
-        except Exception:
-            vecs = None
-
-    return {
-        "codes": codes,
-        "texts": texts,
-        "displays": displays,
-        "norms": norms,
-        "vecs": vecs,                 # np.ndarray or None
-        "model_name": _MODEL_NAME,
-    }
-
-def _get_index(qdf: pd.DataFrame) -> Dict[str, object]:
-    key = _hash_qdf(qdf)
-    cached = _INDEX_CACHE.get(key)
-    if cached is not None:
-        return cached
-    idx = _build_index(qdf)
-    _INDEX_CACHE[key] = idx
-    return idx
+def _cosine_sim(vecA: "np.ndarray", matB: "np.ndarray") -> "np.ndarray":
+    # Both already normalized
+    return (matB @ vecA)
 
 # -----------------------------
-# Lexical features + STRICT ANCHOR
+# Lexical scoring cascade
 # -----------------------------
-def _lexical_features(q_raw: str, item_norm: str, *, use_synonyms: bool) -> Dict[str, float]:
-    q_norm = _norm(q_raw)
-    q_tokens = _tokens(q_raw)
-    # non-stopword tokens (for anchor/coverage)
-    base_tokens = [t for t in q_tokens if t not in STOPWORDS]
-    bigrams = [" ".join(base_tokens[i:i+2]) for i in range(len(base_tokens) - 1)] if len(base_tokens) >= 2 else []
-
-    # strict anchor: full-phrase OR any bigram OR any whole-word token (len>=4)
-    has_anchor = False
-    if q_norm and q_norm in item_norm:
-        has_anchor = True
-    if not has_anchor and bigrams:
-        for bg in bigrams:
-            if re.search(rf"\b{re.escape(bg)}\b", item_norm):
-                has_anchor = True
+def _phrase_hits(q: str, items: List[str]) -> List[bool]:
+    if not q:
+        return [False]*len(items)
+    # quoted phrases first
+    phrases = re.findall(r'"([^"]+)"', q)
+    marks = [False]*len(items)
+    if not phrases:
+        return marks
+    for i, txt in enumerate(items):
+        ntxt = _norm(txt)
+        for ph in phrases:
+            if _norm(ph) and _norm(ph) in ntxt:
+                marks[i] = True
                 break
-    if not has_anchor:
-        for tok in base_tokens:
-            if len(tok) >= 4 and _has_whole_word(item_norm, tok):
-                has_anchor = True
-                break
+    return marks
 
-    # coverage (can be synonym-aware ONLY when no embeddings)
-    item_words = _tokset(item_norm)
-    matched = 0
-    for tok in base_tokens:
-        alts = _alts_for(tok) if use_synonyms else [tok]
-        hit = False
-        for a in alts:
-            if _has_whole_word(item_norm, a):  # coverage also respects whole-word match
-                hit = True
-                break
-        if hit:
-            matched += 1
-    coverage = matched / max(len(base_tokens), 1) if base_tokens else 0.0
+def _coverage_and(tokens: List[str], items: List[str]) -> Tuple[List[int], List[int]]:
+    # require all tokens
+    cov = [0]*len(items)
+    tot = [len(tokens)]*len(items)
+    tset = set(tokens)
+    for i, txt in enumerate(items):
+        toks = set(_tokens(txt))
+        if tset.issubset(toks):
+            cov[i] = len(tset)
+    return cov, tot
 
-    # jaccard on base tokens (no synonym expansion)
-    qset = set(base_tokens)
-    inter = len(qset & item_words)
-    union = len(qset | item_words) or 1
-    jaccard = inter / union
+def _coverage_or(tokens: List[str], items: List[str]) -> Tuple[List[int], List[int]]:
+    cov = [0]*len(items)
+    tot = [len(tokens)]*len(items)
+    for i, txt in enumerate(items):
+        toks = set(_tokens(txt))
+        cov[i] = len(set(tokens) & toks)
+    return cov, tot
 
-    # bigram flag (already checked for anchor)
-    bigram_hit = 1.0 if any(re.search(rf"\b{re.escape(bg)}\b", item_norm) for bg in bigrams) else 0.0
+def _coverage_or_fuzzy(tokens: List[str], items: List[str]) -> Tuple[List[int], List[int]]:
+    # very light fuzzy (edit distance 1) to tolerate minor typos
+    def ed1(a: str, b: str) -> bool:
+        if abs(len(a)-len(b)) > 1:
+            return False
+        # simple DP-free check
+        mismatches = 0
+        ia = ib = 0
+        while ia < len(a) and ib < len(b):
+            if a[ia] == b[ib]:
+                ia += 1; ib += 1
+            else:
+                mismatches += 1
+                if mismatches > 1: return False
+                if len(a) == len(b):
+                    ia += 1; ib += 1
+                elif len(a) > len(b):
+                    ia += 1
+                else:
+                    ib += 1
+        mismatches += (len(a)-ia) + (len(b)-ib)
+        return mismatches <= 1
 
-    substr = 1.0 if q_norm and (q_norm in item_norm) else 0.0
+    cov = [0]*len(items)
+    tot = [len(tokens)]*len(items)
+    for i, txt in enumerate(items):
+        toks = set(_tokens(txt))
+        score = 0
+        for t in tokens:
+            if t in toks or any(ed1(t, w) for w in toks):
+                score += 1
+        cov[i] = score
+    return cov, tot
 
-    return {"anchor": float(has_anchor), "substr": substr, "coverage": coverage, "jaccard": jaccard, "bigram": bigram_hit}
+def _normalize_cov(cov: List[int], tot: List[int]) -> List[float]:
+    out: List[float] = []
+    for c, t in zip(cov, tot):
+        if t <= 0:
+            out.append(0.0)
+        else:
+            out.append(max(0.0, min(1.0, c / t)))
+    return out
 
 # -----------------------------
-# Main search (blended with strict gating)
+# Public entry point
 # -----------------------------
 def hybrid_question_search(
     qdf: pd.DataFrame,
     query: str,
+    *,
     top_k: int = 120,
-    min_score: float = 0.40
+    min_score: float = 0.40,
 ) -> pd.DataFrame:
     """
     Hybrid search over the question metadata (qdf).
-    Returns DataFrame[score, hit_type, code, text, display].
-    Fully LOCAL. No OpenAI or external APIs are called.
+    Returns DataFrame[code, text, display, score].
+    - Lexical cascade ensures multi-keyword queries yield results.
+    - Semantic (if available) surfaces related questions beyond exact words.
+    - Dedupe by code; strict threshold (> min_score).
     """
     if qdf is None or qdf.empty or not query or not str(query).strip():
         return qdf.head(0)
 
+    # Columns must exist
+    for col in ("code", "text", "display"):
+        if col not in qdf.columns:
+            raise ValueError(f"qdf missing required column: {col}")
+
+    # Prepare core arrays
+    codes: List[str]   = qdf["code"].astype(str).tolist()
+    texts: List[str]   = qdf["text"].astype(str).tolist()
+    shows: List[str]   = qdf["display"].astype(str).tolist()
+
     q_raw = str(query).strip()
     q_norm = _norm(q_raw)
 
-    # Build/retrieve index & embeddings
-    idx = _get_index(qdf)
-    codes: List[str] = idx["codes"]      # type: ignore
-    texts: List[str] = idx["texts"]      # type: ignore
-    displays: List[str] = idx["displays"]# type: ignore
-    norms: List[str] = idx["norms"]      # type: ignore
-    vecs = idx["vecs"]                   # type: ignore
-    has_semantic = isinstance(vecs, np.ndarray)
+    # ----------------- LEXICAL SCORE -----------------
+    qtoks = _tokens(q_norm)
+    qtoks = _uniq_preserve(qtoks)
 
-    # Query embedding if model present
-    qvec = None
-    if has_semantic:
-        try:
-            model = _load_model()
-            qarr = np.array(model.encode([q_raw], convert_to_numpy=True, show_progress_bar=False))  # type: ignore
-            qvec = qarr[0]
-            qvec = qvec / (np.linalg.norm(qvec) + 1e-12)
-        except Exception:
-            qvec = None
-            has_semantic = False
+    # Phrase hits (quoted phrases only)
+    phrase_marks = _phrase_hits(q_raw, texts)
 
-    rows: List[Tuple[float, str, str, str, str]] = []
-    use_synonyms = not has_semantic  # synonym expansion only without embeddings
+    # AND coverage
+    cov_and, tot_and = _coverage_and(qtoks, texts)
+    and_norm = _normalize_cov(cov_and, tot_and)
 
-    for code, text, disp, item_norm, in_vec in zip(codes, texts, displays, norms, (vecs if has_semantic else [None]*len(codes))):
-        exact_code = 1.0 if q_norm.upper() == code.upper() else 0.0
+    # OR coverage (graceful fallback if AND yields zero)
+    cov_or, tot_or = _coverage_or(qtoks, texts)
+    or_norm = _normalize_cov(cov_or, tot_or)
 
-        # Strict lexical gate
-        lf = _lexical_features(q_raw, item_norm, use_synonyms=use_synonyms)
-        if lf["anchor"] < 1.0:
-            continue  # reject purely semantic matches with no whole-word anchor
+    # If AND totally empty and OR too sparse, allow fuzzy OR
+    if max(and_norm or [0]) == 0 and max(or_norm or [0]) <= 0.34:
+        cov_fz, tot_fz = _coverage_or_fuzzy(qtoks, texts)
+        fz_norm = _normalize_cov(cov_fz, tot_fz)
+    else:
+        fz_norm = [0.0]*len(texts)
 
-        # Semantic cosine sim (0..1)
-        sim = 0.0
-        if has_semantic and qvec is not None and in_vec is not None:
-            sim = float(np.dot(in_vec, qvec))
+    # Coverage gate: require at least ceil(60% of tokens) for OR/fuzzy paths if AND fails
+    need = max(1, math.ceil(0.60 * max(1, len(qtoks))))
+    or_gate = [c >= need for c in cov_or]
+    fz_gate = [c >= need for c in cov_fz] if 'cov_fz' in locals() else [False]*len(texts)
 
-        # Blend (semantic dominates once anchor is satisfied)
-        if has_semantic:
-            score = (
-                0.75 * sim +
-                0.12 * lf["substr"] +
-                0.08 * lf["coverage"] +
-                0.03 * lf["bigram"] +
-                0.02 * lf["jaccard"]
-            )
-            if exact_code >= 1.0:
-                score += 0.30
+    # Lexical score: max of (phrase boost, AND, gated OR, gated fuzzy)
+    lex_scores: List[float] = []
+    for i in range(len(texts)):
+        base = and_norm[i]
+        if or_gate[i]:
+            base = max(base, or_norm[i] * 0.9)
+        if fz_gate[i]:
+            base = max(base, fz_norm[i] * 0.8)
+        if phrase_marks[i]:
+            base = max(base, 1.0)  # strong signal
+        lex_scores.append(max(0.0, min(1.0, base)))
+
+    # If semantic is unavailable, lightly expand query with synonyms to avoid literal-only bias
+    if not _ST_OK and qtoks:
+        expanded = _expand_with_synonyms(qtoks)
+        if len(expanded) > len(qtoks):
+            cov_syn, tot_syn = _coverage_or(expanded, texts)
+            syn_norm = _normalize_cov(cov_syn, tot_syn)
+            lex_scores = [max(a, b * 0.85) for a, b in zip(lex_scores, syn_norm)]
+
+    # ----------------- SEMANTIC SCORE (optional) -----------------
+    if _ST_OK:
+        mat = _get_semantic_matrix(texts)
+        if mat is not None:
+            try:
+                global _ST_MODEL
+                qvec = _ST_MODEL.encode([q_raw], normalize_embeddings=True)[0]
+                sim = _cosine_sim(qvec, mat)  # [-1,1] but normalized vectors → [-1,1], clamp to [0,1]
+                sim = (sim + 1.0) / 2.0
+                sem_scores = sim.tolist()
+            except Exception:
+                sem_scores = [0.0]*len(texts)
         else:
-            score = (
-                0.25 * lf["substr"] +
-                0.50 * lf["coverage"] +
-                0.15 * lf["bigram"] +
-                0.10 * lf["jaccard"]
-            )
-            if exact_code >= 1.0:
-                score += 0.30
+            sem_scores = [0.0]*len(texts)
+    else:
+        sem_scores = [0.0]*len(texts)
 
-        if score <= min_score:
-            continue
+    # ----------------- BLEND & RANK -----------------
+    # Blend prioritizes meaning while keeping lexical precision
+    blended = [min(1.0, max(0.0, 0.60 * s + 0.40 * l)) for s, l in zip(sem_scores, lex_scores)]
 
-        if exact_code >= 1.0:
-            hit_type = "exact"
-        elif has_semantic and sim >= 0.60:
-            hit_type = "semantic"
-        elif lf["substr"] >= 1.0:
-            hit_type = "substring"
-        elif lf["bigram"] > 0.0:
-            hit_type = "phrase"
-        elif lf["coverage"] > 0.0:
-            hit_type = "token"
-        else:
-            hit_type = "other"
+    # Build frame
+    df = pd.DataFrame({
+        "code": codes,
+        "text": texts,
+        "display": shows,
+        "score": blended,
+    })
 
-        rows.append((float(score), hit_type, str(code), str(text), str(disp)))
+    # Dedupe by code (keep highest score)
+    df = df.sort_values("score", ascending=False).drop_duplicates(subset=["code"], keep="first")
 
-    if not rows:
-        return qdf.head(0)
+    # Strict threshold (> min_score)
+    df = df[df["score"] > float(min_score)]
 
-    out = pd.DataFrame(rows, columns=["score", "hit_type", "code", "text", "display"])
-    out = out.sort_values(["score", "code"], ascending=[False, True], kind="mergesort").head(top_k)
-    return out.reset_index(drop=True)
+    # Top-K
+    if top_k is not None and top_k > 0:
+        df = df.head(top_k)
 
-# --- Status for Diagnostics ---
-def get_embedding_status() -> dict:
-    status = {
-        "sentence_transformers_installed": bool(_ST_AVAILABLE),
-        "model_loaded": False,
-        "model_name": _MODEL_NAME,
-        "catalogues_indexed": len(_INDEX_CACHE),
-    }
-    if _ST_AVAILABLE:
-        try:
-            m = _load_model()
-            status["model_loaded"] = bool(m)
-        except Exception:
-            pass
-    return status
+    # Stable order for ties
+    df = df.sort_values(["score", "code"], ascending=[False, True]).reset_index(drop=True)
+
+    return df
