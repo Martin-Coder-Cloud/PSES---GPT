@@ -8,8 +8,11 @@ Controls for Menu 1:
 - Search button enablement helper
 
 Visual rules:
-  • Subtitle above the multiselect: "Choose a question from the list below"
-  • Items under "Pick up to 5..." are indented as a group (except "Selected questions", which is not)
+  • Step labels on section headers:
+      Step 1: Pick up to 5 survey questions
+      Step 2: Select survey year(s)
+      Step 3: Select a demographic category (optional)
+  • Items under "Step 1" are visually indented as a group (except "Selected questions", which is not)
   • Multiselect placeholder is empty (doesn't duplicate the subtitle)
   • Keyword search button is always enabled; warns if textbox is empty
   • "or" label for visual separation
@@ -115,98 +118,105 @@ def question_picker(qdf: pd.DataFrame) -> List[str]:
     display_to_code = {v: k for k, v in code_to_display.items()}
 
     # ---------- Section title ----------
-    st.markdown('<div class="field-label">Pick up to 5 survey questions:</div>', unsafe_allow_html=True)
+    st.markdown('<div class="field-label">Step 1: Pick up to 5 survey questions:</div>', unsafe_allow_html=True)
 
-    # ---------- Begin INDENTED scope for the two sub-options ----------
-    st.markdown(
-        """
-        <div id="qscope" style="padding-left: 1rem;">
-        """,
-        unsafe_allow_html=True
-    )
-
-    # Subtitle above the multiselect; increase top margin for better separation
-    st.markdown(
-        '<div style="margin: 8px 0 4px 0; font-weight:600; color:#222;">Choose a question from the list below</div>',
-        unsafe_allow_html=True
-    )
-
-    all_displays = qdf["display"].tolist()
-    st.multiselect(
-        "Choose one or more from the official list",
-        all_displays,
-        max_selections=5,
-        label_visibility="collapsed",
-        key=K_MULTI_QUESTIONS,
-        placeholder="",  # empty to avoid duplicating the subtitle inside the box
-    )
-    selected_from_multi: Set[str] = set(display_to_code[d] for d in st.session_state[K_MULTI_QUESTIONS] if d in display_to_code)
-
-    # ---------- Divider: "or" ----------
-    st.markdown(
-        """
-        <div style="
-            margin: .1rem 0 .1rem .5rem;
-            font-size: 0.9rem; font-weight: 600;
-            color: rgba(49,51,63,.8); font-family: inherit;
-        ">or</div>
-        """,
-        unsafe_allow_html=True
-    )
-
-    # ---------- 2) Keyword search ----------
-    # Title above the input
-    st.markdown("<div class='field-label'>Search questionnaire by keywords or theme</div>", unsafe_allow_html=True)
-
-    # Search input + button (button ALWAYS enabled; warns if empty)
-    c1, c2 = st.columns([3, 1])
-    with c1:
-        query = st.text_input(
-            "Enter keywords (e.g., harassment, recognition, onboarding)",
-            key=K_KW_QUERY,
-            label_visibility="collapsed",
-            placeholder="Type keywords like “career advancement”, “harassment”, “recognition”…",
+    # ---------- Begin INDENTED scope for the two sub-options (via spacer columns) ----------
+    # Left column is a small spacer; right column holds the sub-options.
+    cols = st.columns([0.08, 0.92])
+    with cols[1]:
+        # Subtitle above the multiselect; increase top margin for better separation
+        st.markdown(
+            '<div style="margin: 8px 0 4px 0; font-weight:600; color:#222;">Choose a question from the list below</div>',
+            unsafe_allow_html=True
         )
-    with c2:
-        if st.button("Search the questionnaire", key=K_FIND_HITS_BTN):
-            q = (query or "").strip()
-            if not q:
-                st.warning("Please enter at least one keyword to search the questionnaire.")
-            else:
-                hits_df = _run_keyword_search(qdf, q, top_k=120)
-                st.session_state[K_SEARCH_DONE] = True
-                st.session_state[K_LAST_QUERY] = q
-                st.session_state[K_HITS] = hits_df[["code", "text", "display", "score"]].to_dict(orient="records") \
-                                           if isinstance(hits_df, pd.DataFrame) and not hits_df.empty else []
-                # Keep only still-valid checked hits after a new search
-                current_codes = {h["code"] for h in st.session_state[K_HITS]}
-                st.session_state[K_HITS_SELECTED] = [c for c in st.session_state[K_HITS_SELECTED] if c in current_codes]
 
-    # Results area (persistent across reruns until a new search or reset)
-    hits = st.session_state.get(K_HITS, [])
-    if st.session_state.get(K_SEARCH_DONE, False):
-        if not hits:
-            q = (st.session_state.get(K_LAST_QUERY) or "").strip()
-            safe_q = q if q else "your search"
-            st.warning(
-                f"No questions matched “{safe_q}”. "
-                "Try broader or different keywords (e.g., synonyms), split phrases (e.g., “career advancement” → “career”), "
-                "or search by a question code like “Q01”."
+        all_displays = qdf["display"].tolist()
+        st.multiselect(
+            "Choose one or more from the official list",
+            all_displays,
+            max_selections=5,
+            label_visibility="collapsed",
+            key=K_MULTI_QUESTIONS,
+            placeholder="",  # empty to avoid duplicating the subtitle inside the box
+        )
+
+        # Divider: "or"
+        st.markdown(
+            """
+            <div style="
+                margin: .1rem 0 .1rem .5rem;
+                font-size: 0.9rem; font-weight: 600;
+                color: rgba(49,51,63,.8); font-family: inherit;
+            ">or</div>
+            """,
+            unsafe_allow_html=True
+        )
+
+        # Keyword search
+        st.markdown("<div class='field-label'>Search questionnaire by keywords or theme</div>", unsafe_allow_html=True)
+        c1, c2 = st.columns([3, 1])
+        with c1:
+            query = st.text_input(
+                "Enter keywords (e.g., harassment, recognition, onboarding)",
+                key=K_KW_QUERY,
+                label_visibility="collapsed",
+                placeholder="Type keywords like “career advancement”, “harassment”, “recognition”…",
             )
-        else:
-            st.write(f"Top {len(hits)} matches meeting the quality threshold:")
+        with c2:
+            if st.button("Search the questionnaire", key=K_FIND_HITS_BTN):
+                q = (query or "").strip()
+                if not q:
+                    st.warning("Please enter at least one keyword to search the questionnaire.")
+                else:
+                    hits_df = _run_keyword_search(qdf, q, top_k=120)
+                    st.session_state[K_SEARCH_DONE] = True
+                    st.session_state[K_LAST_QUERY] = q
+                    st.session_state[K_HITS] = hits_df[["code", "text", "display", "score"]].to_dict(orient="records") \
+                                               if isinstance(hits_df, pd.DataFrame) and not hits_df.empty else []
+                    # Keep only still-valid checked hits after a new search
+                    current_codes = {h["code"] for h in st.session_state[K_HITS]}
+                    st.session_state[K_HITS_SELECTED] = [c for c in st.session_state[K_HITS_SELECTED] if c in current_codes]
 
-    # ---------- End INDENTED scope ----------
-    st.markdown("</div>", unsafe_allow_html=True)
+        # Results area (persistent across reruns until a new search or reset)
+        hits = st.session_state.get(K_HITS, [])
+        if st.session_state.get(K_SEARCH_DONE, False):
+            if not hits:
+                q = (st.session_state.get(K_LAST_QUERY) or "").strip()
+                safe_q = q if q else "your search"
+                st.warning(
+                    f"No questions matched “{safe_q}”. "
+                    "Try broader or different keywords (e.g., synonyms), split phrases (e.g., “career advancement” → “career”), "
+                    "or search by a question code like “Q01”."
+                )
+            else:
+                st.write(f"Top {len(hits)} matches meeting the quality threshold:")
 
-    # ---------- 3) Selected list with quick unselect (NOT indented) ----------
+    # ---------- Selected list with quick unselect (NOT indented) ----------
+    # Build the selected set AFTER rendering sub-options so checkboxes reflect latest state.
+    selected_from_multi: Set[str] = set(display_to_code[d] for d in st.session_state[K_MULTI_QUESTIONS] if d in display_to_code)
+    selected_from_hits: Set[str] = set(st.session_state.get(K_HITS_SELECTED, []))
+
+    # Merge selections (dropdown first, then hits), cap at 5
+    combined_order: List[str] = []
+    for d in st.session_state.get(K_MULTI_QUESTIONS, []):
+        c = display_to_code.get(d)
+        if c and c not in combined_order:
+            combined_order.append(c)
+    for c in selected_from_hits:
+        if c not in combined_order:
+            combined_order.append(c)
+    if len(combined_order) > 5:
+        combined_order = combined_order[:5]
+        st.warning("Limit is 5 questions; extra selections were ignored.")
+    st.session_state[K_SELECTED_CODES] = combined_order
+
     if st.session_state[K_SELECTED_CODES]:
         st.markdown('<div class="field-label">Selected questions:</div>', unsafe_allow_html=True)
         updated = list(st.session_state[K_SELECTED_CODES])
-        cols = st.columns(min(5, len(updated)))
+        cols_sel = st.columns(min(5, len(updated)))
         for idx, code in enumerate(list(updated)):
-            with cols[idx % len(cols)]:
-                label = code_to_display.get(code, code)
+            with cols_sel[idx % len(cols_sel)]:
+                label = dict(zip(qdf["code"], qdf["display"])).get(code, code)
                 keep = st.checkbox(label, value=True, key=f"sel_{code}")
                 if not keep:
                     # remove from current selection
@@ -218,7 +228,7 @@ def question_picker(qdf: pd.DataFrame) -> List[str]:
                     if code in st.session_state[K_HITS_SELECTED]:
                         st.session_state[K_HITS_SELECTED] = [c for c in st.session_state[K_HITS_SELECTED] if c != code]
                     # remove from dropdown selected list
-                    disp = code_to_display.get(code)
+                    disp = dict(zip(qdf["code"], qdf["display"])).get(code)
                     if disp:
                         st.session_state[K_MULTI_QUESTIONS] = [d for d in st.session_state[K_MULTI_QUESTIONS] if d != disp]
         if updated != st.session_state[K_SELECTED_CODES]:
@@ -234,7 +244,7 @@ def year_picker() -> List[int]:
     Avoids passing value= to checkboxes that also use st.session_state,
     preventing the 'default value + Session State' warning.
     """
-    st.markdown('<div class="field-label">Select survey year(s):</div>', unsafe_allow_html=True)
+    st.markdown('<div class="field-label">Step 2: Select survey year(s):</div>', unsafe_allow_html=True)
 
     # Master toggle
     st.session_state.setdefault(K_SELECT_ALL_YEARS, True)
@@ -266,7 +276,7 @@ def year_picker() -> List[int]:
 # Demographic picker → returns (demo_selection, sub_selection, demcodes, disp_map, category_in_play)
 # -----------------------------------------------------------------------------
 def demographic_picker(demo_df: pd.DataFrame):
-    st.markdown('<div class="field-label">Select a demographic category (optional):</div>', unsafe_allow_html=True)
+    st.markdown('<div class="field-label">Step 3: Select a demographic category (optional):</div>', unsafe_allow_html=True)
     DEMO_CAT_COL = "DEMCODE Category"
     LABEL_COL = "DESCRIP_E"
 
