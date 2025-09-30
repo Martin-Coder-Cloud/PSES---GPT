@@ -45,11 +45,15 @@ K_SELECT_ALL_YEARS = "select_all_years"
 MIN_SCORE = 0.40  # keep > 0.40 filter in both engines
 
 # -----------------------------------------------------------------------------
-// Internal regex/token helpers (fallbacks)
+# Internal regex/token helpers (fallbacks)
 # -----------------------------------------------------------------------------
 _word_re = re.compile(r"[a-z0-9']+")
-def _normalize(s: str) -> str: return re.sub(r"\s+", " ", s.lower()).strip()
-def _tokens(s: str) -> List[str]: return _word_re.findall(_normalize(s))
+
+def _normalize(s: str) -> str:
+    return re.sub(r"\s+", " ", s.lower()).strip()
+
+def _tokens(s: str) -> List[str]:
+    return _word_re.findall(_normalize(s))
 
 # -----------------------------------------------------------------------------
 # Utilities for dedupe and wrapped call
