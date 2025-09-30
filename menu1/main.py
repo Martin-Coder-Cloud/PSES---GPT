@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import time
-from datetime import datetime
 from typing import Dict, List, Optional
 
 import pandas as pd
@@ -10,7 +9,6 @@ import streamlit as st
 
 # Local modules
 from .constants import (
-    PAGE_TITLE,
     CENTER_COLUMNS,
     SOURCE_URL,
     SOURCE_TITLE,
@@ -46,7 +44,7 @@ def _build_summary_pivot(
             continue
 
         t = df_disp.copy()
-        t["QuestionLabel"] = qcode  # code only per requirement
+        t["QuestionLabel"] = qcode  # code only
         t["Year"] = pd.to_numeric(t["Year"], errors="coerce").astype("Int64")
         if "Demographic" not in t.columns:
             t["Demographic"] = None
@@ -59,18 +57,22 @@ def _build_summary_pivot(
 
     long_df = pd.concat(long_rows, ignore_index=True)
 
+    # If a demographic category is selected (and no single subgroup), preserve the demo rows;
+    # otherwise, index only by question code.
     if (demo_selection is not None) and (demo_selection != "All respondents") and (sub_selection is None) and long_df["Demographic"].notna().any():
         idx_cols = ["QuestionLabel", "Demographic"]
     else:
         idx_cols = ["QuestionLabel"]
 
     pivot = long_df.pivot_table(index=idx_cols, columns="Year", values="Value", aggfunc="mean")
+    # Ensure our column order matches the selected years
     pivot = pivot.reindex(years, axis=1)
     return pivot
 
 
 def run() -> None:
-    # NOTE: st.set_page_config() is called in the root home router; do not call here.
+    # NOTE: st.set_page_config() is intentionally NOT called here
+    # to avoid double-calling it (root main.py calls it once).
 
     left, center, right = layout.centered_page(CENTER_COLUMNS)
     with center:
@@ -91,11 +93,9 @@ def run() -> None:
         sdf = load_scales()
         demo_df = load_demographics()
 
-        # Optional diagnostics
+        # Diagnostics (tabs)
         if show_diag:
-            diagnostics.parameters_preview(qdf, demo_df)
-            diagnostics.backend_info_panel(qdf, sdf, demo_df)
-            diagnostics.last_query_panel()
+            diagnostics.render_diagnostics_tabs(qdf, sdf, demo_df)
 
         # Controls
         question_codes = controls.question_picker(qdf)  # -> List[str] (codes)
@@ -110,17 +110,17 @@ def run() -> None:
             st.markdown(
                 """
                 <style>
-                  .menu1-runsearch button {
+                  .menu1-runsearch .stButton > button {
                     background-color: #e03131 !important;
                     color: #ffffff !important;
                     border: 1px solid #c92a2a !important;
                     font-weight: 600 !important;
                   }
-                  .menu1-runsearch button:hover {
+                  .menu1-runsearch .stButton > button:hover {
                     background-color: #c92a2a !important;
                     border-color: #a61e1e !important;
                   }
-                  .menu1-runsearch button:disabled {
+                  .menu1-runsearch .stButton > button:disabled {
                     opacity: 0.50 !important;
                     filter: saturate(0.85);
                     color: #ffffff !important;
@@ -132,8 +132,9 @@ def run() -> None:
             )
 
             can_search = controls.search_button_enabled(question_codes, years)
+
             st.markdown('<div class="menu1-runsearch">', unsafe_allow_html=True)
-            run_clicked = st.button("Search", key="menu1_run_query", disabled=not can_search)
+            run_clicked = st.button("Search the survey results", key="menu1_run_query", disabled=not can_search)
             st.markdown('</div>', unsafe_allow_html=True)
 
             if run_clicked:
@@ -196,8 +197,9 @@ def run() -> None:
                 )
 
         with colB:
-            if st.button("Reset all parameters", key="menu1_reset_all"):
+            if st.button("Reset all parameters"):
                 state.reset_menu1_state()
+                # st.rerun() is preferred in newer Streamlit versions:
                 try:
                     st.rerun()
                 except Exception:
