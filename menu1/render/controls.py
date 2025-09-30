@@ -1,6 +1,6 @@
 # menu1/render/controls.py
 from __future__ import annotations
-from typing import List, Optional, Set
+from typing import List, Optional
 import re
 import pandas as pd
 import streamlit as st
@@ -19,9 +19,7 @@ K_HITS            = "menu1_hits"                # Search hits (list[dict])
 K_FIND_HITS_BTN   = "menu1_find_hits"           # Button key
 K_SEARCH_DONE     = "menu1_search_done"         # Bool: did search run?
 K_LAST_QUERY      = "menu1_last_search_query"   # Last query (string)
-
-# Legacy (no longer used for persistence; kept for compatibility only)
-K_HITS_SELECTED   = "menu1_hit_codes_selected"
+K_HITS_TO_SHOW    = "menu1_hits_to_show"        # NEW: how many hits to render (paging)
 
 # Years
 DEFAULT_YEARS = [2024, 2022, 2020, 2019]
@@ -69,14 +67,15 @@ def question_picker(qdf: pd.DataFrame) -> List[str]:
     st.session_state.setdefault(K_HITS, [])
     st.session_state.setdefault(K_SEARCH_DONE, False)
     st.session_state.setdefault(K_LAST_QUERY, "")
+    st.session_state.setdefault(K_HITS_TO_SHOW, 20)  # default page size
 
     code_to_display = dict(zip(qdf["code"], qdf["display"]))
     display_to_code = {v: k for k, v in code_to_display.items()}
 
-    # Step 1
+    # ---------- Step 1 ----------
     st.markdown('<div class="field-label">Step 1: Pick up to 5 survey questions:</div>', unsafe_allow_html=True)
 
-    # Indented area for the two sub-options
+    # Indented block for the two sub-options (subtitle+multiselect, keyword search)
     col_spacer, col_main = st.columns([0.08, 0.92])
     with col_main:
         # Subtitle + multiselect
@@ -115,7 +114,7 @@ def question_picker(qdf: pd.DataFrame) -> List[str]:
             placeholder='Type keywords like “career advancement”, “harassment”, “recognition”…',
         )
 
-        # ⬇️ Button directly under the text box (as requested; no styling change)
+        # Button directly under the text box (no styling change)
         if st.button("Search the questionnaire", key=K_FIND_HITS_BTN):
             q = (query or "").strip()
             if not q:
@@ -126,6 +125,8 @@ def question_picker(qdf: pd.DataFrame) -> List[str]:
                 st.session_state[K_LAST_QUERY] = q
                 st.session_state[K_HITS] = hits_df[["code", "text", "display", "score"]].to_dict(orient="records") \
                                            if isinstance(hits_df, pd.DataFrame) and not hits_df.empty else []
+                # reset paging each time a new search runs
+                st.session_state[K_HITS_TO_SHOW] = 20
 
         # Results list
         hits = st.session_state.get(K_HITS, [])
@@ -139,15 +140,26 @@ def question_picker(qdf: pd.DataFrame) -> List[str]:
                     'or search by a question code like “Q01”.'
                 )
             else:
-                st.write(f"Top {len(hits)} matches meeting the quality threshold:")
-                # Render checkboxes for hits; rely ONLY on per-code checkbox keys (so reset works)
-                for rec in hits:
+                total = len(hits)
+                to_show = int(st.session_state.get(K_HITS_TO_SHOW, 20)) or 20
+                to_show = max(1, min(to_show, total))
+
+                st.write(f"Top {total} matches meeting the quality threshold:")
+
+                # Render checkboxes for the current page only
+                visible_hits = hits[:to_show]
+                for rec in visible_hits:
                     code = rec["code"]; text = rec["text"]
-                    key = f"kwhit_{code}"  # matches state.HIT_PREFIX
-                    # default checked if already chosen via multiselect
+                    key = f"kwhit_{code}"  # should match your reset HIT_PREFIX pattern
                     default_checked = code in [display_to_code.get(d) for d in st.session_state.get(K_MULTI_QUESTIONS, [])]
                     st.session_state.setdefault(key, default_checked)
                     st.checkbox(f"{code} — {text}", key=key)
+
+                # Show more button when there are more results beyond current slice
+                if total > to_show:
+                    if st.button("Show more results", key="menu1_show_more_hits"):
+                        st.session_state[K_HITS_TO_SHOW] = min(total, to_show + 20)
+                        # re-render happens naturally on next run
 
     # Merge selections (multiselect first, then currently checked hits), cap 5
     combined_order: List[str] = []
@@ -164,7 +176,7 @@ def question_picker(qdf: pd.DataFrame) -> List[str]:
         st.warning("Limit is 5 questions; extra selections were ignored.")
     st.session_state[K_SELECTED_CODES] = combined_order
 
-    # Not indented: Selected questions (quick unselect)
+    # ---------- Selected list with quick unselect (NOT indented) ----------
     if st.session_state[K_SELECTED_CODES]:
         st.markdown('<div class="field-label">Selected questions:</div>', unsafe_allow_html=True)
         updated = list(st.session_state[K_SELECTED_CODES])
@@ -232,7 +244,7 @@ def demographic_picker(demo_df: pd.DataFrame):
         if sub_selection == "":
             sub_selection = None
 
-    # Resolve demcodes (mirrors earlier helper)
+    # Resolve demcodes
     if not demo_selection or demo_selection == "All respondents":
         return demo_selection, sub_selection, [None], {None: "All respondents"}, False
 
@@ -242,7 +254,13 @@ def demographic_picker(demo_df: pd.DataFrame):
             code_col = c
             break
 
-    df_cat = demo_df[demo_df[DEMO_CAT_COL] == demo_selection] if DEMO_CAT_COL in demo_df.columns else demo_df.copy()
+    df_cat = demo_df[demo_df[DEMOCODE_COL if False else "DEMCODE Category"] == demo_selection] if "DEMCODE Category" in demo_df.columns else demo_df.copy()
+    # The above line keeps compatibility; simpler explicit form:
+    if "DEMCODE Category" in demo_df.columns:
+        df_cat = demo_df[demo_df["DEMCODE Category"] == demo_selection]
+    else:
+        df_cat = demo_df.copy()
+
     if df_cat.empty:
         return demo_selection, sub_selection, [None], {None: "All respondents"}, False
 
@@ -256,7 +274,7 @@ def demographic_picker(demo_df: pd.DataFrame):
 
     if code_col and LABEL_COL in df_cat.columns:
         codes = df_cat[code_col].astype(str).tolist()
-        labels = df_cat[LABEL_COL].astype(str).tolist()
+        labels = df_cat[LABEL_COL].astype str().tolist()
         keep = [(c, l) for c, l in zip(codes, labels) if str(c).strip() != ""]
         codes = [c for c, _ in keep]
         disp_map = {c: l for c, l in keep}
