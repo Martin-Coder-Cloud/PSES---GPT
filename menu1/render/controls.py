@@ -7,14 +7,14 @@ Controls for Menu 1:
 - Demographic category & subgroup selector
 - Search button enablement helper
 
-Updates:
+Behavior:
   • Box 1: shows the first question's label (Q01 if present) as placeholder (not selected)
   • Box 2: "Search the questionnaire" button is ALWAYS visible
       - Clicking with empty input shows a warning (no Enter required)
-      - Clicking with text runs search, clears the input, keeps results
-  • Selecting any question (Box 1 or Box 2 hits) clears Box 2 input & results
+      - Clicking with text runs search, clears the input (results remain)
+  • Selecting any question (Box 1 or search results) clears Box 2 input & results
   • Bold "or" between boxes, aligned with subtitles
-  • Safe unselect flow to avoid mutating multiselect value after widget instantiation
+  • Avoids “cannot be modified after widget is instantiated” by clearing inputs via a pre-render flag
 """
 
 from __future__ import annotations
@@ -40,6 +40,7 @@ K_LAST_QUERY        = "menu1_last_search_query"     # str
 K_PENDING_REMOVE    = "menu1_pending_remove_from_multi"  # List[str] (display labels to remove next run)
 K_PREV_MULTI        = "menu1_prev_multi_snapshot"   # snapshot of Box 1 value for change detection
 K_EMPTY_WARN        = "menu1_empty_search_warn"     # bool: show “enter keywords” warning after click
+K_REQ_CLEAR_KW      = "menu1_request_clear_kw"      # bool: clear KW input before widget renders
 
 # Years
 DEFAULT_YEARS = [2024, 2022, 2020, 2019]
@@ -116,14 +117,20 @@ def question_picker(qdf: pd.DataFrame) -> List[str]:
     st.session_state.setdefault(K_PENDING_REMOVE, [])
     st.session_state.setdefault(K_PREV_MULTI, None)
     st.session_state.setdefault(K_EMPTY_WARN, False)
+    st.session_state.setdefault(K_REQ_CLEAR_KW, False)
 
-    # If the multiselect already exists and there are pending removals, apply them BEFORE rendering the widget
+    # If Box 1 has been created before and there are pending removals, apply them BEFORE rendering the widget
     if K_MULTI_QUESTIONS in st.session_state and st.session_state[K_PENDING_REMOVE]:
         current = st.session_state.get(K_MULTI_QUESTIONS, [])
         if isinstance(current, list):
             to_remove = set(st.session_state[K_PENDING_REMOVE])
             st.session_state[K_MULTI_QUESTIONS] = [d for d in current if d not in to_remove]
         st.session_state[K_PENDING_REMOVE] = []
+
+    # --- If requested, clear the keyword input BEFORE rendering the text_input (avoids APIException) ---
+    if st.session_state.get(K_REQ_CLEAR_KW, False):
+        st.session_state[K_KW_QUERY] = ""
+        st.session_state[K_REQ_CLEAR_KW] = False
 
     # Mappings
     code_to_text = dict(zip(qdf["code"], qdf["text"]))
@@ -177,10 +184,10 @@ def question_picker(qdf: pd.DataFrame) -> List[str]:
         st.session_state[K_PREV_MULTI] = list(current_multi)
     elif prev_multi != current_multi:
         # Clear search query/results when Box 1 changed
-        st.session_state[K_KW_QUERY] = ""
         st.session_state[K_LAST_QUERY] = ""
         st.session_state[K_HITS] = []
         st.session_state[K_EMPTY_WARN] = False
+        st.session_state[K_REQ_CLEAR_KW] = True  # clear input on next render
         st.session_state[K_PREV_MULTI] = list(current_multi)
 
     # ---------- "or" as a bold subtitle ----------
@@ -190,6 +197,7 @@ def question_picker(qdf: pd.DataFrame) -> List[str]:
     st.markdown('<div class="sub-title tight-gap">Search questionnaire by keywords or theme</div>', unsafe_allow_html=True)
 
     # Plain text input
+    # (value may be cleared above if K_REQ_CLEAR_KW was True)
     query = st.text_input(
         "Enter keywords",
         key=K_KW_QUERY,
@@ -197,25 +205,22 @@ def question_picker(qdf: pd.DataFrame) -> List[str]:
         placeholder='Type keywords like “career advancement”, “harassment”, “recognition”…',
     )
 
-    # Button is ALWAYS rendered; clicking with empty input shows warning
-    clicked = st.button("Search the questionnaire", key="menu1_do_kw_search")
-
-    if clicked:
-        q = (query or "").strip()
+    # Define on-click callback to avoid modifying the input value after widget instantiation
+    def _on_click_search():
+        q = (st.session_state.get(K_KW_QUERY, "") or "").strip()
         if not q:
             st.session_state[K_EMPTY_WARN] = True
-        else:
-            # Run search, clear the input, keep results
-            hits_df = _run_keyword_search(qdf, q, top_k=120)
-            st.session_state[K_LAST_QUERY] = q
-            st.session_state[K_HITS] = hits_df[["code", "text", "display", "score"]].to_dict(orient="records") \
-                                       if isinstance(hits_df, pd.DataFrame) and not hits_df.empty else []
-            st.session_state[K_KW_QUERY] = ""      # clear input after search
-            st.session_state[K_EMPTY_WARN] = False
-            try:
-                st.rerun()
-            except Exception:
-                st.experimental_rerun()
+            return
+        # Run search, keep results, clear input on next render
+        hits_df = _run_keyword_search(qdf, q, top_k=120)
+        st.session_state[K_LAST_QUERY] = q
+        st.session_state[K_HITS] = hits_df[["code", "text", "display", "score"]].to_dict(orient="records") \
+                                   if isinstance(hits_df, pd.DataFrame) and not hits_df.empty else []
+        st.session_state[K_EMPTY_WARN] = False
+        st.session_state[K_REQ_CLEAR_KW] = True  # request clearing input on the next render
+
+    # Button is ALWAYS rendered; empty click shows warning inside the callback
+    st.button("Search the questionnaire", key="menu1_do_kw_search", on_click=_on_click_search)
 
     # Show empty-search warning if needed
     if st.session_state.get(K_EMPTY_WARN, False):
@@ -258,16 +263,12 @@ def question_picker(qdf: pd.DataFrame) -> List[str]:
         st.warning("Limit is 5 questions; extra selections were ignored.")
     st.session_state[K_SELECTED_CODES] = combined_order
 
-    # If any hit got selected, clear search results & input for the next query
+    # If any hit got selected, clear search results & input (via flag) for the next query
     if selected_from_hits:
         st.session_state[K_HITS] = []
         st.session_state[K_LAST_QUERY] = ""
-        st.session_state[K_KW_QUERY] = ""
         st.session_state[K_EMPTY_WARN] = False
-        try:
-            st.rerun()
-        except Exception:
-            st.experimental_rerun()
+        st.session_state[K_REQ_CLEAR_KW] = True  # clear input before next render
 
     return st.session_state[K_SELECTED_CODES]
 
