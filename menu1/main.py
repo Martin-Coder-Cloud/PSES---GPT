@@ -1,144 +1,261 @@
-# menu1/main.py
+# app/menu1/main.py
 from __future__ import annotations
+
+import time
+from typing import Dict, List, Optional
+
+import pandas as pd
 import streamlit as st
 
-# Layout lives under menu1/render/layout.py
-from menu1.render.layout import centered_page, banner, title, toggles, instructions
-
-# Constants live under menu1/constants.py
-from menu1.constants import PAGE_TITLE, CENTER_COLUMNS, SOURCE_URL, SOURCE_TITLE
-
-# These are root-level modules in your project
-from state import (
-    set_defaults,
-    reset_menu1_state,
-    set_last_active_menu,
-    has_results,
-    get_results,
-    stash_results,  # keep if your search flow uses it
+# Local modules
+from .constants import (
+    PAGE_TITLE,          # kept for parity with your imports (not used here)
+    CENTER_COLUMNS,
+    SOURCE_URL,
+    SOURCE_TITLE,
 )
-from metadata import load_questions, load_demographics
+from . import state
+from .metadata import load_questions, load_scales, load_demographics
+from .render import layout, controls, diagnostics, results
+from .queries import fetch_per_question, normalize_results
+from .formatters import drop_suppressed, scale_pairs, format_display, detect_metric
+from .ai import build_overall_prompt, build_per_q_prompt, call_openai_json  # direct imports
 
-# Controls & results under menu1/render/
-from menu1.render import controls
-from menu1.render import results as menu1_results
 
-# Optional helper (safe if missing)
-try:
-    from menu1.ai import do_menu1_search  # expected: (question_codes, years, demcodes) -> any
-except Exception:
-    do_menu1_search = None  # type: ignore
-
-MENU_KEY = "menu1"
-
-def _inject_primary_search_button_css() -> None:
+def _build_summary_pivot(
+    per_q_disp: Dict[str, pd.DataFrame],
+    per_q_metric_col: Dict[str, str],
+    years: List[int],
+    demo_selection: Optional[str],
+    sub_selection: Optional[str],
+) -> pd.DataFrame:
     """
-    Style ONLY the 'Search the survey results' button via a tightly-scoped wrapper.
-    Other buttons remain unchanged.
+    Create the Summary tabulation:
+      - Row index: Question code only (or QuestionÃ—Demographic if a category is selected without a specific subgroup)
+      - Columns: selected years
+      - Values: detected metric per question (mean across demo rows when needed)
     """
+    if not per_q_disp:
+        return pd.DataFrame()
+
+    long_rows = []
+    for qcode, df_disp in per_q_disp.items():
+        metric_col = per_q_metric_col.get(qcode)
+        if not metric_col or metric_col not in df_disp.columns:
+            continue
+
+        t = df_disp.copy()
+        t["QuestionLabel"] = qcode  # code only
+        t["Year"] = pd.to_numeric(t["Year"], errors="coerce").astype("Int64")
+        if "Demographic" not in t.columns:
+            t["Demographic"] = None
+
+        t = t.rename(columns={metric_col: "Value"})
+        long_rows.append(t[["QuestionLabel", "Demographic", "Year", "Value"]])
+
+    if not long_rows:
+        return pd.DataFrame()
+
+    long_df = pd.concat(long_rows, ignore_index=True)
+
+    # If a demographic category is selected (and no single subgroup), preserve the demo rows;
+    # otherwise, index only by question code.
+    if (demo_selection is not None) and (demo_selection != "All respondents") and (sub_selection is None) and long_df["Demographic"].notna().any():
+        idx_cols = ["QuestionLabel", "Demographic"]
+    else:
+        idx_cols = ["QuestionLabel"]
+
+    pivot = long_df.pivot_table(index=idx_cols, columns="Year", values="Value", aggfunc="mean")
+    pivot = pivot.reindex(years, axis=1)  # ensure column order matches selected years
+    return pivot
+
+
+def _clear_keyword_search_state() -> None:
+    """Remove all keys related to the keyword search so no stale warnings remain."""
+    for k in [
+        "menu1_hits",
+        "menu1_search_done",
+        "menu1_last_search_query",
+        "menu1_kw_query",
+    ]:
+        st.session_state.pop(k, None)
+    # Clear dynamic checkbox keys from previous hits and selections
+    for k in list(st.session_state.keys()):
+        if k.startswith("kwhit_") or k.startswith("sel_"):
+            st.session_state.pop(k, None)
+
+
+def run() -> None:
+    # NOTE: st.set_page_config() is intentionally NOT called here
+    # to avoid double-calling it (root main.py calls it once).
+
+    # Scoped CSS: ONLY the main Search button is red/white. All others use your global/default style.
     st.markdown(
         """
         <style>
-          /* Only the button inside this specific wrapper gets the red/white style */
-          #pses-primary-search-btn button {
-            background: #d90429 !important;       /* red */
-            color: #ffffff !important;            /* white text */
-            border: 1px solid #d90429 !important; /* red border */
+          .action-row { margin-top: .25rem; margin-bottom: .35rem; }
+
+          /* Solid red button for the main run button only */
+          #menu1-run-btn button {
+            background-color: #e03131 !important;
+            color: #ffffff !important;
+            border: 1px solid #c92a2a !important;
+            font-weight: 700 !important;
           }
-          #pses-primary-search-btn button:hover {
-            filter: brightness(0.92);
+          #menu1-run-btn button:hover {
+            background-color: #c92a2a !important;
+            border-color: #a61e1e !important;
           }
+          #menu1-run-btn button:disabled {
+            opacity: 0.50 !important;
+            filter: saturate(0.85);
+            color: #ffffff !important;
+            background-color: #e03131 !important;
+          }
+
+          /* Ensure the reset button aligns left and uses default style */
+          #menu1-reset-btn { text-align: left; }
         </style>
         """,
-        unsafe_allow_html=True,
+        unsafe_allow_html=True
     )
 
-def _render_menu1() -> None:
-    # --- Page chrome (signature takes no args) ---
-    centered_page()
-    banner()
-    title(PAGE_TITLE)
-    toggles()
-    instructions()
+    left, center, right = layout.centered_page(CENTER_COLUMNS)
+    with center:
+        # Header
+        layout.banner()
+        layout.title("PSES Explorer Search")
+        ai_on, show_diag = layout.toggles()
+        layout.instructions()
 
-    # --- Init & mark active ---
-    set_defaults()
-    set_last_active_menu(MENU_KEY)
+        # Reset when arriving fresh from another menu
+        if state.get_last_active_menu() != "menu1":
+            state.reset_menu1_state()
+            _clear_keyword_search_state()  # also clear keyword UI state on first arrival
+        state.set_last_active_menu("menu1")
+        state.set_defaults()  # idempotent
 
-    # --- Data for controls ---
-    qdf = load_questions()        # expects columns: code, text, display
-    demo_df = load_demographics()
+        # Metadata (cached)
+        qdf = load_questions()
+        sdf = load_scales()
+        demo_df = load_demographics()
 
-    # --- Step 1 / 2 / 3 (behavior unchanged; handled by controls.py) ---
-    question_codes = controls.question_picker(qdf)     # ordered list[str], max 5
-    years         = controls.year_picker()             # list[int]
-    demo_selection, sub_selection, demcodes, disp_map, category_in_play = controls.demographic_picker(demo_df)
+        # Diagnostics (tabs)
+        if show_diag:
+            diagnostics.render_diagnostics_tabs(qdf, sdf, demo_df)
 
-    # --- Action row: Search + Clear (left-aligned, same row) ---
-    _inject_primary_search_button_css()
+        # Controls
+        question_codes = controls.question_picker(qdf)  # -> List[str] (codes)
+        years = controls.year_picker()                  # -> List[int]
+        demo_selection, sub_selection, demcodes, disp_map, category_in_play = controls.demographic_picker(demo_df)
 
-    can_search = controls.search_button_enabled(question_codes, years)
+        # Action row: Search / Reset (side-by-side, aligned left)
+        st.markdown("<div class='action-row'>", unsafe_allow_html=True)
+        colA, colB = st.columns([1, 1], gap="small")
 
-    # Two narrow columns + a wide spacer keeps both buttons left-aligned (not centered)
-    c1, c2, _spacer = st.columns([1, 1, 8])
+        with colA:
+            can_search = controls.search_button_enabled(question_codes, years)
+            st.markdown("<div id='menu1-run-btn' style='text-align:left;'>", unsafe_allow_html=True)
+            run_clicked = st.button("Search the survey results", key="menu1_run_query", disabled=not can_search)
+            st.markdown("</div>", unsafe_allow_html=True)
 
-    with c1:
-        # Wrap ONLY this button so the scoped CSS applies to it (and nothing else)
-        st.markdown('<div id="pses-primary-search-btn">', unsafe_allow_html=True)
-        search_clicked = st.button("Search the survey results", key="menu1_run_search")
+            if run_clicked:
+                t0 = time.time()
+                per_q_disp: Dict[str, pd.DataFrame] = {}
+                per_q_metric_col: Dict[str, str] = {}
+                per_q_metric_label: Dict[str, str] = {}
+
+                # Build per-question display tables
+                for qcode in question_codes:
+                    df_all = fetch_per_question(qcode, years, demcodes)
+                    if df_all is None or df_all.empty:
+                        continue
+
+                    df_all = normalize_results(df_all)
+                    df_all = drop_suppressed(df_all)
+
+                    spairs = scale_pairs(sdf, qcode)
+                    df_disp = format_display(
+                        df_slice=df_all,
+                        dem_disp_map=disp_map,
+                        category_in_play=category_in_play,
+                        scale_pairs=spairs,
+                    )
+                    if df_disp.empty:
+                        continue
+
+                    det = detect_metric(df_disp, spairs)
+                    per_q_disp[qcode] = df_disp
+                    per_q_metric_col[qcode] = det["metric_col"]
+                    per_q_metric_label[qcode] = det["metric_label"]
+
+                # Build pivot & stash results for centered rendering
+                if per_q_disp:
+                    pivot = _build_summary_pivot(
+                        per_q_disp=per_q_disp,
+                        per_q_metric_col=per_q_metric_col,
+                        years=years,
+                        demo_selection=demo_selection,
+                        sub_selection=sub_selection,
+                    )
+                    code_to_text = dict(zip(qdf["code"], qdf["text"]))
+                    state.stash_results({
+                        "per_q_disp": per_q_disp,
+                        "per_q_metric_col": per_q_metric_col,
+                        "per_q_metric_label": per_q_metric_label,
+                        "pivot": pivot,
+                        "tab_labels": [qc for qc in question_codes if qc in per_q_disp],
+                        "years": years,
+                        "demo_selection": demo_selection,
+                        "sub_selection": sub_selection,
+                        "code_to_text": code_to_text,
+                    })
+
+                # Mark diagnostics timing
+                diagnostics.mark_last_query(
+                    started_ts=t0,
+                    finished_ts=time.time(),
+                    extra={"notes": "Menu 1 query run"},
+                )
+
+        with colB:
+            st.markdown("<div id='menu1-reset-btn'>", unsafe_allow_html=True)
+            if st.button("Reset all parameters", key="menu1_reset_all"):
+                # Reset core menu state
+                state.reset_menu1_state()
+                # Also clear keyword-search UI state so no stale "No questions matchedâ€¦" persists
+                _clear_keyword_search_state()
+                # Clear AI caches (to prevent reruns from showing stale narratives)
+                st.session_state.pop("menu1_ai_cache", None)
+                st.session_state.pop("menu1_ai_narr_per_q", None)
+                st.session_state.pop("menu1_ai_narr_overall", None)
+                # Rerun
+                try:
+                    st.rerun()
+                except Exception:
+                    st.experimental_rerun()
+            st.markdown("</div>", unsafe_allow_html=True)
+
         st.markdown("</div>", unsafe_allow_html=True)
 
-    with c2:
-        reset_clicked = st.button("Clear parameters", key="menu1_clear_params")
+        # Results (center area)
+        if state.has_results():
+            payload = state.get_results()
+            results.tabs_summary_and_per_q(
+                payload=payload,
+                ai_on=ai_on,
+                build_overall_prompt=build_overall_prompt,  # pass directly
+                build_per_q_prompt=build_per_q_prompt,      # pass directly
+                call_openai_json=call_openai_json,          # pass directly
+                source_url=SOURCE_URL,
+                source_title=SOURCE_TITLE,
+            )
 
-    # Enforce enablement (unchanged rule)
-    if search_clicked and not can_search:
-        st.warning("Please select at least one question and at least one year before searching.")
-        search_clicked = False
-
-    # --- Actions (plug your existing logic here; nothing else changed) ---
-    if search_clicked:
-        # If you expose a helper, call it; otherwise keep your existing flow.
-        if callable(do_menu1_search):
-            try:
-                data = do_menu1_search(question_codes, years, demcodes)  # type: ignore
-                if data is not None:
-                    stash_results(data)
-            except Exception as e:
-                st.error(f"Search failed: {type(e).__name__}: {e}")
-        # If your app already performs the search elsewhere, leave as-is.
-
-    if reset_clicked:
-        # Fully reset Menu 1 UI/state, including warnings like "no matches"
-        reset_menu1_state()
-        # Immediate refresh so the cleared UI shows right away
-        try:
-            st.rerun()              # Streamlit ≥ 1.30
-        except Exception:
-            st.experimental_rerun() # Back-compat
-
-    # --- Results (unchanged) ---
-    if has_results():
-        menu1_results.render(
-            get_results(),
-            years,
-            demcodes,
-            disp_map,
-            category_in_play,
-            source_title=SOURCE_TITLE,
-            source_url=SOURCE_URL,
-        )
-
-def run_menu1() -> None:
-    """Public entrypoint expected by the app (restored)."""
-    try:
-        _render_menu1()
-    except Exception as e:
-        st.error(f"Menu 1 is unavailable: {type(e).__name__}: {e}")
-
-# Optional: allow running this module directly
-def main():
-    run_menu1()
 
 if __name__ == "__main__":
-    main()
+    run()
+
+# --- keep this at the end of menu1/main.py ---
+def run_menu1():
+    # backward-compat alias for older loaders that expect run_menu1
+    return run()
