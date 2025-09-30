@@ -1,4 +1,4 @@
-# app/menu1/main.py
+# menu1/main.py
 from __future__ import annotations
 
 import time
@@ -7,9 +7,9 @@ from typing import Dict, List, Optional
 import pandas as pd
 import streamlit as st
 
-# Local modules
+# Local modules (relative to the menu1 package)
 from .constants import (
-    PAGE_TITLE,          # kept for parity with your imports (not used here)
+    PAGE_TITLE,          # kept for parity with your imports (not used directly here)
     CENTER_COLUMNS,
     SOURCE_URL,
     SOURCE_TITLE,
@@ -90,27 +90,29 @@ def run() -> None:
     # to avoid double-calling it (root main.py calls it once).
 
     # Scoped CSS: ONLY the main Search button is red/white. All others use your global/default style.
+    # Use very high specificity so hosted themes cannot override it.
     st.markdown(
         """
         <style>
           .action-row { margin-top: .25rem; margin-bottom: .35rem; }
 
-          /* Solid red button for the main run button only (scoped wrapper) */
-          #menu1-run-btn button {
-            background-color: #e03131 !important;
-            color: #ffffff !important;
-            border: 1px solid #c92a2a !important;
+          /* Solid red for ONLY the Search button inside #menu1-run-btn */
+          [data-testid="stAppViewContainer"] .block-container #menu1-run-btn .stButton > button {
+            background-color: #e03131 !important;  /* red */
+            color: #ffffff !important;             /* white text */
+            border: 1px solid #c92a2a !important;  /* red border */
             font-weight: 700 !important;
           }
-          #menu1-run-btn button:hover {
+          [data-testid="stAppViewContainer"] .block-container #menu1-run-btn .stButton > button:hover {
             background-color: #c92a2a !important;
             border-color: #a61e1e !important;
           }
-          #menu1-run-btn button:disabled {
+          [data-testid="stAppViewContainer"] .block-container #menu1-run-btn .stButton > button:disabled {
             opacity: 0.50 !important;
             filter: saturate(0.85);
             color: #ffffff !important;
             background-color: #e03131 !important;
+            border-color: #c92a2a !important;
           }
 
           /* Keep the reset/clear button left-aligned; use default theme */
@@ -220,7 +222,7 @@ def run() -> None:
 
         with colB:
             st.markdown("<div id='menu1-reset-btn'>", unsafe_allow_html=True)
-            # Label changed per your UX (“Clear parameters” beside Search)
+            # Label per your UX spec (“Clear parameters” beside Search)
             if st.button("Clear parameters", key="menu1_reset_all"):
                 # Reset core menu state
                 state.reset_menu1_state()
@@ -256,7 +258,7 @@ def run() -> None:
 if __name__ == "__main__":
     run()
 
-# --- keep this at the end of app/menu1/main.py ---
+# --- keep this at the end of menu1/main.py ---
 def run_menu1():
     # backward-compat alias for older loaders that expect run_menu1
     return run()
