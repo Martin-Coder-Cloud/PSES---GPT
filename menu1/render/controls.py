@@ -322,7 +322,7 @@ def _resolve_demcodes(demo_df: pd.DataFrame, category_label: str, subgroup_label
 
     if code_col and LABEL_COL in df_cat.columns:
         codes = df_cat[code_col].astype(str).tolist()
-        labels = df_cat[LABEL_COL].astype str().tolist()
+        labels = df_cat[LABEL_COL].astype(str).tolist()
         keep = [(c, l) for c, l in zip(codes, labels) if str(c).strip() != ""]
         codes = [c for c, _ in keep]
         disp_map = {c: l for c, l in keep}
