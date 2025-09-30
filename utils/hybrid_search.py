@@ -2,18 +2,18 @@
 # -------------------------------------------------------------------------
 # Lexical-first search with semantic backfill (term-agnostic)
 # Policy:
-#   1) Return ALL lexical hits (any stem OR 4-gram overlap) with a score floor
-#      so they pass the global threshold (> min_score).
+#   1) Return ALL lexical hits (any stem-overlap OR informative 4-gram Jaccard).
+#      Lexical hits get a floor score so they pass (> min_score) without exception.
 #   2) ONLY if lexical hits < 5, add ALL semantic hits meeting a high cosine
-#      threshold (and > min_score). Dedupe by code. Rank by score desc.
+#      threshold AND a tiny generic text anchor. Dedupe by code. Rank by score.
 # Notes:
-#   - Generic morphology: lightweight stemmer + char 4-grams (no hardcoded word lists)
+#   - Morphology: lightweight stemmer + IDF-filtered char-4-gram Jaccard (no dictionaries)
 #   - Optional semantic: sentence-transformers if available; otherwise lexical-only
 #   - Operators: +include / -exclude (substring on normalized display+text)
 # -------------------------------------------------------------------------
 
 from __future__ import annotations
-from typing import List, Tuple, Optional
+from typing import List, Tuple, Optional, Dict, Set
 import hashlib
 import os
 import re
@@ -85,10 +85,10 @@ def _parse_req_exc(raw_q: str) -> Tuple[str, List[str], List[str]]:
     return " ".join(kept).strip(), inc, exc
 
 # -----------------------------
-# Semantic embedding cache
+# Embedding cache
 # -----------------------------
-_EMBED_CACHE = {}
-_TXT_CACHE = {}
+_EMBED_CACHE: Dict[str, "np.ndarray"] = {}
+_TXT_CACHE: Dict[str, List[str]] = {}
 
 def _index_key(texts: List[str]) -> str:
     h = hashlib.md5()
@@ -119,6 +119,50 @@ def _cosine_sim(vecA, matB):  # both normalized
     return (matB @ vecA)
 
 # -----------------------------
+# IDF for 4-grams (to ignore ultra-common grams)
+# -----------------------------
+_GRAM_DF: Dict[str, int] = {}
+_GRAM_INFORMATIVE: Set[str] = set()
+_GRAM_READY: bool = False
+
+def _build_gram_df(texts: List[str]) -> None:
+    global _GRAM_DF, _GRAM_INFORMATIVE, _GRAM_READY
+    if _GRAM_READY:  # already built for this corpus
+        return
+    df: Dict[str, int] = {}
+    for txt in texts:
+        grams = set()
+        toks = _stems(_tokens(txt))
+        for t in toks:
+            grams.update(_char4(t))
+        for g in grams:
+            df[g] = df.get(g, 0) + 1
+    # mark informative grams = those NOT in the top 15% most frequent
+    if not df:
+        _GRAM_DF = {}
+        _GRAM_INFORMATIVE = set()
+        _GRAM_READY = True
+        return
+    counts = sorted(df.values(), reverse=True)
+    cutoff_index = int(0.15 * (len(counts)-1)) if len(counts) > 1 else 0
+    cutoff_val = counts[cutoff_index] if counts else 0
+    informative = {g for g, c in df.items() if c < cutoff_val}  # strictly less than the cutoff bucket
+    _GRAM_DF = df
+    _GRAM_INFORMATIVE = informative
+    _GRAM_READY = True
+
+def _jaccard_informative_grams(qgrams: Set[str], tgrams: Set[str]) -> float:
+    if not _GRAM_READY:
+        return 0.0
+    iq = qgrams & _GRAM_INFORMATIVE
+    it = tgrams & _GRAM_INFORMATIVE
+    if not iq and not it:
+        return 0.0
+    inter = len(iq & it)
+    union = len(iq | it)
+    return inter / union if union else 0.0
+
+# -----------------------------
 # Public entry point
 # -----------------------------
 def hybrid_question_search(
@@ -147,33 +191,39 @@ def hybrid_question_search(
     q_raw = str(query).strip()
     q_clean, includes, excludes = _parse_req_exc(q_raw)
 
+    # Build gram DF once per corpus (for informative gram filtering)
+    _build_gram_df(texts)
+
     # Query tokens, stems, and char-4 grams
     qtoks  = _uniq(_tokens(q_clean))
     qstems = _stems(qtoks)
+    qstem_set = set(qstems)
     qgrams = set(g for t in qstems for g in _char4(t))
 
     N = len(texts)
     lex_scores = [0.0] * N
     has_lex    = [False] * N
+    gram_jacc  = [0.0] * N
 
-    # --- Lexical evidence (any stem overlap OR any 4-gram overlap) ---
-    # Coverage on stems (matched stems / query stems), with a floor if any evidence exists.
-    qstem_set = set(qstems)
+    # --- Lexical evidence (stem overlap OR informative 4-gram Jaccard >= 0.30) ---
     for i, txt in enumerate(texts):
         toks   = _stems(_tokens(txt))
         stem_o = len(qstem_set & set(toks))
-        cov    = (stem_o / max(1, len(qstems))) if qstems else 0.0
+        stem_cov = (stem_o / max(1, len(qstems))) if qstems else 0.0
 
-        # char-4 gram overlap adds robust morphological/phrase linkage
+        # informative 4-grams Jaccard
         grams_i = set(g for t in toks for g in _char4(t))
-        gram_hit = bool(qgrams & grams_i)
+        jacc = _jaccard_informative_grams(qgrams, grams_i)
+        gram_jacc[i] = jacc
 
-        if stem_o > 0 or gram_hit:
-            # "good lexical match" without exception → ensure passes global min later
-            cov = max(cov, 0.50)  # lexical floor so > 0.40 overall
+        # lexical match definition
+        is_lex = (stem_o > 0) or (jacc >= 0.30)
+        if is_lex:
+            # ensure lexical matches pass global min later (floor 0.50)
+            stem_cov = max(stem_cov, 0.50)
             has_lex[i] = True
 
-        lex_scores[i] = min(1.0, max(0.0, cov))
+        lex_scores[i] = min(1.0, max(0.0, stem_cov))
 
     # --- Apply include/exclude (generic substrings on normalized display+text) ---
     def _contains_any(hay: str, needles: List[str]) -> bool:
@@ -218,17 +268,34 @@ def hybrid_question_search(
     else:
         sem = [0.0]*N
 
-    # High semantic threshold for eligibility (normalized cosine)
-    SEM_FLOOR = 0.78  # strict: includes only closely related items
+    # High semantic threshold (normalized cosine) and tiny generic anchor
+    SEM_FLOOR = 0.85  # strict: includes only closely related items
 
-    # Only consider items with NO lexical evidence
+    def _has_generic_anchor(i: int) -> bool:
+        # Require a minimal textual affinity even for semantic-only:
+        # either a shared stem-prefix >=4 between any query token and any doc token,
+        # OR a substring overlap of length >=5 in normalized text.
+        if not qstems:
+            return False
+        toks = _stems(_tokens(texts[i]))
+        for qs in qstems:
+            for ts in toks:
+                common = os.path.commonprefix([qs, ts])
+                if len(common) >= 4:
+                    return True
+        # substring overlap
+        hay = haystacks[i]
+        for qs in qstems:
+            if len(qs) >= 5 and qs in hay:
+                return True
+        return False
+
     backfill_rows = []
     for i in range(N):
         if has_lex[i]:
             continue
         s = sem[i]
-        if s >= SEM_FLOOR:
-            # light shaping so strong semantics dominate; still bounded [0,1]
+        if s >= SEM_FLOOR and _has_generic_anchor(i):
             s_shaped = min(1.0, max(0.0, s * s))  # compress mid, keep high strong
             backfill_rows.append((codes[i], texts[i], shows[i], s_shaped))
 
