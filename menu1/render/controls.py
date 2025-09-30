@@ -1,6 +1,6 @@
 # menu1/render/controls.py
 from __future__ import annotations
-from typing import List, Optional, Set
+from typing import List, Optional
 import re
 import pandas as pd
 import streamlit as st
@@ -19,9 +19,6 @@ K_HITS            = "menu1_hits"                # Search hits (list[dict])
 K_FIND_HITS_BTN   = "menu1_find_hits"           # Button key
 K_SEARCH_DONE     = "menu1_search_done"         # Bool: did search run?
 K_LAST_QUERY      = "menu1_last_search_query"   # Last query (string)
-
-# Legacy (no longer used for persistence; kept for compatibility only)
-K_HITS_SELECTED   = "menu1_hit_codes_selected"
 
 # Years
 DEFAULT_YEARS = [2024, 2022, 2020, 2019]
@@ -73,13 +70,12 @@ def question_picker(qdf: pd.DataFrame) -> List[str]:
     code_to_display = dict(zip(qdf["code"], qdf["display"]))
     display_to_code = {v: k for k, v in code_to_display.items()}
 
-    # Step 1
+    # ---------- Step 1 ----------
     st.markdown('<div class="field-label">Step 1: Pick up to 5 survey questions:</div>', unsafe_allow_html=True)
 
-    # Indented area for the two sub-options
-    col_spacer, col_main = st.columns([0.08, 0.92])
-    with col_main:
-        # Subtitle + multiselect
+    # A) Subtitle + multiselect (indented via spacer columns)
+    col_spacer_A, col_main_A = st.columns([0.08, 0.92])
+    with col_main_A:
         st.markdown(
             '<div style="margin: 8px 0 4px 0; font-weight:600; color:#222;">Choose a question from the list below</div>',
             unsafe_allow_html=True
@@ -93,8 +89,7 @@ def question_picker(qdf: pd.DataFrame) -> List[str]:
             key=K_MULTI_QUESTIONS,
             placeholder="",
         )
-
-        # "or"
+        # "or" label (kept indented)
         st.markdown(
             """
             <div style="
@@ -106,7 +101,10 @@ def question_picker(qdf: pd.DataFrame) -> List[str]:
             unsafe_allow_html=True
         )
 
-        # Keyword header + input
+    # B) Keyword header + (text input | button) on SAME ROW (still indented)
+    #    IMPORTANT: We create a NEW top-level columns row to avoid nesting.
+    col_spacer_B, col_kw, col_btn = st.columns([0.08, 0.72, 0.20])
+    with col_kw:
         st.markdown("<div class='field-label'>Search questionnaire by keywords or theme</div>", unsafe_allow_html=True)
         query = st.text_input(
             "Enter keywords (e.g., harassment, recognition, onboarding)",
@@ -114,8 +112,7 @@ def question_picker(qdf: pd.DataFrame) -> List[str]:
             label_visibility="collapsed",
             placeholder='Type keywords like “career advancement”, “harassment”, “recognition”…',
         )
-
-        # ⬇️ Button directly under the text box (as requested; no styling change)
+    with col_btn:
         if st.button("Search the questionnaire", key=K_FIND_HITS_BTN):
             q = (query or "").strip()
             if not q:
@@ -127,7 +124,9 @@ def question_picker(qdf: pd.DataFrame) -> List[str]:
                 st.session_state[K_HITS] = hits_df[["code", "text", "display", "score"]].to_dict(orient="records") \
                                            if isinstance(hits_df, pd.DataFrame) and not hits_df.empty else []
 
-        # Results list
+    # C) Results list (indented)
+    col_spacer_C, col_main_C = st.columns([0.08, 0.92])
+    with col_main_C:
         hits = st.session_state.get(K_HITS, [])
         if st.session_state.get(K_SEARCH_DONE, False):
             if not hits:
@@ -144,7 +143,6 @@ def question_picker(qdf: pd.DataFrame) -> List[str]:
                 for rec in hits:
                     code = rec["code"]; text = rec["text"]
                     key = f"kwhit_{code}"  # matches state.HIT_PREFIX
-                    # default checked if already chosen via multiselect
                     default_checked = code in [display_to_code.get(d) for d in st.session_state.get(K_MULTI_QUESTIONS, [])]
                     st.session_state.setdefault(key, default_checked)
                     st.checkbox(f"{code} — {text}", key=key)
@@ -164,7 +162,7 @@ def question_picker(qdf: pd.DataFrame) -> List[str]:
         st.warning("Limit is 5 questions; extra selections were ignored.")
     st.session_state[K_SELECTED_CODES] = combined_order
 
-    # Not indented: Selected questions (quick unselect)
+    # ---------- Selected list with quick unselect (NOT indented) ----------
     if st.session_state[K_SELECTED_CODES]:
         st.markdown('<div class="field-label">Selected questions:</div>', unsafe_allow_html=True)
         updated = list(st.session_state[K_SELECTED_CODES])
@@ -232,7 +230,7 @@ def demographic_picker(demo_df: pd.DataFrame):
         if sub_selection == "":
             sub_selection = None
 
-    # Resolve demcodes (mirrors earlier helper)
+    # Resolve demcodes
     if not demo_selection or demo_selection == "All respondents":
         return demo_selection, sub_selection, [None], {None: "All respondents"}, False
 
