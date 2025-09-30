@@ -2,29 +2,22 @@
 from __future__ import annotations
 import streamlit as st
 
-# Your layout lives under menu1/render/layout.py
+# --- Local modules (ALL prefixed with menu1.) ---
 from menu1.render.layout import centered_page, banner, title, toggles, instructions
-
-# Constants live under menu1/constants.py (fixes import path)
 from menu1.constants import PAGE_TITLE, CENTER_COLUMNS, SOURCE_URL, SOURCE_TITLE
-
-# State & data helpers (paths based on your existing project layout)
-from state import (
+from menu1.state import (
     set_defaults,
     reset_menu1_state,
     set_last_active_menu,
     has_results,
     get_results,
-    stash_results,  # kept for compatibility if you already use it in your search flow
+    stash_results,  # keep if your search flow uses it
 )
-
-from metadata import load_questions, load_demographics
-
-# Controls & results
+from menu1.metadata import load_questions, load_demographics
 from menu1.render import controls
 from menu1.render import results as menu1_results
 
-# Optional: call a helper if you expose one in menu1/ai.py. Safe if missing.
+# Optional helper (safe if missing)
 try:
     from menu1.ai import do_menu1_search  # expected: do_menu1_search(question_codes, years, demcodes) -> any
 except Exception:
@@ -35,7 +28,7 @@ MENU_KEY = "menu1"
 def _inject_primary_search_button_css() -> None:
     """
     Style ONLY the 'Search the survey results' button via a tightly-scoped wrapper.
-    Other buttons remain unaffected.
+    Other buttons remain unchanged.
     """
     st.markdown(
         """
@@ -70,7 +63,7 @@ def render_menu() -> None:
     qdf = load_questions()        # expects columns: code, text, display
     demo_df = load_demographics()
 
-    # --- Step 1 / 2 / 3 (handled by controls.py; unchanged behavior) ---
+    # --- Step 1 / 2 / 3 (handled by controls.py; behavior unchanged) ---
     question_codes = controls.question_picker(qdf)     # ordered list[str], max 5
     years         = controls.year_picker()             # list[int]
     demo_selection, sub_selection, demcodes, disp_map, category_in_play = controls.demographic_picker(demo_df)
@@ -80,7 +73,7 @@ def render_menu() -> None:
 
     can_search = controls.search_button_enabled(question_codes, years)
 
-    # Keep both buttons on the left: two narrow columns + a spacer to prevent centering
+    # Keep both buttons left: two narrow columns + a large spacer to prevent centering
     c1, c2, _spacer = st.columns([1, 1, 8])
 
     with c1:
@@ -92,14 +85,14 @@ def render_menu() -> None:
     with c2:
         reset_clicked = st.button("Clear parameters", key="menu1_clear_params")
 
-    # Enforce enablement (unchanged rule)
+    # Enforce enablement (unchanged)
     if search_clicked and not can_search:
         st.warning("Please select at least one question and at least one year before searching.")
         search_clicked = False
 
-    # --- Actions (no behavioral changes beyond where you already handle them) ---
+    # --- Actions (plug your existing logic here; nothing else changed) ---
     if search_clicked:
-        # If you expose a helper, we call it; otherwise your existing flow can remain elsewhere.
+        # If you expose a helper, call it; otherwise keep your existing flow.
         if callable(do_menu1_search):
             try:
                 data = do_menu1_search(question_codes, years, demcodes)  # type: ignore
@@ -107,18 +100,18 @@ def render_menu() -> None:
                     stash_results(data)
             except Exception as e:
                 st.error(f"Search failed: {type(e).__name__}: {e}")
-        # If your app already performs the search in another layer, leave as-is.
+        # If your app already performs the search elsewhere, leave as-is.
 
     if reset_clicked:
-        # Fully reset Menu 1 UI and state; also clears warnings like "no matches"
+        # Fully reset Menu 1 UI/state, including warnings like "no matches"
         reset_menu1_state()
         # Immediate refresh so the cleared UI shows right away
         try:
-            st.rerun()  # Streamlit >= 1.30
+            st.rerun()              # Streamlit ≥ 1.30
         except Exception:
-            st.experimental_rerun()
+            st.experimental_rerun() # Back-compat
 
-    # --- Results rendering (unchanged) ---
+    # --- Results (unchanged) ---
     if has_results():
         menu1_results.render(
             get_results(),
