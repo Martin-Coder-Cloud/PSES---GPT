@@ -19,7 +19,7 @@ K_HITS            = "menu1_hits"                # Search hits (list[dict])
 K_FIND_HITS_BTN   = "menu1_find_hits"           # Button key
 K_SEARCH_DONE     = "menu1_search_done"         # Bool: did search run?
 K_LAST_QUERY      = "menu1_last_search_query"   # Last query (string)
-K_HITS_TO_SHOW    = "menu1_hits_to_show"        # How many hits are currently rendered (paging)
+K_HITS_PAGE       = "menu1_hits_page"           # NEW: page index for hit list (0-based)
 
 # Years
 DEFAULT_YEARS = [2024, 2022, 2020, 2019]
@@ -27,6 +27,7 @@ K_SELECT_ALL_YEARS = "select_all_years"
 
 # Threshold
 MIN_SCORE = 0.40  # strictly greater than 0.40
+PAGE_SIZE = 10    # fixed page size (stable height)
 
 # ---- Helpers ----------------------------------------------------------------
 _word_re = re.compile(r"[a-z0-9']+")
@@ -67,7 +68,7 @@ def question_picker(qdf: pd.DataFrame) -> List[str]:
     st.session_state.setdefault(K_HITS, [])
     st.session_state.setdefault(K_SEARCH_DONE, False)
     st.session_state.setdefault(K_LAST_QUERY, "")
-    st.session_state.setdefault(K_HITS_TO_SHOW, 10)  # default page size (was 20)
+    st.session_state.setdefault(K_HITS_PAGE, 0)  # paging index
 
     code_to_display = dict(zip(qdf["code"], qdf["display"]))
     display_to_code = {v: k for k, v in code_to_display.items()}
@@ -126,7 +127,7 @@ def question_picker(qdf: pd.DataFrame) -> List[str]:
                 st.session_state[K_HITS] = hits_df[["code", "text", "display", "score"]].to_dict(orient="records") \
                                            if isinstance(hits_df, pd.DataFrame) and not hits_df.empty else []
                 # reset paging each time a new search runs
-                st.session_state[K_HITS_TO_SHOW] = 10  # was 20
+                st.session_state[K_HITS_PAGE] = 0
 
         # Results list
         hits = st.session_state.get(K_HITS, [])
@@ -141,24 +142,36 @@ def question_picker(qdf: pd.DataFrame) -> List[str]:
                 )
             else:
                 total = len(hits)
-                to_show = int(st.session_state.get(K_HITS_TO_SHOW, 10)) or 10
-                to_show = max(1, min(to_show, total))
+                page  = int(st.session_state.get(K_HITS_PAGE, 0)) or 0
+                max_page = max(0, (total - 1) // PAGE_SIZE)
+                page = max(0, min(page, max_page))
 
-                st.write(f"Top {total} matches meeting the quality threshold:")
+                start = page * PAGE_SIZE
+                end   = min(total, start + PAGE_SIZE)
+
+                st.write(f"Results {start + 1}–{end} of {total} matches meeting the quality threshold:")
 
                 # Render checkboxes for the current page only
-                visible_hits = hits[:to_show]
+                visible_hits = hits[start:end]
                 for rec in visible_hits:
                     code = rec["code"]; text = rec["text"]
-                    key = f"kwhit_{code}"  # should match your reset HIT_PREFIX pattern
+                    key = f"kwhit_{code}"  # must stay stable for persistence across pages
                     default_checked = code in [display_to_code.get(d) for d in st.session_state.get(K_MULTI_QUESTIONS, [])]
                     st.session_state.setdefault(key, default_checked)
                     st.checkbox(f"{code} — {text}", key=key)
 
-                # Show more button when there are more results beyond current slice
-                if total > to_show:
-                    if st.button("Show more results", key="menu1_show_more_hits"):
-                        st.session_state[K_HITS_TO_SHOW] = min(total, to_show + 10)  # was +20
+                # Prev/Next controls (no layout width changes)
+                cols_nav = st.columns(3)
+                with cols_nav[0]:
+                    disabled = (page <= 0)
+                    if st.button("Prev", disabled=disabled, key="menu1_hits_prev"):
+                        if page > 0:
+                            st.session_state[K_HITS_PAGE] = page - 1
+                with cols_nav[2]:
+                    disabled = (page >= max_page)
+                    if st.button("Next", disabled=disabled, key="menu1_hits_next"):
+                        if page < max_page:
+                            st.session_state[K_HITS_PAGE] = page + 1
 
     # Merge selections (multiselect first, then currently checked hits), cap 5
     combined_order: List[str] = []
@@ -253,7 +266,7 @@ def demographic_picker(demo_df: pd.DataFrame):
             code_col = c
             break
 
-    # Explicit, safe form (remove stray DEMOCODE_COL reference)
+    # Explicit, safe form
     if "DEMCODE Category" in demo_df.columns:
         df_cat = demo_df[demo_df["DEMCODE Category"] == demo_selection]
     else:
