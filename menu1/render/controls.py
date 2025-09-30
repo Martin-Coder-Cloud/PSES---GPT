@@ -120,13 +120,10 @@ def question_picker(qdf: pd.DataFrame) -> List[str]:
     # ---------- Step 1 ----------
     st.markdown('<div class="field-label">Step 1: Pick up to 5 survey questions:</div>', unsafe_allow_html=True)
 
-    # Single top-level column layout (no nested columns beyond one level):
-    #   col_spacer = left indent
-    #   col_main   = main content area
-    #   col_btn    = narrow column intended for the keyword search button (same row)
+    # Top-level columns (one level only): spacer (indent), main content, button column
     col_spacer, col_main, col_btn = st.columns([0.08, 0.72, 0.20])
 
-    # Subtitle + multiselect in the main column (indented)
+    # Subtitle + multiselect (indented, main column)
     with col_main:
         st.markdown(
             '<div style="margin: 8px 0 4px 0; font-weight:600; color:#222;">Choose a question from the list below</div>',
@@ -142,17 +139,7 @@ def question_picker(qdf: pd.DataFrame) -> List[str]:
             placeholder="",
         )
 
-    # Keyword header and input (left), with the search button (right) on the same row
-    with col_main:
-        st.markdown("<div class='field-label'>Search questionnaire by keywords or theme</div>", unsafe_allow_html=True)
-        query = st.text_input(
-            "Enter keywords (e.g., harassment, recognition, onboarding)",
-            key=K_KW_QUERY,
-            label_visibility="collapsed",
-            placeholder="Type keywords like “career advancement”, “harassment”, “recognition”…",
-        )
-    with col_btn:
-        # Keep the visual separation text "or" just above the search controls (still indented)
+        # Keep the "or" label above the search controls (indented)
         st.markdown(
             """
             <div style="
@@ -163,6 +150,18 @@ def question_picker(qdf: pd.DataFrame) -> List[str]:
             """,
             unsafe_allow_html=True
         )
+
+        # Keyword header + text input (left)
+        st.markdown("<div class='field-label'>Search questionnaire by keywords or theme</div>", unsafe_allow_html=True)
+        query = st.text_input(
+            "Enter keywords (e.g., harassment, recognition, onboarding)",
+            key=K_KW_QUERY,
+            label_visibility="collapsed",
+            placeholder="Type keywords like “career advancement”, “harassment”, “recognition”…",
+        )
+
+    # The existing "Search the questionnaire" button (right column, same row)
+    with col_btn:
         if st.button("Search the questionnaire", key=K_FIND_HITS_BTN):
             q = (query or "").strip()
             if not q:
@@ -191,7 +190,7 @@ def question_picker(qdf: pd.DataFrame) -> List[str]:
                 )
             else:
                 st.write(f"Top {len(hits)} matches meeting the quality threshold:")
-                # ✅ Render the checkbox list of hits (restored)
+                # Render the checkbox list of hits
                 for rec in hits:
                     code = rec["code"]
                     text = rec["text"]
@@ -205,10 +204,7 @@ def question_picker(qdf: pd.DataFrame) -> List[str]:
                         st.session_state[K_HITS_SELECTED] = [c for c in st.session_state[K_HITS_SELECTED] if c != code]
 
     # Merge selections (dropdown first, then hits), cap at 5
-    selected_from_multi: Set[str] = set(display_to_code.get(d) for d in st.session_state.get(K_MULTI_QUESTIONS, []))
-    selected_from_multi.discard(None)
     selected_from_hits: Set[str] = set(st.session_state.get(K_HITS_SELECTED, []))
-
     combined_order: List[str] = []
     for d in st.session_state.get(K_MULTI_QUESTIONS, []):
         c = display_to_code.get(d)
@@ -227,10 +223,10 @@ def question_picker(qdf: pd.DataFrame) -> List[str]:
         st.markdown('<div class="field-label">Selected questions:</div>', unsafe_allow_html=True)
         updated = list(st.session_state[K_SELECTED_CODES])
         cols_sel = st.columns(min(5, len(updated)))
-        code_to_display = dict(zip(qdf["code"], qdf["display"]))
+        code_to_display_map = dict(zip(qdf["code"], qdf["display"]))
         for idx, code in enumerate(list(updated)):
             with cols_sel[idx % len(cols_sel)]:
-                label = code_to_display.get(code, code)
+                label = code_to_display_map.get(code, code)
                 keep = st.checkbox(label, value=True, key=f"sel_{code}")
                 if not keep:
                     # remove from current selection
@@ -242,7 +238,7 @@ def question_picker(qdf: pd.DataFrame) -> List[str]:
                     if code in st.session_state[K_HITS_SELECTED]:
                         st.session_state[K_HITS_SELECTED] = [c for c in st.session_state[K_HITS_SELECTED] if c != code]
                     # remove from dropdown selected list
-                    disp = code_to_display.get(code)
+                    disp = code_to_display_map.get(code)
                     if disp:
                         st.session_state[K_MULTI_QUESTIONS] = [d for d in st.session_state[K_MULTI_QUESTIONS] if d != disp]
         if updated != st.session_state[K_SELECTED_CODES]:
