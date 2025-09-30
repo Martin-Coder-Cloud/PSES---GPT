@@ -69,7 +69,7 @@ def _dedupe_hits(df: pd.DataFrame) -> pd.DataFrame:
     out = out.sort_values("score", ascending=False)
     out = out.drop_duplicates(subset=["code"], keep="first")
     try:
-        out = out[out["score"] > MIN_SCORE]
+        out = out[out["score"] > MIN_SCORE]  # strictly greater than 0.40
     except Exception:
         pass
     return out
@@ -115,8 +115,8 @@ def question_picker(qdf: pd.DataFrame) -> List[str]:
 
     # ---------- 1) Dropdown multi-select ----------
     st.markdown('<div class="field-label">Pick up to 5 survey questions:</div>', unsafe_allow_html=True)
-    # Subtitle above the multiselect; placeholder inside the box is intentionally empty
-    st.markdown('<div style="margin: 2px 0 4px 0; font-weight:600; color:#222;">Choose a question from the list below</div>', unsafe_allow_html=True)
+    # Subtitle above the multiselect; increase top margin for better separation
+    st.markdown('<div style="margin: 8px 0 4px 0; font-weight:600; color:#222;">Choose a question from the list below</div>', unsafe_allow_html=True)
 
     all_displays = qdf["display"].tolist()
     st.multiselect(
@@ -132,7 +132,7 @@ def question_picker(qdf: pd.DataFrame) -> List[str]:
     # ---------- Divider: "or" ----------
     st.markdown("""
         <div style="
-            margin: .25rem 0 .25rem .5rem;
+            margin: .1rem 0 .1rem .5rem;
             font-size: 0.9rem; font-weight: 600;
             color: rgba(49,51,63,.8); font-family: inherit;
         ">or</div>
@@ -179,8 +179,6 @@ def question_picker(qdf: pd.DataFrame) -> List[str]:
             )
         else:
             st.write(f"Top {len(hits)} matches meeting the quality threshold:")
-    else:
-        st.info('Enter keywords and click "Search the questionnaire" to see matches.')
 
     # Multi-tick checkboxes for hits (do NOT clear on additional selections)
     selected_from_hits: Set[str] = set()
