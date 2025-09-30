@@ -124,54 +124,61 @@ def question_picker(qdf: pd.DataFrame) -> List[str]:
                 hits_df = _run_keyword_search(qdf, q, top_k=120)
                 st.session_state[K_SEARCH_DONE] = True
                 st.session_state[K_LAST_QUERY] = q
-                st.session_state[K_HITS] = hits_df[["code", "text", "display", "score"]].to_dict(orient="records") \
-                                           if isinstance(hits_df, pd.DataFrame) and not hits_df.empty else []
+                # always force a list (not None) to guarantee no-hits warning renders
+                if isinstance(hits_df, pd.DataFrame) and not hits_df.empty:
+                    st.session_state[K_HITS] = hits_df[["code", "text", "display", "score"]].to_dict(orient="records")
+                else:
+                    st.session_state[K_HITS] = []
+                    # immediate no-hits warning (belt and suspenders)
+                    st.warning(f'No questions matched “{q}”. Try broader/different keywords, split phrases, or a code like “Q01”.')
                 # reset paging each time a new search runs
                 st.session_state[K_HITS_PAGE] = 0
 
-    # Results list (render OUTSIDE col_main to avoid nested column limits)
+    # Results list (indented like Step 1 using a fresh top-level columns block)
     hits = st.session_state.get(K_HITS, [])
     if st.session_state.get(K_SEARCH_DONE, False):
-        if not hits:
-            q = (st.session_state.get(K_LAST_QUERY) or "").strip()
-            safe_q = q if q else "your search"
-            st.warning(
-                f'No questions matched “{safe_q}”. '
-                'Try broader/different keywords (e.g., synonyms), split phrases, '
-                'or search by a question code like “Q01”.'
-            )
-        else:
-            total = len(hits)
-            page  = int(st.session_state.get(K_HITS_PAGE, 0)) or 0
-            max_page = max(0, (total - 1) // PAGE_SIZE)
-            page = max(0, min(page, max_page))
+        col_spacer2, col_results = st.columns([0.08, 0.92])
+        with col_results:
+            if not hits:
+                q = (st.session_state.get(K_LAST_QUERY) or "").strip()
+                safe_q = q if q else "your search"
+                st.warning(
+                    f'No questions matched “{safe_q}”. '
+                    'Try broader/different keywords (e.g., synonyms), split phrases, '
+                    'or search by a question code like “Q01”.'
+                )
+            else:
+                total = len(hits)
+                page  = int(st.session_state.get(K_HITS_PAGE, 0)) or 0
+                max_page = max(0, (total - 1) // PAGE_SIZE)
+                page = max(0, min(page, max_page))
 
-            start = page * PAGE_SIZE
-            end   = min(total, start + PAGE_SIZE)
+                start = page * PAGE_SIZE
+                end   = min(total, start + PAGE_SIZE)
 
-            st.write(f"Results {start + 1}–{end} of {total} matches meeting the quality threshold:")
+                st.write(f"Results {start + 1}–{end} of {total} matches meeting the quality threshold:")
 
-            # Render checkboxes for the current page only
-            visible_hits = hits[start:end]
-            for rec in visible_hits:
-                code = rec["code"]; text = rec["text"]
-                key = f"kwhit_{code}"  # must stay stable for persistence across pages
-                default_checked = code in [display_to_code.get(d) for d in st.session_state.get(K_MULTI_QUESTIONS, [])]
-                st.session_state.setdefault(key, default_checked)
-                st.checkbox(f"{code} — {text}", key=key)
+                # Render checkboxes for the current page only
+                visible_hits = hits[start:end]
+                for rec in visible_hits:
+                    code = rec["code"]; text = rec["text"]
+                    key = f"kwhit_{code}"  # must stay stable for persistence across pages
+                    default_checked = code in [display_to_code.get(d) for d in st.session_state.get(K_MULTI_QUESTIONS, [])]
+                    st.session_state.setdefault(key, default_checked)
+                    st.checkbox(f"{code} — {text}", key=key)
 
-            # Prev/Next controls (now at root level, not inside another column)
-            cols_nav = st.columns(3)
-            with cols_nav[0]:
-                disabled = (page <= 0)
-                if st.button("Prev", disabled=disabled, key="menu1_hits_prev"):
-                    if page > 0:
-                        st.session_state[K_HITS_PAGE] = page - 1
-            with cols_nav[2]:
-                disabled = (page >= max_page)
-                if st.button("Next", disabled=disabled, key="menu1_hits_next"):
-                    if page < max_page:
-                        st.session_state[K_HITS_PAGE] = page + 1
+                # Prev/Next controls (indented with results)
+                cols_nav = st.columns(3)
+                with cols_nav[0]:
+                    disabled = (page <= 0)
+                    if st.button("Prev", disabled=disabled, key="menu1_hits_prev"):
+                        if page > 0:
+                            st.session_state[K_HITS_PAGE] = page - 1
+                with cols_nav[2]:
+                    disabled = (page >= max_page)
+                    if st.button("Next", disabled=disabled, key="menu1_hits_next"):
+                        if page < max_page:
+                            st.session_state[K_HITS_PAGE] = page + 1
 
     # Merge selections (multiselect first, then currently checked hits), cap 5
     combined_order: List[str] = []
