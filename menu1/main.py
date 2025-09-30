@@ -1,320 +1,227 @@
-# app/menu1/render/controls.py
-"""
-Controls for Menu 1:
-- Question picker: dropdown multi-select (authoritative) + keyword search (hybrid)
-- Selected list with quick unselect checkboxes
-- Years selector
-- Demographic category & subgroup selector
-- Search button enablement helper
-
-UI tweaks kept:
-  • Multiselect placeholder: "Choose a question from the list below"
-  • Search box header styled similarly
-  • "or" label for visual separation
-"""
-
+# app/menu1/main.py
 from __future__ import annotations
-from typing import Dict, List, Optional, Set
-import re
+
+import time
+from datetime import datetime
+from typing import Dict, List, Optional
+
 import pandas as pd
 import streamlit as st
 
-# Try to import the hybrid search; provide a robust fallback as well
-try:
-    from utils.hybrid_search import hybrid_question_search  # type: ignore
-except Exception:
-    hybrid_question_search = None  # type: ignore
+# Local modules
+from .constants import (
+    PAGE_TITLE,
+    CENTER_COLUMNS,
+    SOURCE_URL,
+    SOURCE_TITLE,
+)
+from . import state
+from .metadata import load_questions, load_scales, load_demographics
+from .render import layout, controls, diagnostics, results
+from .queries import fetch_per_question, normalize_results
+from .formatters import drop_suppressed, scale_pairs, format_display, detect_metric
+from .ai import build_overall_prompt, build_per_q_prompt, call_openai_json  # direct imports
 
-# -----------------------------
-# Session-state keys (Menu 1)
-# -----------------------------
-K_MULTI_QUESTIONS = "menu1_multi_questions"   # List[str] of "display" labels picked in the dropdown
-K_SELECTED_CODES  = "menu1_selected_codes"    # Ordered List[str] of codes (multi + hits merged)
-K_KW_QUERY        = "menu1_kw_query"          # str
-K_HITS            = "menu1_hits"              # List[{"code","text","display","score"}]
-K_FIND_HITS_BTN   = "menu1_find_hits"         # button key
-K_SEARCH_DONE     = "menu1_search_done"       # bool: did user click Search the questionnaire?
-K_LAST_QUERY      = "menu1_last_search_query" # str: what query was used last time
-K_HITS_SELECTED   = "menu1_hit_codes_selected"# List[str]: codes ticked from hits (persistent)
 
-# Years
-DEFAULT_YEARS = [2024, 2022, 2020, 2019]
-K_SELECT_ALL_YEARS = "select_all_years"
-
-# Threshold (fixed)
-MIN_SCORE = 0.40  # keep > 0.40 filter in both engines
-
-# -----------------------------------------------------------------------------
-// Internal regex/token helpers (fallbacks)
-# -----------------------------------------------------------------------------
-_word_re = re.compile(r"[a-z0-9']+")
-def _normalize(s: str) -> str: return re.sub(r"\s+", " ", s.lower()).strip()
-def _tokens(s: str) -> List[str]: return _word_re.findall(_normalize(s))
-
-# -----------------------------------------------------------------------------
-# Utilities for dedupe and wrapped call
-# -----------------------------------------------------------------------------
-def _dedupe_hits(df: pd.DataFrame) -> pd.DataFrame:
-    if not isinstance(df, pd.DataFrame) or df.empty:
-        return pd.DataFrame(columns=["code", "text", "display", "score"])
-    out = df.copy()
-    if "score" not in out.columns:
-        out["score"] = 0.0
-    out["code"] = out["code"].astype(str)
-    out = out.sort_values("score", ascending=False)
-    out = out.drop_duplicates(subset=["code"], keep="first")
-    try:
-        out = out[out["score"] > MIN_SCORE]
-    except Exception:
-        pass
-    return out
-
-def _run_keyword_search(qdf: pd.DataFrame, query: str, top_k: int = 120) -> pd.DataFrame:
+def _build_summary_pivot(
+    per_q_disp: Dict[str, pd.DataFrame],
+    per_q_metric_col: Dict[str, str],
+    years: List[int],
+    demo_selection: Optional[str],
+    sub_selection: Optional[str],
+) -> pd.DataFrame:
     """
-    Calls utils.hybrid_search.hybrid_question_search with fixed threshold.
+    Create the Summary tabulation:
+      - Row index: Question code only (or Question×Demographic if a category is selected without a specific subgroup)
+      - Columns: selected years
+      - Values: detected metric per question (mean across demo rows when needed)
     """
-    if callable(hybrid_question_search):
-        try:
-            hits_df = hybrid_question_search(qdf, query, top_k=top_k, min_score=MIN_SCORE)  # type: ignore
-            if isinstance(hits_df, pd.DataFrame) and not hits_df.empty:
-                return _dedupe_hits(hits_df).head(top_k)
-        except Exception:
-            pass
-    return pd.DataFrame(columns=["code", "text", "display", "score"])
+    if not per_q_disp:
+        return pd.DataFrame()
 
-# -----------------------------------------------------------------------------
-# Question picker (dropdown + keyword search) → returns List[str] (codes)
-# -----------------------------------------------------------------------------
-def question_picker(qdf: pd.DataFrame) -> List[str]:
-    """
-    UI:
-      1) Dropdown multi-select (authoritative, max 5) with custom placeholder
-      2) Keyword search section with persistent results + multi-tick checkboxes
-      3) "Selected questions" list with quick unselect checkboxes
+    long_rows = []
+    for qcode, df_disp in per_q_disp.items():
+        metric_col = per_q_metric_col.get(qcode)
+        if not metric_col or metric_col not in df_disp.columns:
+            continue
 
-    Returns ordered list of selected question codes (max 5).
-    """
-    # Ensure session defaults (initialize BEFORE widget, never assign after render)
-    st.session_state.setdefault(K_MULTI_QUESTIONS, [])
-    st.session_state.setdefault(K_SELECTED_CODES, [])
-    st.session_state.setdefault(K_KW_QUERY, "")
-    st.session_state.setdefault(K_HITS, [])
-    st.session_state.setdefault(K_SEARCH_DONE, False)
-    st.session_state.setdefault(K_LAST_QUERY, "")
-    st.session_state.setdefault(K_HITS_SELECTED, [])  # persist checked hits
+        t = df_disp.copy()
+        t["QuestionLabel"] = qcode  # code only per requirement
+        t["Year"] = pd.to_numeric(t["Year"], errors="coerce").astype("Int64")
+        if "Demographic" not in t.columns:
+            t["Demographic"] = None
 
-    # Mappings
-    code_to_text = dict(zip(qdf["code"], qdf["text"]))
-    code_to_display = dict(zip(qdf["code"], qdf["display"]))
-    display_to_code = {v: k for k, v in code_to_display.items()}
+        t = t.rename(columns={metric_col: "Value"})
+        long_rows.append(t[["QuestionLabel", "Demographic", "Year", "Value"]])
 
-    # ---------- 1) Dropdown multi-select ----------
-    st.markdown('<div class="field-label">Pick up to 5 survey questions:</div>', unsafe_allow_html=True)
-    all_displays = qdf["display"].tolist()
-    st.multiselect(
-        "Choose one or more from the official list",
-        all_displays,
-        max_selections=5,
-        label_visibility="collapsed",
-        key=K_MULTI_QUESTIONS,
-        placeholder="Choose a question from the list below",
-    )
-    selected_from_multi: Set[str] = set(display_to_code[d] for d in st.session_state[K_MULTI_QUESTIONS] if d in display_to_code)
+    if not long_rows:
+        return pd.DataFrame()
 
-    # ---------- Divider: "or" ----------
-    st.markdown("""
-        <div style="
-            margin: .25rem 0 .25rem .5rem;
-            font-size: 0.9rem; font-weight: 600;
-            color: rgba(49,51,63,.8); font-family: inherit;
-        ">or</div>
-    """, unsafe_allow_html=True)
+    long_df = pd.concat(long_rows, ignore_index=True)
 
-    # ---------- 2) Keyword search ----------
-    # Header styled modestly
-    st.markdown("<div class='field-label'>Search questionnaire by keywords or theme</div>", unsafe_allow_html=True)
-
-    # Search input + button (button always visible; disabled when empty)
-    c1, c2 = st.columns([3, 1])
-    with c1:
-        query = st.text_input(
-            "Enter keywords (e.g., harassment, recognition, onboarding)",
-            key=K_KW_QUERY,
-            label_visibility="collapsed",
-            placeholder="Type keywords like “career advancement”, “harassment”, “recognition”…",
-        )
-    with c2:
-        btn_disabled = (not (query or "").strip())
-        if st.button("Search the questionnaire", key=K_FIND_HITS_BTN, disabled=btn_disabled):
-            hits_df = _run_keyword_search(qdf, query, top_k=120)
-            st.session_state[K_SEARCH_DONE] = True
-            st.session_state[K_LAST_QUERY] = query
-            st.session_state[K_HITS] = hits_df[["code", "text", "display", "score"]].to_dict(orient="records") \
-                                       if isinstance(hits_df, pd.DataFrame) and not hits_df.empty else []
-            # IMPORTANT: do not clear previous ticks unless the code is no longer in results
-            current_codes = {h["code"] for h in st.session_state[K_HITS]}
-            st.session_state[K_HITS_SELECTED] = [c for c in st.session_state[K_HITS_SELECTED] if c in current_codes]
-
-    # Results area (persistent across reruns until a new search or reset)
-    hits = st.session_state.get(K_HITS, [])
-    if st.session_state.get(K_SEARCH_DONE, False):
-        if not hits:
-            q = (st.session_state.get(K_LAST_QUERY) or "").strip()
-            safe_q = q if q else "your search"
-            st.warning(
-                f"No questions matched “{safe_q}”. "
-                "Try broader or different keywords (e.g., synonyms), split phrases (e.g., “career advancement” → “career”), "
-                "or search by a question code like “Q01”."
-            )
-        else:
-            st.write(f"Top {len(hits)} matches meeting the quality threshold:")
+    if (demo_selection is not None) and (demo_selection != "All respondents") and (sub_selection is None) and long_df["Demographic"].notna().any():
+        idx_cols = ["QuestionLabel", "Demographic"]
     else:
-        st.info('Enter keywords and click "Search the questionnaire" to see matches.')
+        idx_cols = ["QuestionLabel"]
 
-    # Multi-tick checkboxes for hits (do NOT clear on additional selections)
-    selected_from_hits: Set[str] = set()
-    if hits:
-        for rec in hits:
-            code = rec["code"]; text = rec["text"]
-            label = f"{code} — {text}"
-            key = f"kwhit_{code}"
-            default_checked = (code in st.session_state[K_HITS_SELECTED]) or (code in selected_from_multi)
-            checked = st.checkbox(label, value=default_checked, key=key)
-            # Maintain persistent selection list explicitly
-            if checked and code not in st.session_state[K_HITS_SELECTED]:
-                st.session_state[K_HITS_SELECTED].append(code)
-            if (not checked) and code in st.session_state[K_HITS_SELECTED]:
-                st.session_state[K_HITS_SELECTED] = [c for c in st.session_state[K_HITS_SELECTED] if c != code]
+    pivot = long_df.pivot_table(index=idx_cols, columns="Year", values="Value", aggfunc="mean")
+    pivot = pivot.reindex(years, axis=1)
+    return pivot
 
-        selected_from_hits = set(st.session_state[K_HITS_SELECTED])
 
-    # ---------- Merge selections (dropdown first, then hits), cap at 5 ----------
-    combined_order: List[str] = []
-    for d in st.session_state.get(K_MULTI_QUESTIONS, []):
-        c = display_to_code.get(d)
-        if c and c not in combined_order:
-            combined_order.append(c)
-    for c in selected_from_hits:
-        if c not in combined_order:
-            combined_order.append(c)
-    if len(combined_order) > 5:
-        combined_order = combined_order[:5]
-        st.warning("Limit is 5 questions; extra selections were ignored.")
-    st.session_state[K_SELECTED_CODES] = combined_order
+def run() -> None:
+    # NOTE: st.set_page_config() is called in the root home router; do not call here.
 
-    # ---------- 3) Selected list with quick unselect ----------
-    if st.session_state[K_SELECTED_CODES]:
-        st.markdown('<div class="field-label">Selected questions:</div>', unsafe_allow_html=True)
-        updated = list(st.session_state[K_SELECTED_CODES])
-        cols = st.columns(min(5, len(updated)))
-        for idx, code in enumerate(list(updated)):
-            with cols[idx % len(cols)]:
-                label = code_to_display.get(code, code)
-                keep = st.checkbox(label, value=True, key=f"sel_{code}")
-                if not keep:
-                    # remove from current selection
-                    updated = [c for c in updated if c != code]
-                    # uncheck corresponding search hit and remove from persistent list
-                    hk = f"kwhit_{code}"
-                    if hk in st.session_state:
-                        st.session_state[hk] = False
-                    if code in st.session_state[K_HITS_SELECTED]:
-                        st.session_state[K_HITS_SELECTED] = [c for c in st.session_state[K_HITS_SELECTED] if c != code]
-                    # remove from dropdown selected list
-                    disp = code_to_display.get(code)
-                    if disp:
-                        st.session_state[K_MULTI_QUESTIONS] = [d for d in st.session_state[K_MULTI_QUESTIONS] if d != disp]
-        if updated != st.session_state[K_SELECTED_CODES]:
-            st.session_state[K_SELECTED_CODES] = updated
+    left, center, right = layout.centered_page(CENTER_COLUMNS)
+    with center:
+        # Header
+        layout.banner()
+        layout.title("PSES Explorer Search")
+        ai_on, show_diag = layout.toggles()
+        layout.instructions()
 
-    return st.session_state[K_SELECTED_CODES]
+        # Reset when arriving fresh from another menu
+        if state.get_last_active_menu() != "menu1":
+            state.reset_menu1_state()
+        state.set_last_active_menu("menu1")
+        state.set_defaults()  # idempotent
 
-# -----------------------------------------------------------------------------
-# Years selector → returns List[int]
-# -----------------------------------------------------------------------------
-def year_picker() -> List[int]:
-    st.markdown('<div class="field-label">Select survey year(s):</div>', unsafe_allow_html=True)
-    st.session_state.setdefault(K_SELECT_ALL_YEARS, True)
-    select_all = st.checkbox("All years", key=K_SELECT_ALL_YEARS)
+        # Metadata (cached)
+        qdf = load_questions()
+        sdf = load_scales()
+        demo_df = load_demographics()
 
-    selected_years: List[int] = []
-    year_cols = st.columns(len(DEFAULT_YEARS))
-    for idx, yr in enumerate(DEFAULT_YEARS):
-        with year_cols[idx]:
-            default_checked = True if select_all else st.session_state.get(f"year_{yr}", False)
-            if st.checkbox(str(yr), value=default_checked, key=f"year_{yr}"):
-                selected_years.append(yr)
-    return sorted(selected_years)
+        # Optional diagnostics
+        if show_diag:
+            diagnostics.parameters_preview(qdf, demo_df)
+            diagnostics.backend_info_panel(qdf, sdf, demo_df)
+            diagnostics.last_query_panel()
 
-# -----------------------------------------------------------------------------
-# Demographic picker → returns (demo_selection, sub_selection, demcodes, disp_map, category_in_play)
-# -----------------------------------------------------------------------------
-def demographic_picker(demo_df: pd.DataFrame):
-    st.markdown('<div class="field-label">Select a demographic category (optional):</div>', unsafe_allow_html=True)
-    DEMO_CAT_COL = "DEMCODE Category"
-    LABEL_COL = "DESCRIP_E"
+        # Controls
+        question_codes = controls.question_picker(qdf)  # -> List[str] (codes)
+        years = controls.year_picker()                  # -> List[int]
+        demo_selection, sub_selection, demcodes, disp_map, category_in_play = controls.demographic_picker(demo_df)
 
-    demo_categories = ["All respondents"] + sorted(demo_df[DEMO_CAT_COL].dropna().astype(str).unique().tolist())
-    st.session_state.setdefault("demo_main", "All respondents")
-    demo_selection = st.selectbox("Demographic category", demo_categories, key="demo_main", label_visibility="collapsed")
+        # Action row: Search / Reset
+        st.markdown("<div class='action-row'>", unsafe_allow_html=True)
+        colA, colB = st.columns([1, 1])
+        with colA:
+            # --- RED/WHITE styling for the main Search button ---
+            st.markdown(
+                """
+                <style>
+                  .menu1-runsearch button {
+                    background-color: #e03131 !important;
+                    color: #ffffff !important;
+                    border: 1px solid #c92a2a !important;
+                    font-weight: 600 !important;
+                  }
+                  .menu1-runsearch button:hover {
+                    background-color: #c92a2a !important;
+                    border-color: #a61e1e !important;
+                  }
+                  .menu1-runsearch button:disabled {
+                    opacity: 0.50 !important;
+                    filter: saturate(0.85);
+                    color: #ffffff !important;
+                    background-color: #e03131 !important;
+                  }
+                </style>
+                """,
+                unsafe_allow_html=True
+            )
 
-    sub_selection = None
-    if demo_selection != "All respondents":
-        st.markdown(f'<div class="field-label">Subgroup ({demo_selection}) (optional):</div>', unsafe_allow_html=True)
-        sub_items = demo_df.loc[demo_df[DEMO_CAT_COL] == demo_selection, LABEL_COL].dropna().astype(str).unique().tolist()
-        sub_items = sorted(sub_items)
-        sub_key = f"sub_{demo_selection.replace(' ', '_')}"
-        sub_selection = st.selectbox("(leave blank to include all subgroups in this category)", [""] + sub_items, key=sub_key, label_visibility="collapsed")
-        if sub_selection == "":
-            sub_selection = None
+            can_search = controls.search_button_enabled(question_codes, years)
+            st.markdown('<div class="menu1-runsearch">', unsafe_allow_html=True)
+            run_clicked = st.button("Search", key="menu1_run_query", disabled=not can_search)
+            st.markdown('</div>', unsafe_allow_html=True)
 
-    demcodes, disp_map, category_in_play = _resolve_demcodes(demo_df, demo_selection, sub_selection)
-    return demo_selection, sub_selection, demcodes, disp_map, category_in_play
+            if run_clicked:
+                t0 = time.time()
+                per_q_disp: Dict[str, pd.DataFrame] = {}
+                per_q_metric_col: Dict[str, str] = {}
+                per_q_metric_label: Dict[str, str] = {}
 
-# -----------------------------------------------------------------------------
-# Internal helper: resolve demographic codes & display map
-# -----------------------------------------------------------------------------
-def _resolve_demcodes(demo_df: pd.DataFrame, category_label: str, subgroup_label: Optional[str]):
-    DEMO_CAT_COL = "DEMCODE Category"
-    LABEL_COL = "DESCRIP_E"
+                # Build per-question display tables
+                for qcode in question_codes:
+                    df_all = fetch_per_question(qcode, years, demcodes)
+                    if df_all is None or df_all.empty:
+                        continue
 
-    if not category_label or category_label == "All respondents":
-        return [None], {None: "All respondents"}, False
+                    df_all = normalize_results(df_all)
+                    df_all = drop_suppressed(df_all)
 
-    code_col = None
-    for c in ["DEMCODE", "DemCode", "CODE", "Code", "CODE_E", "Demographic code"]:
-        if c in demo_df.columns:
-            code_col = c
-            break
+                    spairs = scale_pairs(sdf, qcode)
+                    df_disp = format_display(
+                        df_slice=df_all,
+                        dem_disp_map=disp_map,
+                        category_in_play=category_in_play,
+                        scale_pairs=spairs,
+                    )
+                    if df_disp.empty:
+                        continue
 
-    df_cat = demo_df[demo_df[DEMO_CAT_COL] == category_label] if DEMO_CAT_COL in demo_df.columns else demo_df.copy()
-    if df_cat.empty:
-        return [None], {None: "All respondents"}, False
+                    det = detect_metric(df_disp, spairs)
+                    per_q_disp[qcode] = df_disp
+                    per_q_metric_col[qcode] = det["metric_col"]
+                    per_q_metric_label[qcode] = det["metric_label"]
 
-    if subgroup_label:
-        if code_col and LABEL_COL in df_cat.columns:
-            r = df_cat[df_cat[LABEL_COL] == subgroup_label]
-            if not r.empty:
-                code = str(r.iloc[0][code_col])
-                return [code], {code: subgroup_label}, True
-        return [subgroup_label], {subgroup_label: subgroup_label}, True
+                # Build pivot & stash results for centered rendering
+                if per_q_disp:
+                    pivot = _build_summary_pivot(
+                        per_q_disp=per_q_disp,
+                        per_q_metric_col=per_q_metric_col,
+                        years=years,
+                        demo_selection=demo_selection,
+                        sub_selection=sub_selection,
+                    )
+                    code_to_text = dict(zip(qdf["code"], qdf["text"]))
+                    state.stash_results({
+                        "per_q_disp": per_q_disp,
+                        "per_q_metric_col": per_q_metric_col,
+                        "per_q_metric_label": per_q_metric_label,
+                        "pivot": pivot,
+                        "tab_labels": [qc for qc in question_codes if qc in per_q_disp],
+                        "years": years,
+                        "demo_selection": demo_selection,
+                        "sub_selection": sub_selection,
+                        "code_to_text": code_to_text,
+                    })
 
-    if code_col and LABEL_COL in df_cat.columns:
-        codes = df_cat[code_col].astype(str).tolist()
-        labels = df_cat[LABEL_COL].astype(str).tolist()
-        keep = [(c, l) for c, l in zip(codes, labels) if str(c).strip() != ""]
-        codes = [c for c, _ in keep]
-        disp_map = {c: l for c, l in keep}
-        return codes, disp_map, True
+                # Mark diagnostics timing
+                diagnostics.mark_last_query(
+                    started_ts=t0,
+                    finished_ts=time.time(),
+                    extra={"notes": "Menu 1 query run"},
+                )
 
-    if LABEL_COL in df_cat.columns:
-        labels = df_cat[LABEL_COL].astype(str).tolist()
-        return labels, {l: l for l in labels}, True
+        with colB:
+            if st.button("Reset all parameters", key="menu1_reset_all"):
+                state.reset_menu1_state()
+                try:
+                    st.rerun()
+                except Exception:
+                    st.experimental_rerun()
+        st.markdown("</div>", unsafe_allow_html=True)
 
-    return [None], {None: "All respondents"}, False
+        # Results (center area)
+        if state.has_results():
+            payload = state.get_results()
+            results.tabs_summary_and_per_q(
+                payload=payload,
+                ai_on=ai_on,
+                build_overall_prompt=build_overall_prompt,
+                build_per_q_prompt=build_per_q_prompt,
+                call_openai_json=call_openai_json,
+                source_url=SOURCE_URL,
+                source_title=SOURCE_TITLE,
+            )
 
-# -----------------------------------------------------------------------------
-# Search button enabled?
-# -----------------------------------------------------------------------------
-def search_button_enabled(question_codes: List[str], years: List[int]) -> bool:
-    return bool(question_codes) and bool(years)
+
+if __name__ == "__main__":
+    run()
+
+# --- keep this at the end of menu1/main.py ---
+def run_menu1():
+    # backward-compat alias for older loaders that expect run_menu1
+    return run()
