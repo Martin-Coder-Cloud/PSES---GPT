@@ -9,6 +9,7 @@ import streamlit as st
 
 # Local modules
 from .constants import (
+    PAGE_TITLE,          # kept for parity with your imports (not used here)
     CENTER_COLUMNS,
     SOURCE_URL,
     SOURCE_TITLE,
@@ -65,8 +66,7 @@ def _build_summary_pivot(
         idx_cols = ["QuestionLabel"]
 
     pivot = long_df.pivot_table(index=idx_cols, columns="Year", values="Value", aggfunc="mean")
-    # Ensure our column order matches the selected years
-    pivot = pivot.reindex(years, axis=1)
+    pivot = pivot.reindex(years, axis=1)  # ensure column order matches selected years
     return pivot
 
 
@@ -89,31 +89,32 @@ def run() -> None:
     # NOTE: st.set_page_config() is intentionally NOT called here
     # to avoid double-calling it (root main.py calls it once).
 
-    # Global button styling: make buttons clearly visible (Search is intended to stand out).
-    # If you prefer only the main Search button to be red, we can scope this differently,
-    # but Streamlit component isolation makes per-button scoping brittle.
+    # Scoped CSS: ONLY the main Search button is red/white. All others use your global/default style.
     st.markdown(
         """
         <style>
-          /* Tighten the action row spacing */
           .action-row { margin-top: .25rem; margin-bottom: .35rem; }
-          /* Make all buttons prominent (solid red, white text) for consistency */
-          div.stButton > button {
+
+          /* Solid red button for the main run button only */
+          #menu1-run-btn button {
             background-color: #e03131 !important;
             color: #ffffff !important;
             border: 1px solid #c92a2a !important;
-            font-weight: 600 !important;
+            font-weight: 700 !important;
           }
-          div.stButton > button:hover {
+          #menu1-run-btn button:hover {
             background-color: #c92a2a !important;
             border-color: #a61e1e !important;
           }
-          div.stButton > button:disabled {
+          #menu1-run-btn button:disabled {
             opacity: 0.50 !important;
             filter: saturate(0.85);
             color: #ffffff !important;
             background-color: #e03131 !important;
           }
+
+          /* Ensure the reset button aligns left and uses default style */
+          #menu1-reset-btn { text-align: left; }
         </style>
         """,
         unsafe_allow_html=True
@@ -130,6 +131,7 @@ def run() -> None:
         # Reset when arriving fresh from another menu
         if state.get_last_active_menu() != "menu1":
             state.reset_menu1_state()
+            _clear_keyword_search_state()  # also clear keyword UI state on first arrival
         state.set_last_active_menu("menu1")
         state.set_defaults()  # idempotent
 
@@ -147,13 +149,15 @@ def run() -> None:
         years = controls.year_picker()                  # -> List[int]
         demo_selection, sub_selection, demcodes, disp_map, category_in_play = controls.demographic_picker(demo_df)
 
-        # Action row: Search / Reset (side-by-side, aligned)
+        # Action row: Search / Reset (side-by-side, aligned left)
         st.markdown("<div class='action-row'>", unsafe_allow_html=True)
-        colA, colB = st.columns([1, 1])
+        colA, colB = st.columns([1, 1], gap="small")
 
         with colA:
             can_search = controls.search_button_enabled(question_codes, years)
+            st.markdown("<div id='menu1-run-btn' style='text-align:left;'>", unsafe_allow_html=True)
             run_clicked = st.button("Search the survey results", key="menu1_run_query", disabled=not can_search)
+            st.markdown("</div>", unsafe_allow_html=True)
 
             if run_clicked:
                 t0 = time.time()
@@ -215,12 +219,13 @@ def run() -> None:
                 )
 
         with colB:
+            st.markdown("<div id='menu1-reset-btn'>", unsafe_allow_html=True)
             if st.button("Reset all parameters", key="menu1_reset_all"):
                 # Reset core menu state
                 state.reset_menu1_state()
                 # Also clear keyword-search UI state so no stale "No questions matched…" persists
                 _clear_keyword_search_state()
-                # Clear AI caches (to prevent re-runs from showing stale narratives)
+                # Clear AI caches (to prevent reruns from showing stale narratives)
                 st.session_state.pop("menu1_ai_cache", None)
                 st.session_state.pop("menu1_ai_narr_per_q", None)
                 st.session_state.pop("menu1_ai_narr_overall", None)
@@ -229,6 +234,7 @@ def run() -> None:
                     st.rerun()
                 except Exception:
                     st.experimental_rerun()
+            st.markdown("</div>", unsafe_allow_html=True)
 
         st.markdown("</div>", unsafe_allow_html=True)
 
@@ -238,9 +244,9 @@ def run() -> None:
             results.tabs_summary_and_per_q(
                 payload=payload,
                 ai_on=ai_on,
-                build_overall_prompt=build_overall_prompt,
-                build_per_q_prompt=build_per_q_prompt,
-                call_openai_json=call_openai_json,
+                build_overall_prompt=build_overall_prompt,  # pass directly
+                build_per_q_prompt=build_per_q_prompt,      # pass directly
+                call_openai_json=call_openai_json,          # pass directly
                 source_url=SOURCE_URL,
                 source_title=SOURCE_TITLE,
             )
