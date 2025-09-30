@@ -1,4 +1,4 @@
-# app/menu1/render/controls.py
+# menu1/render/controls.py
 """
 Controls for Menu 1:
 - Question picker: dropdown multi-select (authoritative) + keyword search (hybrid)
@@ -242,26 +242,36 @@ def question_picker(qdf: pd.DataFrame) -> List[str]:
 # Years selector → returns List[int]
 # -----------------------------------------------------------------------------
 def year_picker() -> List[int]:
+    """
+    Avoids passing value= to checkboxes that also use st.session_state,
+    preventing the 'default value + Session State' warning.
+    """
     st.markdown('<div class="field-label">Select survey year(s):</div>', unsafe_allow_html=True)
+
+    # Master toggle
     st.session_state.setdefault(K_SELECT_ALL_YEARS, True)
     select_all = st.checkbox("All years", key=K_SELECT_ALL_YEARS)
 
-    # IMPORTANT: pre-set per-year checkbox values BEFORE rendering them,
-    # so toggling "All years" doesn't cause session mutation-after-instantiation errors.
+    # Establish per-year defaults BEFORE rendering year checkboxes
     if select_all:
+        # When "All years" is on, force all True (setdefault + explicit True)
         for yr in DEFAULT_YEARS:
+            st.session_state.setdefault(f"year_{yr}", True)
             st.session_state[f"year_{yr}"] = True
     else:
+        # When "All years" is off, ensure keys exist but do not force a value
         for yr in DEFAULT_YEARS:
             st.session_state.setdefault(f"year_{yr}", False)
 
+    # Render the year checkboxes WITHOUT a value= param
     selected_years: List[int] = []
     year_cols = st.columns(len(DEFAULT_YEARS))
     for idx, yr in enumerate(DEFAULT_YEARS):
         with year_cols[idx]:
-            val = bool(st.session_state.get(f"year_{yr}", select_all))
-            if st.checkbox(str(yr), value=val, key=f"year_{yr}"):
+            st.checkbox(str(yr), key=f"year_{yr}")
+            if st.session_state.get(f"year_{yr}", False):
                 selected_years.append(yr)
+
     return sorted(selected_years)
 
 # -----------------------------------------------------------------------------
