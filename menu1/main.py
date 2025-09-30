@@ -31,7 +31,7 @@ def _build_summary_pivot(
 ) -> pd.DataFrame:
     """
     Create the Summary tabulation:
-      - Row index: Question code only (or QuestionÃ—Demographic if a category is selected without a specific subgroup)
+      - Row index: Question code only (or Question×Demographic if a category is selected without a specific subgroup)
       - Columns: selected years
       - Values: detected metric per question (mean across demo rows when needed)
     """
@@ -95,7 +95,7 @@ def run() -> None:
         <style>
           .action-row { margin-top: .25rem; margin-bottom: .35rem; }
 
-          /* Solid red button for the main run button only */
+          /* Solid red button for the main run button only (scoped wrapper) */
           #menu1-run-btn button {
             background-color: #e03131 !important;
             color: #ffffff !important;
@@ -113,7 +113,7 @@ def run() -> None:
             background-color: #e03131 !important;
           }
 
-          /* Ensure the reset button aligns left and uses default style */
+          /* Keep the reset/clear button left-aligned; use default theme */
           #menu1-reset-btn { text-align: left; }
         </style>
         """,
@@ -149,7 +149,7 @@ def run() -> None:
         years = controls.year_picker()                  # -> List[int]
         demo_selection, sub_selection, demcodes, disp_map, category_in_play = controls.demographic_picker(demo_df)
 
-        # Action row: Search / Reset (side-by-side, aligned left)
+        # Action row: Search / Clear (side-by-side, aligned left)
         st.markdown("<div class='action-row'>", unsafe_allow_html=True)
         colA, colB = st.columns([1, 1], gap="small")
 
@@ -220,10 +220,11 @@ def run() -> None:
 
         with colB:
             st.markdown("<div id='menu1-reset-btn'>", unsafe_allow_html=True)
-            if st.button("Reset all parameters", key="menu1_reset_all"):
+            # Label changed per your UX (“Clear parameters” beside Search)
+            if st.button("Clear parameters", key="menu1_reset_all"):
                 # Reset core menu state
                 state.reset_menu1_state()
-                # Also clear keyword-search UI state so no stale "No questions matchedâ€¦" persists
+                # Also clear keyword-search UI state so no stale "No questions matched…" persists
                 _clear_keyword_search_state()
                 # Clear AI caches (to prevent reruns from showing stale narratives)
                 st.session_state.pop("menu1_ai_cache", None)
@@ -255,7 +256,7 @@ def run() -> None:
 if __name__ == "__main__":
     run()
 
-# --- keep this at the end of menu1/main.py ---
+# --- keep this at the end of app/menu1/main.py ---
 def run_menu1():
     # backward-compat alias for older loaders that expect run_menu1
     return run()
