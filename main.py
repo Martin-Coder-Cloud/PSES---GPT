@@ -1,15 +1,13 @@
-# main.py — Home-first router; preload on app load; Home-only background;
-# Canada.ca link under CTA; robust loader imports. (Home Status expander removed)
+# main.py — Home-first router; preload on app load; Home-only background
 from __future__ import annotations
 import importlib
 import time
 import streamlit as st
 
-# ── Make set_page_config idempotent (prevents duplicate-call crash) ──────────
+# ── Make set_page_config idempotent ──────────────────────────────────────────
 if not hasattr(st, "_setpcf_wrapped"):
     _orig_spc = st.set_page_config
     def _safe_set_page_config(*args, **kwargs):
-        # Only allow this once per run
         if st.session_state.get("_page_config_done"):
             return
         st.session_state["_page_config_done"] = True
@@ -17,10 +15,9 @@ if not hasattr(st, "_setpcf_wrapped"):
     st.set_page_config = _safe_set_page_config
     st._setpcf_wrapped = True
 
-# First Streamlit call (now idempotent)
 st.set_page_config(page_title="PSES Explorer", layout="wide")
 
-# ── Import loader module once; pull functions via getattr so missing names don't break imports ──
+# ── Load data loader (optional) ──────────────────────────────────────────────
 _loader_err = ""
 _dl = None
 try:
@@ -36,12 +33,12 @@ get_backend_info         = _fn("get_backend_info")
 preload_pswide_dataframe = _fn("preload_pswide_dataframe")
 get_last_query_diag      = _fn("get_last_query_diag")
 
-# ── tiny nav helper ──────────────────────────────────────────────────────────
+# ── Navigation helper ────────────────────────────────────────────────────────
 def goto(page: str):
     st.session_state["_nav"] = page
     st.rerun()
 
-# ── background reset for non-Home pages ──────────────────────────────────────
+# ── Remove hero background for non-Home pages ────────────────────────────────
 def _clear_bg_css():
     st.markdown("""
         <style>
@@ -56,9 +53,8 @@ def _clear_bg_css():
         </style>
     """, unsafe_allow_html=True)
 
-# ── Home view (hero background, CTA, Canada.ca link) ─────────────────────────
+# ── Home ─────────────────────────────────────────────────────────────────────
 def render_home():
-    # Scoped styles for Home view
     st.markdown("""
         <style>
             .block-container {
@@ -84,22 +80,13 @@ def render_home():
                 border-radius: 14px !important; text-align: left !important; backdrop-filter: blur(2px);
             }
             div.stButton > button:hover { border-color: white !important; background-color: rgba(255, 255, 255, 0.14) !important; }
-            /* Make links readable on the hero background */
             .main-section a { color: #fff !important; text-decoration: underline; }
         </style>
     """, unsafe_allow_html=True)
 
     st.markdown("<div class='main-section'>", unsafe_allow_html=True)
-
-    # Title & intro
-    st.markdown(
-        "<div class='main-title'>Welcome to the AI-powered Explorer of the Public Service Employee Survey (PSES)</div>",
-        unsafe_allow_html=True
-    )
-    st.markdown(
-        "<div class='subtitle'>This app provides Public Service-wide survey results and analysis for the previous 4 survey cycles (2019, 2020, 2022, and 2024)</div>",
-        unsafe_allow_html=True
-    )
+    st.markdown("<div class='main-title'>Welcome to the AI-powered Explorer of the Public Service Employee Survey (PSES)</div>", unsafe_allow_html=True)
+    st.markdown("<div class='subtitle'>This app provides Public Service-wide survey results and analysis for the previous 4 survey cycles (2019, 2020, 2022, and 2024)</div>", unsafe_allow_html=True)
     st.markdown(
         """
         <div class='context'>
@@ -111,15 +98,13 @@ def render_home():
         unsafe_allow_html=True
     )
 
-    # Primary CTA → Menu 1
     st.markdown("<div class='single-button'>", unsafe_allow_html=True)
     if st.button("▶️ Start your search", key="menu_start_button"):
-        # Set a fresh mount nonce exactly once at navigation time
+        # Set nonce ONCE at navigation time (no nonce changes inside Menu 1)
         st.session_state["menu1_mount_nonce"] = time.time()
         goto("menu1")
     st.markdown("</div>", unsafe_allow_html=True)
 
-    # Canada.ca link (directly under the CTA)
     st.markdown(
         "<div class='context'>"
         "<a href='https://www.canada.ca/en/treasury-board-secretariat/services/innovation/public-service-employee-survey.html' target='_blank'>"
@@ -128,11 +113,11 @@ def render_home():
         unsafe_allow_html=True
     )
 
-# ── Menu wrappers (no hero background) ───────────────────────────────────────
+# ── Menus ────────────────────────────────────────────────────────────────────
 def render_menu1():
     _clear_bg_css()
     try:
-        from menu1.main import run_menu1  # the compat alias calls run()
+        from menu1.main import run_menu1
         run_menu1()
     except Exception as e:
         st.error(f"Menu 1 is unavailable: {type(e).__name__}: {e}")
@@ -153,24 +138,20 @@ def render_menu2():
 
 # ── Entry ────────────────────────────────────────────────────────────────────
 def main():
-    # Remove legacy router flags, if present
     if "run_menu" in st.session_state:
         st.session_state.pop("run_menu")
 
-    # Always preload on app load (first run shows spinner; cached afterwards)
     if prewarm_all:
         if not st.session_state.get("_prewarmed", False):
             with st.spinner("Preparing data backend (one-time)…"):
                 prewarm_all()
             st.session_state["_prewarmed"] = True
         else:
-            prewarm_all()  # ensures cached resources available without spinner
+            prewarm_all()
 
-    # Default to Home
     if "_nav" not in st.session_state:
         st.session_state["_nav"] = "home"
 
-    # Route
     page = st.session_state["_nav"]
     if page == "menu1":
         render_menu1()
