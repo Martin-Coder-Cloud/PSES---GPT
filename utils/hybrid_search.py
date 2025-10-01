@@ -246,6 +246,9 @@ def hybrid_question_search(
     has_lex    = [False] * N
 
     # --- Lexical evidence ---
+    # Jaccard cutoff relaxed from 0.30 -> 0.22 to be slightly typo-tolerant
+    JACCARD_CUTOFF = 0.22
+
     for i, (code, txt, disp) in enumerate(zip(codes, texts, shows)):
         # Code-aware (strong)
         if any(_code_hint_matches_item(h, code) for h in code_hints):
@@ -264,7 +267,7 @@ def hybrid_question_search(
         grams_i = set(g for t in toks_all for g in _char4(t))
         jacc = _jaccard_informative_grams(qgrams, grams_i)
 
-        is_lex = (stem_o > 0) or (jacc >= 0.30)
+        is_lex = (stem_o > 0) or (jacc >= JACCARD_CUTOFF)
         if is_lex:
             stem_cov = max(stem_cov, 0.50)
             has_lex[i] = True
@@ -306,23 +309,8 @@ def hybrid_question_search(
     else:
         sem_all = [0.0]*N
 
-    # Two-tier acceptance:
-    SEM_FLOOR  = 0.70  # lower floor you selected
-    SEM_STRICT = 0.80  # strong neighbors: accept without anchor
-
-    def _has_generic_anchor(i: int) -> bool:
-        if not qstems:
-            return False
-        toks = _stems(_tokens(texts[i])) + _stems(_tokens(shows[i]))
-        for qs in qstems:
-            for ts in toks:
-                if len(os.path.commonprefix([qs, ts])) >= 4:
-                    return True
-        hay = haystacks[i]
-        for qs in qstems:
-            if len(qs) >= 5 and qs in hay:
-                return True
-        return False
+    # Pure-cosine acceptance (no anchor), with a modest floor
+    SEM_FLOOR = 0.65  # lowered from 0.70
 
     sem_rows = []
     for i in range(N):
@@ -331,10 +319,8 @@ def hybrid_question_search(
         s = sem_all[i]
         if s < SEM_FLOOR:
             continue
-        ok = (s >= SEM_STRICT) or _has_generic_anchor(i)
-        if not ok:
-            continue
-        s_shaped = min(1.0, max(0.0, s * s))  # keep strong highs, compress mid
+        # shape mid scores gently; keep highs
+        s_shaped = min(1.0, max(0.0, s * s))
         sem_rows.append((codes[i], texts[i], shows[i], s_shaped, "sem"))
 
     df_sem = pd.DataFrame(sem_rows, columns=["code","text","display","score","origin"]) \
