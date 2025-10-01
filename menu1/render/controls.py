@@ -23,6 +23,10 @@ K_HITS_PAGE_LEX   = "menu1_hits_page_lex"         # pagination per tab
 K_HITS_PAGE_SEM   = "menu1_hits_page_sem"
 K_SEEN_NONCE      = "menu1_seen_nonce"            # remember last mount nonce
 
+# Deferred actions to avoid "cannot be modified after widget is instantiated"
+K_DO_CLEAR        = "menu1_do_clear"              # bool: clear everything next run
+K_SYNC_MULTI      = "menu1_sync_multi"            # List[str]: display labels to set for multiselect next run
+
 # Years
 DEFAULT_YEARS = [2024, 2022, 2020, 2019]
 K_SELECT_ALL_YEARS = "select_all_years"
@@ -64,7 +68,7 @@ def _run_keyword_search(qdf: pd.DataFrame, query: str, top_k: int = 120) -> pd.D
     return pd.DataFrame(columns=["code", "text", "display", "score", "origin"])
 
 def _clear_menu1_state():
-    """Full reset of Menu 1 selections and search artifacts; no rerun here."""
+    """Reset Menu 1 selections and search artifacts (do not alter SYNC/flags here)."""
     st.session_state[K_MULTI_QUESTIONS] = []
     st.session_state[K_SELECTED_CODES]  = []
     st.session_state[K_KW_QUERY]        = ""
@@ -73,6 +77,7 @@ def _clear_menu1_state():
     st.session_state[K_LAST_QUERY]      = ""
     st.session_state[K_HITS_PAGE_LEX]   = 0
     st.session_state[K_HITS_PAGE_SEM]   = 0
+    # remove dynamic checkboxes
     for k in list(st.session_state.keys()):
         if k.startswith("kwhit_") or k.startswith("sel_"):
             try:
@@ -87,7 +92,7 @@ def _maybe_auto_reset_on_mount():
     if nonce is not None and nonce != seen:
         _clear_menu1_state()
         st.session_state[K_SEEN_NONCE] = nonce
-        # IMPORTANT: no st.experimental_rerun() here
+        # no rerun here
 
 # ---- Main controls ----------------------------------------------------------
 def question_picker(qdf: pd.DataFrame) -> List[str]:
@@ -101,8 +106,20 @@ def question_picker(qdf: pd.DataFrame) -> List[str]:
     st.session_state.setdefault(K_HITS_PAGE_LEX, 0)
     st.session_state.setdefault(K_HITS_PAGE_SEM, 0)
     st.session_state.setdefault(K_SEEN_NONCE, None)
+    st.session_state.setdefault(K_DO_CLEAR, False)
+    st.session_state.setdefault(K_SYNC_MULTI, None)
 
+    # 1) Apply deferred CLEAR before any widgets are created
+    if st.session_state.get(K_DO_CLEAR, False):
+        _clear_menu1_state()
+        st.session_state[K_DO_CLEAR] = False  # consume
+
+    # 2) Apply deferred MULTISET sync before the multiselect is created
     _maybe_auto_reset_on_mount()
+    if st.session_state.get(K_SYNC_MULTI) is not None:
+        # The router/data provides display labels; set them now
+        st.session_state[K_MULTI_QUESTIONS] = list(st.session_state[K_SYNC_MULTI])  # type: ignore
+        st.session_state[K_SYNC_MULTI] = None  # consume
 
     code_to_display = dict(zip(qdf["code"], qdf["display"]))
     display_to_code = {v: k for k, v in code_to_display.items()}
@@ -158,8 +175,9 @@ def question_picker(qdf: pd.DataFrame) -> List[str]:
                 status_placeholder.empty()
     with c2:
         if st.button("Clear search & selections", key="menu1_clear_all"):
-            _clear_menu1_state()
-            st.success("Cleared search, hits, and selections.")
+            # Defer the clear to next run to avoid widget mutation error
+            st.session_state[K_DO_CLEAR] = True
+            st.experimental_rerun()
 
     # ---------- Results ----------
     hits = st.session_state.get(K_HITS, [])
@@ -256,17 +274,27 @@ def question_picker(qdf: pd.DataFrame) -> List[str]:
     if st.session_state[K_SELECTED_CODES]:
         st.markdown('<div class="field-label">Selected questions:</div>', unsafe_allow_html=True)
         updated = list(st.session_state[K_SELECTED_CODES])
+
         for code in list(updated):
             label = code_to_display.get(code, code)
             keep = st.checkbox(label, value=True, key=f"sel_{code}")
             if not keep:
+                # Remove from selected list
                 updated = [c for c in updated if c != code]
+                # Uncheck corresponding hit checkbox if present
                 hk = f"kwhit_{code}"
                 if hk in st.session_state:
                     st.session_state[hk] = False
+                # Defer multiselect sync: compute the new display list and apply next run
                 disp = code_to_display.get(code)
                 if disp:
-                    st.session_state[K_MULTI_QUESTIONS] = [d for d in st.session_state[K_MULTI_QUESTIONS] if d != disp]
+                    current_displays = list(st.session_state.get(K_MULTI_QUESTIONS, []))
+                    if disp in current_displays:
+                        current_displays = [d for d in current_displays if d != disp]
+                        st.session_state[K_SYNC_MULTI] = current_displays
+                        st.session_state[K_SELECTED_CODES] = updated
+                        st.experimental_rerun()
+
         if updated != st.session_state[K_SELECTED_CODES]:
             st.session_state[K_SELECTED_CODES] = updated
 
