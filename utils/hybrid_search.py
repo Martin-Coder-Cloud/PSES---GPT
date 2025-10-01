@@ -329,7 +329,7 @@ def hybrid_question_search(
         sem_all = [0.0]*N
 
     # High semantic threshold + tiny anchor
-    SEM_FLOOR = 0.82  # strict
+    SEM_FLOOR = 0.70  # strict
     def _has_generic_anchor(i: int) -> bool:
         # Require minimal textual affinity even for semantic-only:
         # shared stem-prefix >=4 OR substring overlap >=5 in haystack.
