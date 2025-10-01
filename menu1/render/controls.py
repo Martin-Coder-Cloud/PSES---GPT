@@ -124,7 +124,7 @@ def question_picker(qdf: pd.DataFrame) -> List[str]:
                 hits_df = _run_keyword_search(qdf, q, top_k=120)
                 st.session_state[K_SEARCH_DONE] = True
                 st.session_state[K_LAST_QUERY] = q
-                # Always set to a list; DO NOT raise a warning here (avoid duplicates)
+                # Always set to a list; render-time warning handles "no hits"
                 if isinstance(hits_df, pd.DataFrame) and not hits_df.empty:
                     st.session_state[K_HITS] = hits_df[["code", "text", "display", "score"]].to_dict(orient="records")
                 else:
@@ -165,18 +165,23 @@ def question_picker(qdf: pd.DataFrame) -> List[str]:
                     st.session_state.setdefault(key, default_checked)
                     st.checkbox(f"{code} — {text}", key=key)
 
-                # Prev/Next controls (indented with results)
-                cols_nav = st.columns(3)
-                with cols_nav[0]:
-                    disabled = (page <= 0)
-                    if st.button("Prev", disabled=disabled, key="menu1_hits_prev"):
-                        if page > 0:
-                            st.session_state[K_HITS_PAGE] = page - 1
-                with cols_nav[2]:
-                    disabled = (page >= max_page)
-                    if st.button("Next", disabled=disabled, key="menu1_hits_next"):
-                        if page < max_page:
-                            st.session_state[K_HITS_PAGE] = page + 1
+    # Prev/Next controls (top-level block aligned with indentation; no nested columns)
+    if st.session_state.get(K_SEARCH_DONE, False) and st.session_state.get(K_HITS, []) is not None:
+        total = len(st.session_state.get(K_HITS, []))
+        if total > 0:
+            page  = int(st.session_state.get(K_HITS_PAGE, 0)) or 0
+            max_page = max(0, (total - 1) // PAGE_SIZE)
+            col_spacer3, col_prev, col_next = st.columns([0.08, 0.46, 0.46])
+            with col_prev:
+                disabled = (page <= 0)
+                if st.button("Prev", disabled=disabled, key="menu1_hits_prev"):
+                    if page > 0:
+                        st.session_state[K_HITS_PAGE] = page - 1
+            with col_next:
+                disabled = (page >= max_page)
+                if st.button("Next", disabled=disabled, key="menu1_hits_next"):
+                    if page < max_page:
+                        st.session_state[K_HITS_PAGE] = page + 1
 
     # Merge selections (multiselect first, then currently checked hits), cap 5
     combined_order: List[str] = []
