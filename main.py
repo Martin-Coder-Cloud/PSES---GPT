@@ -2,6 +2,7 @@
 # Canada.ca link under CTA; robust loader imports. (Home Status expander removed)
 from __future__ import annotations
 import importlib
+import time
 import streamlit as st
 
 # ── Make set_page_config idempotent (prevents duplicate-call crash) ──────────
@@ -129,6 +130,9 @@ def render_home():
 def render_menu1():
     _clear_bg_css()
     try:
+        # 👇 ADDED: issue a fresh nonce every time we enter Menu 1
+        st.session_state["menu1_mount_nonce"] = time.time()
+
         from menu1.main import run_menu1  # the compat alias calls run()
         run_menu1()
     except Exception as e:
