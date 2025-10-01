@@ -2,14 +2,16 @@
 # -------------------------------------------------------------------------
 # Lexical-first search with semantic backfill (term-agnostic)
 # Policy:
-#   1) Return ALL lexical hits (any stem-overlap OR informative 4-gram Jaccard).
-#      Lexical hits get a floor score so they pass (> min_score) without exception.
+#   1) Return ALL lexical hits (any stem-overlap OR informative 4-gram Jaccard
+#      OR code match via q/QUESTION normalization). Lexical hits get a floor
+#      score so they pass (> min_score) without exception.
 #   2) ONLY if lexical hits < 5, add ALL semantic hits meeting a high cosine
 #      threshold AND a tiny generic text anchor. Dedupe by code. Rank by score.
 # Notes:
-#   - Morphology: lightweight stemmer + IDF-filtered char-4-gram Jaccard (no dictionaries)
-#   - Optional semantic: sentence-transformers if available; otherwise lexical-only
-#   - Operators: +include / -exclude (substring on normalized display+text)
+#   - Morphology: lightweight stemmer + IDF-filtered char-4-gram Jaccard
+#   - Code-aware matching: supports q01 / q1 / Q 1 / question1 / q01a…
+#   - Optional semantic: sentence-transformers if available
+#   - Operators: +include / -exclude (substring on normalized code+display+text)
 # -------------------------------------------------------------------------
 
 from __future__ import annotations
@@ -83,6 +85,68 @@ def _parse_req_exc(raw_q: str) -> Tuple[str, List[str], List[str]]:
         elif p.startswith("-") and len(p) > 1: exc.append(_norm(p[1:]))
         else: kept.append(p)
     return " ".join(kept).strip(), inc, exc
+
+# -----------------------------
+# Code-aware normalization / matching
+# -----------------------------
+# Extracts (number, suffix) from code-like strings: q01, q1, Q 1a, question1b, etc.
+_CODE_HINT_RE = re.compile(r"(?i)\b(?:q|question)\s*0*([0-9]+)\s*([a-z]?)\b")
+
+def _split_code_parts(code: str) -> Tuple[Optional[int], str]:
+    """Normalize a questionnaire code like 'Q01a' -> (1, 'a') or 'Q73H' -> (73,'h')."""
+    if not code:
+        return None, ""
+    s = _norm(code).replace(" ", "")
+    # Try to find leading letters, then digits (with leading zeros), then optional letters
+    m = re.match(r"^([a-z]+)?0*([0-9]+)([a-z]*)$", s)
+    if not m:
+        return None, ""
+    letters, num, suffix = m.groups()
+    try:
+        n = int(num)
+    except Exception:
+        return None, ""
+    return n, (suffix or "")
+
+def _extract_code_hints(raw_query: str) -> List[Tuple[int, str]]:
+    """Find all code-like hints in the user query."""
+    hints: List[Tuple[int, str]] = []
+    # 1) Look for explicit q/QUESTION patterns anywhere in the string
+    for num, suf in _CODE_HINT_RE.findall(raw_query or ""):
+        try:
+            hints.append((int(num), _norm(suf)))
+        except Exception:
+            pass
+    # 2) Also try the entire query as a code with spaces removed (e.g., "Q 1" typed alone)
+    collapsed = _norm((raw_query or "")).replace(" ", "")
+    m = re.match(r"(?i)^(?:q|question)0*([0-9]+)([a-z]?)$", collapsed)
+    if m:
+        num, suf = m.groups()
+        try:
+            hints.append((int(num), _norm(suf)))
+        except Exception:
+            pass
+    # Deduplicate while preserving order
+    seen = set(); out = []
+    for h in hints:
+        if h not in seen:
+            seen.add(h); out.append(h)
+    return out
+
+def _code_hint_matches_item(hint: Tuple[int, str], item_code: str) -> bool:
+    """Return True if the query hint matches the item code:
+       - same number (ignores leading zeros), and
+       - suffix is a prefix match ('' matches anything; 'a' matches 'a'/'ab')."""
+    n_item, suf_item = _split_code_parts(item_code)
+    if n_item is None:
+        return False
+    n_hint, suf_hint = hint
+    if n_hint != n_item:
+        return False
+    # suffix prefix match: empty hint matches any; otherwise the item's suffix must start with hint
+    if not suf_hint:
+        return True
+    return suf_item.startswith(suf_hint)
 
 # -----------------------------
 # Embedding cache
@@ -185,7 +249,6 @@ def hybrid_question_search(
     codes  = qdf["code"].astype(str).tolist()
     texts  = qdf["text"].astype(str).tolist()
     shows  = qdf["display"].astype(str).tolist()
-    haystacks = [_norm(f"{d} {t}") for d, t in zip(shows, texts)]
 
     # Parse operators first
     q_raw = str(query).strip()
@@ -200,32 +263,42 @@ def hybrid_question_search(
     qstem_set = set(qstems)
     qgrams = set(g for t in qstems for g in _char4(t))
 
+    # Build normalized haystacks that include CODE as well
+    haystacks = [_norm(f"{code} {disp} {txt}") for code, disp, txt in zip(codes, shows, texts)]
+
+    # Extract any code-like hints from the raw query
+    code_hints = _extract_code_hints(q_raw)
+
     N = len(texts)
     lex_scores = [0.0] * N
     has_lex    = [False] * N
-    gram_jacc  = [0.0] * N
 
-    # --- Lexical evidence (stem overlap OR informative 4-gram Jaccard >= 0.30) ---
-    for i, txt in enumerate(texts):
+    # --- Lexical evidence (stem overlap OR informative 4-gram Jaccard >= 0.30 OR code match) ---
+    for i, (code, txt) in enumerate(zip(codes, texts)):
+        # Code-aware match (strong signal)
+        code_hit = any(_code_hint_matches_item(h, code) for h in code_hints)
+
+        if code_hit:
+            has_lex[i] = True
+            lex_scores[i] = 1.0  # strong lexical match via code
+            continue  # no need to compute further lexical for this item
+
+        # Stem overlap / informative grams
         toks   = _stems(_tokens(txt))
         stem_o = len(qstem_set & set(toks))
         stem_cov = (stem_o / max(1, len(qstems))) if qstems else 0.0
 
-        # informative 4-grams Jaccard
         grams_i = set(g for t in toks for g in _char4(t))
         jacc = _jaccard_informative_grams(qgrams, grams_i)
-        gram_jacc[i] = jacc
 
-        # lexical match definition
         is_lex = (stem_o > 0) or (jacc >= 0.30)
         if is_lex:
-            # ensure lexical matches pass global min later (floor 0.50)
-            stem_cov = max(stem_cov, 0.50)
+            stem_cov = max(stem_cov, 0.50)  # ensure lexical matches pass global min
             has_lex[i] = True
 
         lex_scores[i] = min(1.0, max(0.0, stem_cov))
 
-    # --- Apply include/exclude (generic substrings on normalized display+text) ---
+    # --- Apply include/exclude (generic substrings on normalized code+display+text) ---
     def _contains_any(hay: str, needles: List[str]) -> bool:
         return any(n and n in hay for n in needles)
 
@@ -274,7 +347,7 @@ def hybrid_question_search(
     def _has_generic_anchor(i: int) -> bool:
         # Require a minimal textual affinity even for semantic-only:
         # either a shared stem-prefix >=4 between any query token and any doc token,
-        # OR a substring overlap of length >=5 in normalized text.
+        # OR a substring overlap of length >=5 in normalized text (which includes code).
         if not qstems:
             return False
         toks = _stems(_tokens(texts[i]))
@@ -283,7 +356,6 @@ def hybrid_question_search(
                 common = os.path.commonprefix([qs, ts])
                 if len(common) >= 4:
                     return True
-        # substring overlap
         hay = haystacks[i]
         for qs in qstems:
             if len(qs) >= 5 and qs in hay:
