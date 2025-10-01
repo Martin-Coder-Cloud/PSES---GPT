@@ -19,9 +19,9 @@ K_HITS            = "menu1_hits"                  # list[dict] with 'origin'
 K_FIND_HITS_BTN   = "menu1_find_hits"
 K_SEARCH_DONE     = "menu1_search_done"
 K_LAST_QUERY      = "menu1_last_search_query"
-K_HITS_PAGE_LEX   = "menu1_hits_page_lex"         # page index for lexical tab
-K_HITS_PAGE_SEM   = "menu1_hits_page_sem"         # page index for semantic tab
-K_SEEN_NONCE      = "menu1_seen_nonce"            # for auto-reset on mount (optional)
+K_HITS_PAGE_LEX   = "menu1_hits_page_lex"         # pagination per tab
+K_HITS_PAGE_SEM   = "menu1_hits_page_sem"
+K_SEEN_NONCE      = "menu1_seen_nonce"            # remember last mount nonce
 
 # Years
 DEFAULT_YEARS = [2024, 2022, 2020, 2019]
@@ -64,8 +64,7 @@ def _run_keyword_search(qdf: pd.DataFrame, query: str, top_k: int = 120) -> pd.D
     return pd.DataFrame(columns=["code", "text", "display", "score", "origin"])
 
 def _clear_menu1_state():
-    """Full reset of Menu 1 selections and search artifacts; safe with rerun."""
-    # clear core state
+    """Full reset of Menu 1 selections and search artifacts; no rerun here."""
     st.session_state[K_MULTI_QUESTIONS] = []
     st.session_state[K_SELECTED_CODES]  = []
     st.session_state[K_KW_QUERY]        = ""
@@ -74,7 +73,6 @@ def _clear_menu1_state():
     st.session_state[K_LAST_QUERY]      = ""
     st.session_state[K_HITS_PAGE_LEX]   = 0
     st.session_state[K_HITS_PAGE_SEM]   = 0
-    # remove dynamic checkboxes
     for k in list(st.session_state.keys()):
         if k.startswith("kwhit_") or k.startswith("sel_"):
             try:
@@ -83,13 +81,13 @@ def _clear_menu1_state():
                 st.session_state[k] = False
 
 def _maybe_auto_reset_on_mount():
-    """If the router sets 'menu1_mount_nonce', reset once per mount."""
+    """If router set 'menu1_mount_nonce', clear once (no rerun to avoid loops)."""
     nonce = st.session_state.get("menu1_mount_nonce", None)
     seen  = st.session_state.get(K_SEEN_NONCE, None)
     if nonce is not None and nonce != seen:
         _clear_menu1_state()
         st.session_state[K_SEEN_NONCE] = nonce
-        st.experimental_rerun()
+        # IMPORTANT: no st.experimental_rerun() here
 
 # ---- Main controls ----------------------------------------------------------
 def question_picker(qdf: pd.DataFrame) -> List[str]:
@@ -112,14 +110,10 @@ def question_picker(qdf: pd.DataFrame) -> List[str]:
     # ---------- Step 1 ----------
     st.markdown('<div class="field-label">Step 1: Pick up to 5 survey questions:</div>', unsafe_allow_html=True)
 
-    # Indentation via wrapper div (no Streamlit columns here)
+    # Indentation via wrapper div (no outer columns nesting)
     st.markdown("<div id='menu1_indent' style='margin-left:8%'>", unsafe_allow_html=True)
 
-    # Subtitle + multiselect
-    st.markdown(
-        '<div style="margin: 8px 0 4px 0; font-weight:600; color:#222;">Choose a question from the list below</div>',
-        unsafe_allow_html=True
-    )
+    st.markdown('<div style="margin:8px 0 4px 0; font-weight:600; color:#222;">Choose a question from the list below</div>', unsafe_allow_html=True)
     all_displays = qdf["display"].tolist()
     st.multiselect(
         "Choose one or more from the official list",
@@ -130,13 +124,8 @@ def question_picker(qdf: pd.DataFrame) -> List[str]:
         placeholder="",
     )
 
-    # "or"
-    st.markdown(
-        "<div style='margin:.1rem 0 .1rem .5rem;font-size:.9rem;font-weight:600;color:rgba(49,51,63,.8);'>or</div>",
-        unsafe_allow_html=True
-    )
+    st.markdown("<div style='margin:.1rem 0 .1rem .5rem;font-size:.9rem;font-weight:600;color:rgba(49,51,63,.8);'>or</div>", unsafe_allow_html=True)
 
-    # Keyword header + input
     st.markdown("<div class='field-label'>Search questionnaire by keywords or theme</div>", unsafe_allow_html=True)
     query = st.text_input(
         "Enter keywords (e.g., harassment, recognition, onboarding)",
@@ -145,7 +134,7 @@ def question_picker(qdf: pd.DataFrame) -> List[str]:
         placeholder='Type keywords like “career advancement”, “harassment”, “recognition”…',
     )
 
-    # Buttons in ONE row (safe: only one columns layer on the page at a time)
+    # Buttons: Search & Clear on same row
     c1, c2 = st.columns([0.5, 0.5])
     with c1:
         status_placeholder = st.empty()
@@ -170,10 +159,9 @@ def question_picker(qdf: pd.DataFrame) -> List[str]:
     with c2:
         if st.button("Clear search & selections", key="menu1_clear_all"):
             _clear_menu1_state()
-            # Rerun to avoid "cannot be modified after widget is instantiated"
-            st.experimental_rerun()
+            st.success("Cleared search, hits, and selections.")
 
-    # ---------- Results (inside same wrapper; no extra columns outside tabs) ----------
+    # ---------- Results ----------
     hits = st.session_state.get(K_HITS, [])
     if st.session_state.get(K_SEARCH_DONE, False):
         if not hits:
@@ -190,7 +178,7 @@ def question_picker(qdf: pd.DataFrame) -> List[str]:
 
             tabs = st.tabs(["Lexical matches", "Other matches (semantic)"])
 
-            # --- Lexical tab ---
+            # Lexical tab
             with tabs[0]:
                 total = len(lex_hits)
                 page  = int(st.session_state.get(K_HITS_PAGE_LEX, 0)) or 0
@@ -210,7 +198,6 @@ def question_picker(qdf: pd.DataFrame) -> List[str]:
                         st.session_state.setdefault(key, default_checked)
                         st.checkbox(f"{code} — {text}", key=key)
 
-                    # Prev / Next on SAME ROW (one columns layer inside the tab)
                     pcol, ncol = st.columns([0.5, 0.5])
                     with pcol:
                         st.button("Prev", disabled=(page <= 0), key="menu1_hits_prev_lex",
@@ -219,7 +206,7 @@ def question_picker(qdf: pd.DataFrame) -> List[str]:
                         st.button("Next", disabled=(page >= max_page), key="menu1_hits_next_lex",
                                   on_click=lambda: st.session_state.update({K_HITS_PAGE_LEX: min(max_page, page + 1)}))
 
-            # --- Semantic tab ---
+            # Semantic tab
             with tabs[1]:
                 total = len(sem_hits)
                 page  = int(st.session_state.get(K_HITS_PAGE_SEM, 0)) or 0
@@ -250,7 +237,7 @@ def question_picker(qdf: pd.DataFrame) -> List[str]:
     # Close indent wrapper
     st.markdown("</div>", unsafe_allow_html=True)
 
-    # ---------- Merge selections (multiselect first, then checked hits), cap 5 ----------
+    # ---------- Merge selections, cap 5 ----------
     combined_order: List[str] = []
     for d in st.session_state.get(K_MULTI_QUESTIONS, []):
         c = display_to_code.get(d)
@@ -269,7 +256,6 @@ def question_picker(qdf: pd.DataFrame) -> List[str]:
     if st.session_state[K_SELECTED_CODES]:
         st.markdown('<div class="field-label">Selected questions:</div>', unsafe_allow_html=True)
         updated = list(st.session_state[K_SELECTED_CODES])
-        # vertical list (no columns = no nesting)
         for code in list(updated):
             label = code_to_display.get(code, code)
             keep = st.checkbox(label, value=True, key=f"sel_{code}")
@@ -292,7 +278,6 @@ def year_picker() -> List[int]:
     st.session_state.setdefault(K_SELECT_ALL_YEARS, True)
     select_all = st.checkbox("All years", key=K_SELECT_ALL_YEARS)
 
-    # Pre-set year keys before rendering widgets
     if select_all:
         for yr in DEFAULT_YEARS:
             st.session_state.setdefault(f"year_{yr}", True)
@@ -302,11 +287,10 @@ def year_picker() -> List[int]:
             st.session_state.setdefault(f"year_{yr}", False)
 
     selected_years: List[int] = []
-    # This is the ONLY other columns() usage and it is at top level (safe).
     cols = st.columns(len(DEFAULT_YEARS))
     for i, yr in enumerate(DEFAULT_YEARS):
         with cols[i]:
-            st.checkbox(str(yr), key=f"year_{yr}")  # no value= to avoid double-default warning
+            st.checkbox(str(yr), key=f"year_{yr}")
             if st.session_state.get(f"year_{yr}", False):
                 selected_years.append(yr)
     return sorted(selected_years)
