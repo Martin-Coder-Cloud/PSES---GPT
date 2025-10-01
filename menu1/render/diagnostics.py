@@ -1,13 +1,5 @@
 # menu1/render/diagnostics.py
-"""
-Diagnostics panels for Menu 1:
-- Parameters preview snapshot
-- App setup status (engine, cached data, metadata counts)
-- AI status (key/model presence; simple checks)
-- Search status (embeddings availability & model)
-- Last query timings
-- Tabbed wrapper to show all of the above neatly
-"""
+# (your file as provided; only a tiny change inside search_status_panel())
 
 from __future__ import annotations
 from typing import Any, Dict, Optional
@@ -46,19 +38,13 @@ def _json_box(obj: Dict[str, Any], title: str) -> None:
         unsafe_allow_html=True
     )
 
-
 # --------------------------------------------------------------------------------------
-# Parameters preview
+# (unchanged panels)
 # --------------------------------------------------------------------------------------
 def parameters_preview(qdf: pd.DataFrame, demo_df: pd.DataFrame) -> None:
-    """Show a compact snapshot of currently selected inputs."""
     code_to_display = dict(zip(qdf["code"], qdf["display"]))
-
-    # Selected questions (use display where available)
     sel_codes = st.session_state.get(K_SELECTED_CODES, [])
     selected_questions = [code_to_display.get(c, c) for c in sel_codes]
-
-    # Years: respect 'All years' master toggle
     years_selected = []
     select_all = bool(st.session_state.get(K_SELECT_ALL_YEARS, True))
     for y in DEFAULT_YEARS:
@@ -66,15 +52,13 @@ def parameters_preview(qdf: pd.DataFrame, demo_df: pd.DataFrame) -> None:
         val = True if select_all else bool(st.session_state.get(key, False))
         if val:
             years_selected.append(y)
-
-    # Demographics + optional subgroup
     demo_cat = st.session_state.get(K_DEMO_MAIN, "All respondents")
     if demo_cat and demo_cat != "All respondents":
+        from ..state import SUBGROUP_PREFIX
         sub_key = f"{SUBGROUP_PREFIX}{str(demo_cat).replace(' ', '_')}"
         subgroup = st.session_state.get(sub_key, "") or "All in category"
     else:
         subgroup = "All respondents"
-
     preview = {
         "Selected questions": selected_questions,
         "Years (selected)": years_selected,
@@ -83,19 +67,12 @@ def parameters_preview(qdf: pd.DataFrame, demo_df: pd.DataFrame) -> None:
     }
     _json_box(preview, "Parameters preview")
 
-
-# --------------------------------------------------------------------------------------
-# Backend info panel
-# --------------------------------------------------------------------------------------
 def backend_info_panel(qdf: pd.DataFrame, sdf: pd.DataFrame, demo_df: pd.DataFrame) -> None:
-    """Show loader/engine info and quick dataset stats (best-effort, no hard deps)."""
     info: Dict[str, Any] = {}
     try:
         info = get_backend_info() or {}
     except Exception:
         info = {"engine": "csv.gz"}
-
-    # In-memory PS-wide dataframe (optional)
     try:
         df_ps = preload_pswide_dataframe()
         if isinstance(df_ps, pd.DataFrame) and not df_ps.empty:
@@ -113,23 +90,15 @@ def backend_info_panel(qdf: pd.DataFrame, sdf: pd.DataFrame, demo_df: pd.DataFra
             info.update({"in_memory": False})
     except Exception:
         pass
-
-    # Metadata counts
     try: info["metadata_questions"] = int(len(qdf))
     except Exception: pass
     try: info["metadata_scales"]   = int(len(sdf))
     except Exception: pass
     try: info["metadata_demographics"] = int(len(demo_df))
     except Exception: pass
-
     _json_box(info, "App setup status")
 
-
-# --------------------------------------------------------------------------------------
-# AI status panel (chat/narratives)
-# --------------------------------------------------------------------------------------
 def ai_status_panel() -> None:
-    """Lightweight health check for AI configuration (no API calls)."""
     key = (st.secrets.get("OPENAI_API_KEY", "") or os.environ.get("OPENAI_API_KEY", ""))
     model = (st.secrets.get("OPENAI_MODEL", "") or os.environ.get("OPENAI_MODEL", ""))
     status = {
@@ -140,24 +109,17 @@ def ai_status_panel() -> None:
     }
     _json_box(status, "AI status (summaries)")
 
-
-# --------------------------------------------------------------------------------------
-# Search status panel (embeddings)
-# --------------------------------------------------------------------------------------
 def search_status_panel() -> None:
     """
     Show whether local sentence-transformer embeddings are available & active.
     Falls back to import check if the search module helper isn't present.
     """
     status: Dict[str, Any] = {}
-    # Try the helper exposed by utils/hybrid_search.py
     try:
         from utils.hybrid_search import get_embedding_status  # type: ignore
         status = get_embedding_status() or {}
     except Exception:
         status = {}
-
-    # If helper missing, do a simple package probe
     if not status:
         try:
             have_st = importlib.util.find_spec("sentence_transformers") is not None
@@ -169,15 +131,11 @@ def search_status_panel() -> None:
             "model_name": None,
             "catalogues_indexed": 0,
         }
-
-    # Add environment hints
-    status["PSES_EMBED_MODEL_env"] = os.environ.get("PSES_EMBED_MODEL", None)
+    # Show both possible env var overrides for the model
+    status["MENU1_EMBED_MODEL_env"] = os.environ.get("MENU1_EMBED_MODEL", None)
+    status["PSES_EMBED_MODEL_env"]  = os.environ.get("PSES_EMBED_MODEL", None)
     _json_box(status, "Search status (semantic embeddings)")
 
-
-# --------------------------------------------------------------------------------------
-# Last query panel + helper
-# --------------------------------------------------------------------------------------
 def last_query_panel() -> None:
     last = get_last_query_info() or {"status": "No query yet"}
     _json_box(last, "Last query")
@@ -189,17 +147,15 @@ def mark_last_query(
     engine: Optional[str] = None,
     extra: Optional[Dict[str, Any]] = None,
 ) -> None:
-    """Record latest query timing."""
+    from datetime import datetime
     try:
         eng = engine or (get_backend_info() or {}).get("engine", "unknown")
     except Exception:
         eng = engine or "unknown"
-
     started = datetime.fromtimestamp(started_ts).strftime("%Y-%m-%d %H:%M:%S") if started_ts else None
     finished = datetime.fromtimestamp(finished_ts).strftime("%Y-%m-%d %H:%M:%S") if finished_ts else datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     elapsed = round((finished_ts - started_ts), 2) if (started_ts and finished_ts) else None
-
-    payload = {
+    payload: Dict[str, Any] = {
         "started": started or "(unknown)",
         "finished": finished,
         "elapsed_seconds": elapsed,
@@ -207,18 +163,9 @@ def mark_last_query(
     }
     if extra:
         payload.update(extra)
-
     set_last_query_info(payload)
 
-
-# --------------------------------------------------------------------------------------
-# Tabs wrapper
-# --------------------------------------------------------------------------------------
 def render_diagnostics_tabs(qdf: pd.DataFrame, sdf: pd.DataFrame, demo_df: pd.DataFrame) -> None:
-    """
-    Render diagnostics inside tabs:
-      • Parameters • App setup • AI status • Search status • Last query
-    """
     tabs = st.tabs(["Parameters", "App setup", "AI status", "Search status", "Last query"])
     with tabs[0]:
         parameters_preview(qdf, demo_df)
