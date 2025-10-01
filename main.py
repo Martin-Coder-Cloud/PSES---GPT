@@ -114,6 +114,8 @@ def render_home():
     # Primary CTA → Menu 1
     st.markdown("<div class='single-button'>", unsafe_allow_html=True)
     if st.button("▶️ Start your search", key="menu_start_button"):
+        # Set a fresh mount nonce exactly once at navigation time
+        st.session_state["menu1_mount_nonce"] = time.time()
         goto("menu1")
     st.markdown("</div>", unsafe_allow_html=True)
 
@@ -130,9 +132,6 @@ def render_home():
 def render_menu1():
     _clear_bg_css()
     try:
-        # 👇 ADDED: issue a fresh nonce every time we enter Menu 1
-        st.session_state["menu1_mount_nonce"] = time.time()
-
         from menu1.main import run_menu1  # the compat alias calls run()
         run_menu1()
     except Exception as e:
