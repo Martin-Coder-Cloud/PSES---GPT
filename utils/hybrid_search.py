@@ -1,16 +1,8 @@
 # utils/hybrid_search.py
 # -------------------------------------------------------------------------
-# Lexical-first search with semantic backfill (term-agnostic)
+# Lexical-first search with semantic complements (term-agnostic)
 # Returns ALL lexical hits, and ALSO semantic hits for items without lexical
-# evidence (shown separately in UI via the 'origin' column = 'lex' or 'sem').
-# Notes:
-#   - Lexical evidence checks code + display + text:
-#       * code-aware matches: q01 / q1 / Q 1 / question1 / q01a...
-#       * stem overlap (lightweight stemming)
-#       * IDF-filtered char-4-gram Jaccard
-#     Any lexical match gets a floor score so it passes (> min_score).
-#   - Semantic candidates (for non-lex items) require high cosine + tiny anchor.
-#   - Operators: +include / -exclude (substring on normalized code+display+text)
+# evidence (UI separates by 'origin' = 'lex' or 'sem').
 # -------------------------------------------------------------------------
 
 from __future__ import annotations
@@ -59,7 +51,6 @@ def _uniq(seq: List[str]) -> List[str]:
 # Lightweight stemming + 4-grams
 # -----------------------------
 def _stem(tok: str) -> str:
-    # simple suffix stripper, term-agnostic
     for suf in ("ments","ment","ings","ing","ities","ity","ions","ion",
                 "ness","ships","ship","ably","able","ally","al","ed","es","s","y"):
         if tok.endswith(suf) and len(tok) > len(suf) + 2:
@@ -70,8 +61,7 @@ def _stems(tokens: List[str]) -> List[str]:
     return [_stem(t) for t in tokens]
 
 def _char4(tok: str) -> List[str]:
-    t = tok
-    return [t[i:i+4] for i in range(len(t)-3)] if len(t) >= 4 else [t]
+    return [tok[i:i+4] for i in range(len(tok)-3)] if len(tok) >= 4 else [tok]
 
 # -----------------------------
 # +include / -exclude parsing
@@ -91,7 +81,6 @@ def _parse_req_exc(raw_q: str) -> Tuple[str, List[str], List[str]]:
 _CODE_HINT_RE = re.compile(r"(?i)\b(?:q|question)\s*0*([0-9]+)\s*([a-z]?)\b")
 
 def _split_code_parts(code: str) -> Tuple[Optional[int], str]:
-    """Normalize a questionnaire code like 'Q01a' -> (1, 'a'); 'Q73H' -> (73,'h')."""
     if not code:
         return None, ""
     s = _norm(code).replace(" ", "")
@@ -106,7 +95,6 @@ def _split_code_parts(code: str) -> Tuple[Optional[int], str]:
     return n, (suffix or "")
 
 def _extract_code_hints(raw_query: str) -> List[Tuple[int, str]]:
-    """Find all code-like hints in the user query (q01, q1, Q 1, question1, q01a...)."""
     hints: List[Tuple[int, str]] = []
     for num, suf in _CODE_HINT_RE.findall(raw_query or ""):
         try:
@@ -121,7 +109,6 @@ def _extract_code_hints(raw_query: str) -> List[Tuple[int, str]]:
             hints.append((int(num), _norm(suf)))
         except Exception:
             pass
-    # dedupe, preserve order
     seen = set(); out = []
     for h in hints:
         if h not in seen:
@@ -136,7 +123,7 @@ def _code_hint_matches_item(hint: Tuple[int, str], item_code: str) -> bool:
     if n_hint != n_item:
         return False
     if not suf_hint:
-        return True  # any suffix ok
+        return True
     return suf_item.startswith(suf_hint)
 
 # -----------------------------
@@ -174,7 +161,7 @@ def _cosine_sim(vecA, matB):  # both normalized
     return (matB @ vecA)
 
 # -----------------------------
-# IDF for 4-grams (ignore ultra-common grams)
+# IDF for 4-grams
 # -----------------------------
 _GRAM_DF: Dict[str, int] = {}
 _GRAM_INFORMATIVE: Set[str] = set()
@@ -182,7 +169,7 @@ _GRAM_READY: bool = False
 
 def _build_gram_df(texts: List[str]) -> None:
     global _GRAM_DF, _GRAM_INFORMATIVE, _GRAM_READY
-    if _GRAM_READY:  # already built
+    if _GRAM_READY:
         return
     df: Dict[str, int] = {}
     for txt in texts:
@@ -227,7 +214,7 @@ def hybrid_question_search(
     min_score: float = 0.40,
 ) -> pd.DataFrame:
     """
-    Returns DataFrame[code, text, display, score, origin] per the policy above.
+    Returns DataFrame[code, text, display, score, origin] per policy.
     """
     if qdf is None or qdf.empty or not query or not str(query).strip():
         return qdf.head(0)
@@ -240,57 +227,50 @@ def hybrid_question_search(
     texts  = qdf["text"].astype(str).tolist()
     shows  = qdf["display"].astype(str).tolist()
 
-    # Parse operators
     q_raw = str(query).strip()
     q_clean, includes, excludes = _parse_req_exc(q_raw)
 
-    # Build gram DF once per corpus
     _build_gram_df(texts)
 
-    # Query tokens, stems, char-4 grams
     qtoks  = _uniq(_tokens(q_clean))
     qstems = _stems(qtoks)
     qstem_set = set(qstems)
     qgrams = set(g for t in qstems for g in _char4(t))
 
-    # Normalized haystacks include CODE + DISPLAY + TEXT
+    # Include CODE + DISPLAY + TEXT in haystack
     haystacks = [_norm(f"{code} {disp} {txt}") for code, disp, txt in zip(codes, shows, texts)]
-
-    # Extract code-like hints
     code_hints = _extract_code_hints(q_raw)
 
     N = len(texts)
     lex_scores = [0.0] * N
     has_lex    = [False] * N
 
-    # --- Lexical evidence (code match OR stem overlap OR informative 4-gram Jaccard >= 0.30) ---
+    # --- Lexical evidence ---
     for i, (code, txt, disp) in enumerate(zip(codes, texts, shows)):
-        # Code-aware match (strong)
-        code_hit = any(_code_hint_matches_item(h, code) for h in code_hints)
-        if code_hit:
+        # Code-aware (strong)
+        if any(_code_hint_matches_item(h, code) for h in code_hints):
             has_lex[i] = True
-            lex_scores[i] = 1.0  # strong lexical via code
+            lex_scores[i] = 1.0
             continue
 
-        # Stem overlap across TEXT + DISPLAY
-        toks_text   = _stems(_tokens(txt))
-        toks_disp   = _stems(_tokens(disp))
-        toks_all    = set(toks_text) | set(toks_disp)
-        stem_o      = len(qstem_set & toks_all)
-        stem_cov    = (stem_o / max(1, len(qstems))) if qstems else 0.0
+        # Stems across TEXT + DISPLAY
+        toks_text = _stems(_tokens(txt))
+        toks_disp = _stems(_tokens(disp))
+        toks_all  = set(toks_text) | set(toks_disp)
+        stem_o    = len(qstem_set & toks_all)
+        stem_cov  = (stem_o / max(1, len(qstems))) if qstems else 0.0
 
-        # Informative 4-gram Jaccard across TEXT + DISPLAY
+        # Informative 4-gram Jaccard
         grams_i = set(g for t in toks_all for g in _char4(t))
         jacc = _jaccard_informative_grams(qgrams, grams_i)
 
         is_lex = (stem_o > 0) or (jacc >= 0.30)
         if is_lex:
-            stem_cov = max(stem_cov, 0.50)  # guarantee passes > min_score
+            stem_cov = max(stem_cov, 0.50)
             has_lex[i] = True
-
         lex_scores[i] = min(1.0, max(0.0, stem_cov))
 
-    # --- Apply include/exclude (substring on normalized CODE+DISPLAY+TEXT) ---
+    # include/exclude
     def _contains_any(hay: str, needles: List[str]) -> bool:
         return any(n and n in hay for n in needles)
 
@@ -300,17 +280,15 @@ def hybrid_question_search(
         if includes and not all(inc in hay for inc in includes):
             lex_scores[i] = 0.0; has_lex[i] = False
 
-    # Build lexical frame
     df_all = pd.DataFrame({
         "code": codes, "text": texts, "display": shows, "score": lex_scores, "has_lex": has_lex
     })
 
-    # Lexical hits
     df_lex = df_all[(df_all["has_lex"]) & (df_all["score"] > float(min_score))].copy()
     df_lex["origin"] = "lex"
     df_lex = df_lex.sort_values(["score","code"], ascending=[False, True]).drop_duplicates("code", keep="first")
 
-    # --- Semantic candidates for NON-lex items (always computed) ---
+    # --- Semantic for NON-lex items ---
     df_nonlex = df_all[~df_all["has_lex"]].reset_index(drop=True)
 
     if _ST_OK and not df_nonlex.empty:
@@ -319,8 +297,8 @@ def hybrid_question_search(
             if mat is not None:
                 global _ST_MODEL
                 qvec = _ST_MODEL.encode([q_raw], normalize_embeddings=True)[0]
-                sim  = _cosine_sim(qvec, mat)            # [-1,1] for all items
-                sem_all  = ((sim + 1.0) / 2.0).tolist()   # [0,1]
+                sim  = _cosine_sim(qvec, mat)            # [-1,1]
+                sem_all = ((sim + 1.0) / 2.0).tolist()    # [0,1]
             else:
                 sem_all = [0.0]*N
         except Exception:
@@ -328,18 +306,17 @@ def hybrid_question_search(
     else:
         sem_all = [0.0]*N
 
-    # High semantic threshold + tiny anchor
-    SEM_FLOOR = 0.70  # strict
+    # Two-tier acceptance:
+    SEM_FLOOR  = 0.70  # lower floor you selected
+    SEM_STRICT = 0.80  # strong neighbors: accept without anchor
+
     def _has_generic_anchor(i: int) -> bool:
-        # Require minimal textual affinity even for semantic-only:
-        # shared stem-prefix >=4 OR substring overlap >=5 in haystack.
         if not qstems:
             return False
         toks = _stems(_tokens(texts[i])) + _stems(_tokens(shows[i]))
         for qs in qstems:
             for ts in toks:
-                common = os.path.commonprefix([qs, ts])
-                if len(common) >= 4:
+                if len(os.path.commonprefix([qs, ts])) >= 4:
                     return True
         hay = haystacks[i]
         for qs in qstems:
@@ -348,17 +325,21 @@ def hybrid_question_search(
         return False
 
     sem_rows = []
-    for idx_row in df_nonlex.index.tolist():
-        i = df_nonlex.index[idx_row]
+    for i in range(N):
+        if has_lex[i]:
+            continue
         s = sem_all[i]
-        if s >= SEM_FLOOR and _has_generic_anchor(i):
-            s_shaped = min(1.0, max(0.0, s * s))  # compress mid, preserve strong highs
-            sem_rows.append((codes[i], texts[i], shows[i], s_shaped, "sem"))
+        if s < SEM_FLOOR:
+            continue
+        ok = (s >= SEM_STRICT) or _has_generic_anchor(i)
+        if not ok:
+            continue
+        s_shaped = min(1.0, max(0.0, s * s))  # keep strong highs, compress mid
+        sem_rows.append((codes[i], texts[i], shows[i], s_shaped, "sem"))
 
     df_sem = pd.DataFrame(sem_rows, columns=["code","text","display","score","origin"]) \
              if sem_rows else pd.DataFrame(columns=["code","text","display","score","origin"])
 
-    # Combine; dedupe by code; enforce > min_score; rank
     out = pd.concat([
         df_lex[["code","text","display","score","origin"]],
         df_sem[["code","text","display","score","origin"]],
