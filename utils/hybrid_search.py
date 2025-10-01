@@ -3,6 +3,9 @@
 # Lexical-first search with semantic complements (term-agnostic)
 # Returns ALL lexical hits, and ALSO semantic hits for items without lexical
 # evidence (UI separates by 'origin' = 'lex' or 'sem').
+# Adds lightweight diagnostics helpers:
+#   - get_embedding_status()
+#   - get_last_search_metrics()
 # -------------------------------------------------------------------------
 
 from __future__ import annotations
@@ -10,12 +13,13 @@ from typing import List, Tuple, Optional, Dict, Set
 import hashlib
 import os
 import re
+import time
 import pandas as pd
 
 # Optional semantic support (graceful degradation)
 _ST_OK: bool = False
 _ST_MODEL = None
-_ST_NAME = os.environ.get("MENU1_EMBED_MODEL", "all-MiniLM-L6-v2")
+_ST_NAME = os.environ.get("MENU1_EMBED_MODEL", os.environ.get("PSES_EMBED_MODEL", "all-MiniLM-L6-v2"))
 
 try:
     from sentence_transformers import SentenceTransformer  # type: ignore
@@ -23,6 +27,14 @@ try:
     _ST_OK = True
 except Exception:
     _ST_OK = False
+
+try:
+    import torch  # type: ignore
+    _TORCH_VER = getattr(torch, "__version__", None)
+    _TORCH_DEV = "cuda" if (hasattr(torch, "cuda") and torch.cuda.is_available()) else ("mps" if getattr(torch.backends, "mps", None) and torch.backends.mps.is_available() else "cpu")
+except Exception:
+    _TORCH_VER = None
+    _TORCH_DEV = None
 
 # -----------------------------
 # Normalization / tokenization
@@ -127,10 +139,11 @@ def _code_hint_matches_item(hint: Tuple[int, str], item_code: str) -> bool:
     return suf_item.startswith(suf_hint)
 
 # -----------------------------
-# Embedding cache
+# Embedding cache / status
 # -----------------------------
 _EMBED_CACHE: Dict[str, "np.ndarray"] = {}
 _TXT_CACHE: Dict[str, List[str]] = {}
+_LAST_SEARCH_METRICS: Dict[str, object] = {}  # exposed via get_last_search_metrics()
 
 def _index_key(texts: List[str]) -> str:
     h = hashlib.md5()
@@ -216,6 +229,9 @@ def hybrid_question_search(
     """
     Returns DataFrame[code, text, display, score, origin] per policy.
     """
+    t0 = time.time()
+    t_lex0 = time.time()
+
     if qdf is None or qdf.empty or not query or not str(query).strip():
         return qdf.head(0)
 
@@ -246,8 +262,7 @@ def hybrid_question_search(
     has_lex    = [False] * N
 
     # --- Lexical evidence ---
-    # Jaccard cutoff relaxed from 0.30 -> 0.22 to be slightly typo-tolerant
-    JACCARD_CUTOFF = 0.22
+    JACCARD_CUTOFF = 0.22  # relaxed (typo tolerant)
 
     for i, (code, txt, disp) in enumerate(zip(codes, texts, shows)):
         # Code-aware (strong)
@@ -291,6 +306,9 @@ def hybrid_question_search(
     df_lex["origin"] = "lex"
     df_lex = df_lex.sort_values(["score","code"], ascending=[False, True]).drop_duplicates("code", keep="first")
 
+    t_lex1 = time.time()
+    t_sem0 = time.time()
+
     # --- Semantic for NON-lex items ---
     df_nonlex = df_all[~df_all["has_lex"]].reset_index(drop=True)
 
@@ -309,8 +327,7 @@ def hybrid_question_search(
     else:
         sem_all = [0.0]*N
 
-    # Pure-cosine acceptance (no anchor), with a modest floor
-    SEM_FLOOR = 0.65  # lowered from 0.70
+    SEM_FLOOR = 0.65  # lowered; pure-cosine (no anchor)
 
     sem_rows = []
     for i in range(N):
@@ -319,7 +336,6 @@ def hybrid_question_search(
         s = sem_all[i]
         if s < SEM_FLOOR:
             continue
-        # shape mid scores gently; keep highs
         s_shaped = min(1.0, max(0.0, s * s))
         sem_rows.append((codes[i], texts[i], shows[i], s_shaped, "sem"))
 
@@ -332,6 +348,16 @@ def hybrid_question_search(
     ], ignore_index=True)
 
     if out.empty:
+        # record diagnostics even on empty
+        _LAST_SEARCH_METRICS.update({
+            "query": q_raw, "count_lex": int(len(df_lex)), "count_sem": int(len(df_sem)),
+            "total": 0, "top_k": int(top_k), "min_score": float(min_score),
+            "sem_floor": float(SEM_FLOOR), "jaccard_cutoff": float(JACCARD_CUTOFF),
+            "semantic_active": bool(_ST_OK and (_ST_MODEL is not None)),
+            "t_lex_ms": int((t_lex1 - t_lex0) * 1000),
+            "t_sem_ms": int((time.time() - t_sem0) * 1000),
+            "t_total_ms": int((time.time() - t0) * 1000),
+        })
         return out
 
     out = out.sort_values("score", ascending=False).drop_duplicates("code", keep="first")
@@ -339,4 +365,42 @@ def hybrid_question_search(
     if top_k and top_k > 0:
         out = out.head(top_k)
     out = out.sort_values(["score","code"], ascending=[False, True]).reset_index(drop=True)
+
+    t1 = time.time()
+    _LAST_SEARCH_METRICS.update({
+        "query": q_raw, "count_lex": int(len(df_lex)), "count_sem": int(len(df_sem)),
+        "total": int(len(out)), "top_k": int(top_k), "min_score": float(min_score),
+        "sem_floor": float(SEM_FLOOR), "jaccard_cutoff": float(JACCARD_CUTOFF),
+        "semantic_active": bool(_ST_OK and (_ST_MODEL is not None)),
+        "t_lex_ms": int((t_lex1 - t_lex0) * 1000),
+        "t_sem_ms": int((t1 - t_sem0) * 1000),
+        "t_total_ms": int((t1 - t0) * 1000),
+    })
     return out
+
+
+# -------------------------------------------------------------------------
+# Diagnostics helpers (imported by Diagnostics panel)
+# -------------------------------------------------------------------------
+def get_embedding_status() -> Dict[str, object]:
+    """Return a snapshot of semantic engine status (safe to call any time)."""
+    try:
+        import sentence_transformers as _st  # type: ignore
+        st_ver = getattr(_st, "__version__", None)
+    except Exception:
+        st_ver = None
+    status = {
+        "semantic_library_installed": bool(_ST_OK),
+        "sentence_transformers_version": st_ver,
+        "torch_version": _TORCH_VER,
+        "device": _TORCH_DEV or "cpu",
+        "model_name": _ST_NAME,
+        "model_loaded": bool(_ST_MODEL is not None),
+        "embedding_index_ready": bool(_EMBED_CACHE),  # True after first build
+        "catalogues_indexed": len(_EMBED_CACHE) or 0,
+    }
+    return status
+
+def get_last_search_metrics() -> Dict[str, object]:
+    """Return metrics of the last hybrid_question_search() call."""
+    return dict(_LAST_SEARCH_METRICS)
