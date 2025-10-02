@@ -183,11 +183,20 @@ def call_openai_json(
     user_payload_json: str,
     model_name: Optional[str] = None,
     system_prompt: Optional[str] = None,
+    *,
+    # ---- Back-compat aliases (do not document publicly) ----
+    system: Optional[str] = None,
+    model: Optional[str] = None,
+    # --------------------------------------------------------
     temperature: float = 0.0,
     max_tokens: int = 300,
+    **kwargs,
 ) -> Tuple[Optional[str], Optional[str]]:
     """
     Calls the OpenAI API with a JSON-output instruction (model-dependent).
+    Accepts legacy aliases:
+      - system -> system_prompt
+      - model  -> model_name
     Returns (json_text, error_hint). On error, (None, hint).
     """
     try:
@@ -195,13 +204,14 @@ def call_openai_json(
     except Exception:
         return None, "openai package not available"
 
-    model = model_name or os.environ.get("OPENAI_MODEL", DEFAULT_OPENAI_MODEL)
-    sys_prompt = system_prompt or AI_SYSTEM_PROMPT
+    # Resolve model and system prompt with back-compat
+    resolved_model = model_name or model or os.environ.get("OPENAI_MODEL", DEFAULT_OPENAI_MODEL)
+    sys_prompt = system_prompt or system or AI_SYSTEM_PROMPT
 
     try:
         client = openai.OpenAI()
         resp = client.chat.completions.create(
-            model=model,
+            model=resolved_model,
             temperature=temperature,
             max_tokens=max_tokens,
             response_format={"type": "json_object"},
