@@ -2,12 +2,12 @@
 """
 AI prompt and calling utilities for Menu 1.
 
-PUBLIC API (unchanged names):
-- AI_SYSTEM_PROMPT
+PUBLIC API:
+- AI_SYSTEM_PROMPT: system instruction used for the model
 - build_per_q_prompt(...): builds the JSON "user" payload for a single question
-- build_overall_prompt(...): builds the JSON "user" payload for the multi-question summary
-- call_openai_json(...): robust caller that returns (json_text, error_hint)
-- extract_narrative(...): safe JSON parse helper returning the text narrative or None
+- build_overall_prompt(...): builds the JSON "user" payload for the multi-question overview
+- call_openai_json(...): calls the model in JSON mode and returns (json_text, error_hint)
+- extract_narrative(...): parses the model JSON and returns the "narrative" text
 """
 
 from __future__ import annotations
@@ -15,85 +15,101 @@ from typing import Dict, List, Optional, Tuple
 import json
 import os
 import re
+
 import pandas as pd
 
-from .constants import DEFAULT_OPENAI_MODEL
+try:
+    # Expected to exist in your app; if not, set OPENAI_MODEL env var.
+    from .constants import DEFAULT_OPENAI_MODEL  # type: ignore
+except Exception:
+    DEFAULT_OPENAI_MODEL = "gpt-4o-mini"  # safe fallback; can be overridden by env OPENAI_MODEL
 
-# =====================================================================================
-# System prompt (Option 1 — approved)
-# =====================================================================================
-AI_SYSTEM_PROMPT: str = (
+# -----------------------------
+# Exact AI system prompt (Option 1 with gap-over-time)
+# -----------------------------
+AI_SYSTEM_PROMPT = (
     "You are preparing insights for the Government of Canada's Public Service Employee Survey (PSES).\n\n"
     "Context\n"
     "- The PSES informs improvements to people management in the federal public service.\n"
-    "- Results help identify strengths and concerns in areas such as engagement, inclusion, and well-being.\n"
-    "- Statistics Canada administers the survey with TBS. Confidentiality is guaranteed under the Statistics Act (grouped reporting; <10 suppressed).\n\n"
+    "- Results help identify strengths and concerns in areas such as employee engagement, equity and inclusion, and workplace well-being.\n"
+    "- The survey tracks progress over time to refine action plans. Statistics Canada administers the survey with the Treasury Board of Canada Secretariat. Confidentiality is guaranteed under the Statistics Act (grouped reporting; results for groups <10 are suppressed).\n\n"
     "Data-use rules (hard constraints)\n"
     "- Treat the provided JSON/table as the single source of truth.\n"
-    "- Use ONLY integers that appear in the payload/table OR integers that are EXACT point differences between two payload integers.\n"
+    "- Allowed numbers: integers that appear in the payload/table; integer differences formed by subtracting one payload integer from another (e.g., year-over-year changes, gaps between groups); and integer differences between such gaps across years (gap-over-time).\n"
     "- Do NOT invent numbers, averages, weighted figures, percentages, rescaled values, or decimals. Do NOT round.\n"
     "- If a value needed for a comparison is missing, omit that comparison rather than inferring.\n"
-    "- Refer only to years, groups, and labels present in the payload.\n\n"
+    "- Public Service–wide scope ONLY; do not reference specific departments unless present in the payload.\n\n"
     "Analysis rules (allowed computations ONLY)\n"
-    "- Latest year = the maximum year present in the payload.\n"
-    "- Trend: If a previous year exists, compute the signed change in points (latest - previous) as an integer and report it (e.g., \"down 2 points\"). If not, skip.\n"
-    "- Gaps: In the latest year, compute absolute gaps in points between demographic groups (integer subtraction). Mention only the largest 1–2 gaps.\n"
-    "- Direction: For gaps, state which group is higher/lower (e.g., \"Women (82) vs Another gender (72): 10-point gap\").\n"
-    "- Do NOT compute multi-year averages, rates of change, or anything beyond simple integer subtraction.\n\n"
+    "- Begin with the latest year's result for the selected question (metric_label) if present.\n"
+    "- Trend (overall): If a previous year exists, compute the signed change in points (latest - previous) as an integer and report it (e.g., \"down 2 points\"). If not, skip.\n"
+    "- Gaps (latest year): Compute absolute gaps in points between demographic groups (integer subtraction). Mention only the largest 1–2 gaps and state which group is higher/lower (e.g., \"Women (82) vs Another gender (72): 10-point gap\").\n"
+    "- Gap-over-time: For each highlighted gap, compute the gap for each year where BOTH groups have values. State whether the gap has widened, narrowed, or remained stable since the earliest year with both groups (or, if only two adjacent years exist, vs the previous), and report the change in points with the reference year (e.g., \"gap narrowed by 3 points since 2020\"). If fewer than two such years exist, omit this sentence.\n"
+    "- Do NOT compute multi-year averages, rates of change, or anything beyond the integer subtractions described above.\n\n"
     "Style & output\n"
-    "- Professional, concise, neutral. 1–3 short sentences.\n"
+    "- Professional, concise, neutral. Narrative style (1–3 short sentences, no lists).\n"
     "- When citing values, keep them as plain integers (optionally append \"%\" if the UI uses percent symbols) and use \"points\" for changes/gaps.\n"
     "- Output VALID JSON with exactly one key: \"narrative\".\n"
 )
 
 # =====================================================================================
-# Helpers to build model payloads (public names preserved)
+# Payload builders
 # =====================================================================================
+
+def _is_all_label(x: object) -> bool:
+    s = str(x or "").strip().lower()
+    return s in {"all", "all respondents", "all in category"}
+
+def _to_int_strict(v: object) -> Optional[int]:
+    try:
+        return int(v)  # already integer-like
+    except Exception:
+        try:
+            f = float(v)
+            return int(round(f))
+        except Exception:
+            return None
 
 def _series_json(df_disp: pd.DataFrame, metric_col: str) -> List[Dict[str, int]]:
     """
-    Build a [{year, value}] series from a display dataframe.
-    NOTE: Leaves any intra-year shaping exactly as df_disp provides it; converts to ints.
+    Build a [{year, value}] series from df_disp.
+    - If a Demographic column exists, use ONLY rows where Demographic indicates the PS-wide baseline (All respondents).
+    - No averaging or derived calculations are performed.
     """
-    rows: List[Dict[str, int]] = []
     s = df_disp.copy()
+    if "Year" not in s.columns or metric_col not in s.columns:
+        return []
+    if "Demographic" in s.columns:
+        s = s[s["Demographic"].map(_is_all_label, na_action="ignore")]
     s = s.dropna(subset=["Year"])
     s = s.sort_values("Year")
+    out: List[Dict[str, int]] = []
     for _, r in s.iterrows():
-        try:
-            y = int(r["Year"])
-        except Exception:
+        y = _to_int_strict(r.get("Year"))
+        v = _to_int_strict(r.get(metric_col))
+        if y is None or v is None:
             continue
-        v_raw = r.get(metric_col)
-        try:
-            v = int(v_raw)
-        except Exception:
-            try:
-                v = int(round(float(v_raw)))
-            except Exception:
-                continue
-        rows.append({"year": y, "value": v})
-    return rows
+        out.append({"year": y, "value": v})
+    return out
 
 def _groups_json_for_year(df_disp: pd.DataFrame, metric_col: str, year: int) -> List[Dict[str, object]]:
     """
     Returns [{label, value}] for a single year if a Demographic column exists in df_disp.
+    Uses values as-is (integer cast only). No averaging.
     """
     if "Demographic" not in df_disp.columns:
         return []
-    s = df_disp[df_disp["Year"].astype("Int64") == int(year)].copy()
+    s = df_disp.copy()
+    try:
+        s = s[pd.to_numeric(s["Year"], errors="coerce").astype("Int64") == int(year)]
+    except Exception:
+        return []
     s = s.dropna(subset=["Demographic"])
     out: List[Dict[str, object]] = []
     for _, r in s.iterrows():
-        label = str(r["Demographic"])
-        v_raw = r.get(metric_col)
-        try:
-            v = int(v_raw)
-        except Exception:
-            try:
-                v = int(round(float(v_raw)))
-            except Exception:
-                continue
+        label = str(r.get("Demographic"))
+        v = _to_int_strict(r.get(metric_col))
+        if v is None:
+            continue
         out.append({"label": label, "value": v})
     return out
 
@@ -103,23 +119,18 @@ def build_per_q_prompt(
     df_disp: pd.DataFrame,
     metric_col: str,
     metric_label: str,
-    category_in_play: bool
+    category_in_play: bool,
 ) -> str:
     """
     Build the per-question JSON payload expected by the model.
     Returns a JSON string (user message content).
     """
-    latest_year = pd.to_numeric(df_disp["Year"], errors="coerce").max()
+    latest_year_val = pd.to_numeric(df_disp.get("Year"), errors="coerce").max()
+    latest_year = int(latest_year_val) if pd.notna(latest_year_val) else None
 
-    # Snapshot of groups at the latest year (if demographics in play)
-    group_snapshot: List[Dict[str, int]] = []
-    if category_in_play and "Demographic" in df_disp.columns and pd.notna(latest_year):
-        try:
-            latest_int = int(latest_year)
-        except Exception:
-            latest_int = None
-        if latest_int is not None:
-            group_snapshot = _groups_json_for_year(df_disp, metric_col, latest_int)
+    group_snapshot: List[Dict[str, object]] = []
+    if category_in_play and latest_year is not None:
+        group_snapshot = _groups_json_for_year(df_disp, metric_col, latest_year)
 
     series_rows = _series_json(df_disp, metric_col)
 
@@ -127,18 +138,17 @@ def build_per_q_prompt(
         "question_code": str(question_code),
         "question_text": str(question_text),
         "metric_label": str(metric_label),
-        "series": series_rows,                  # [{year, value}] integers
-        "latest_year": int(latest_year) if pd.notna(latest_year) else None,
-        "groups_latest_year": group_snapshot,   # [{label, value}] integers
+        "series": series_rows,                 # [{year, value}] integers (baseline only if available)
+        "latest_year": latest_year,            # int or None
+        "groups_latest_year": group_snapshot,  # [{label, value}] integers
     }
     return json.dumps(payload, ensure_ascii=False)
 
 def build_overall_prompt(
-    tiles: List[Dict[str, object]],  # list of {"question_code","question_text","latest_year","latest_value_int"}
+    tiles: List[Dict[str, object]],  # [{"question_code","question_text","latest_year","latest_value_int"}]
 ) -> str:
     """
     Build a compact payload for the multi-question overview.
-    Returns a JSON string (user message content).
     """
     clean: List[Dict[str, object]] = []
     for t in tiles:
@@ -154,7 +164,7 @@ def build_overall_prompt(
     return json.dumps(payload, ensure_ascii=False)
 
 # =====================================================================================
-# Model caller (JSON mode) and helpers — public name preserved
+# Model caller (JSON mode) and helpers
 # =====================================================================================
 
 _JSON_TAIL_RE = re.compile(r"\{.*\}\s*$", re.DOTALL)
@@ -164,9 +174,10 @@ def call_openai_json(
     model_name: Optional[str] = None,
     system_prompt: Optional[str] = None,
     *,
-    # Back-compat aliases accepted (safe no-ops if unused)
+    # Back-compat keyword aliases (accepted but optional)
     system: Optional[str] = None,
     model: Optional[str] = None,
+    user: Optional[str] = None,
     temperature: float = 0.0,
     max_tokens: int = 300,
     **kwargs,
@@ -176,10 +187,11 @@ def call_openai_json(
     Returns (json_text, error_hint). On error, (None, hint).
 
     Back-compat:
-      - accepts legacy keyword aliases: system -> system_prompt, model -> model_name
+      - accepts legacy keyword aliases: system -> system_prompt, model -> model_name, user -> user_payload_json
       - if payload is missing/empty, returns a clear error hint instead of raising
     """
-    if not user_payload_json:
+    payload = user_payload_json or user
+    if not payload:
         return None, "empty or missing user_payload_json"
 
     try:
@@ -190,8 +202,8 @@ def call_openai_json(
     resolved_model = model_name or model or os.environ.get("OPENAI_MODEL", DEFAULT_OPENAI_MODEL)
     sys_prompt = system_prompt or system or AI_SYSTEM_PROMPT
 
+    # Try the new-style client first; fall back to legacy if needed
     try:
-        # New-style client (if available)
         client = openai.OpenAI()
         resp = client.chat.completions.create(
             model=resolved_model,
@@ -200,12 +212,11 @@ def call_openai_json(
             response_format={"type": "json_object"},
             messages=[
                 {"role": "system", "content": sys_prompt},
-                {"role": "user", "content": user_payload_json},
+                {"role": "user", "content": payload},
             ],
         )
         return (resp.choices[0].message.content, None)
     except Exception:
-        # Fallback to legacy API if the above path fails
         try:
             out = openai.ChatCompletion.create(
                 model=resolved_model,
@@ -213,7 +224,7 @@ def call_openai_json(
                 max_tokens=max_tokens,
                 messages=[
                     {"role": "system", "content": sys_prompt},
-                    {"role": "user", "content": user_payload_json},
+                    {"role": "user", "content": payload},
                 ],
             )
             content = out["choices"][0]["message"]["content"]
@@ -224,7 +235,7 @@ def call_openai_json(
 def extract_narrative(json_text: Optional[str]) -> Optional[str]:
     """
     Extracts the "narrative" field from a JSON string.
-    Robust to trailing tokens before the final JSON object.
+    Robust to leading/trailing noise by trimming to the last JSON object.
     """
     if not json_text:
         return None
