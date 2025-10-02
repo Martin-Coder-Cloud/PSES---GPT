@@ -4,10 +4,11 @@ Query wrappers and normalization for Menu 1.
 
 - Provides a stable, testable surface over utils.data_loader
 - Keeps all column name normalization in one place
+- Restores the "All respondents" baseline row in demographic tabulations
 """
 
 from __future__ import annotations
-from typing import Iterable, Optional
+from typing import Iterable, Optional, List
 import pandas as pd
 
 # ---- Optional imports from your existing utils layer ------------------------
@@ -16,120 +17,176 @@ try:
 except Exception:
     load_results2024_filtered = None  # type: ignore
 
-# Optional diagnostics / preload (best-effort)
-try:
-    from utils.data_loader import get_backend_info  # type: ignore
-except Exception:
-    def get_backend_info() -> dict:  # type: ignore
-        return {"engine": "csv.gz", "in_memory": False}
 
-try:
-    from utils.data_loader import preload_pswide_dataframe  # type: ignore
-except Exception:
-    def preload_pswide_dataframe():  # type: ignore
-        return None
+# ---- Column normalization (defensive, does not change values) ---------------
+_OUT_COLS = [
+    "year", "question_code", "group_value", "n",
+    "positive_pct", "neutral_pct", "negative_pct",
+    "answer1", "answer2", "answer3", "answer4", "answer5", "answer6", "answer7",
+]
 
+_RENAME_MAP = {
+    # identifiers
+    "SURVEYR": "year",
+    "survey_year": "year",
+    "QUESTION": "question_code",
+    "question": "question_code",
+    "DEMCODE": "group_value",
+    "demcode": "group_value",
+    "group": "group_value",
+    # measures
+    "ANSCOUNT": "n",
+    "anscount": "n",
+    "POSITIVE": "positive_pct",
+    "NEUTRAL": "neutral_pct",
+    "NEGATIVE": "negative_pct",
+    "ANSWER1": "answer1", "ANSWER2": "answer2", "ANSWER3": "answer3",
+    "ANSWER4": "answer4", "ANSWER5": "answer5", "ANSWER6": "answer6", "ANSWER7": "answer7",
+}
 
-# ---- Public: normalization ---------------------------------------------------
-def normalize_results(df: pd.DataFrame) -> pd.DataFrame:
+def _normalize_columns(df: pd.DataFrame) -> pd.DataFrame:
     """
-    Normalize common column names from loader output.
-
-    Input columns (various possibilities):
-      - question_code / QUESTION / question
-      - year / SURVEYR
-      - group_value / DEMCODE / demcode
-      - POSITIVE/NEUTRAL/NEGATIVE -> positive_pct/neutral_pct/negative_pct
-      - ANSCOUNT -> n
+    Make sure result frames have a consistent schema expected by the downstream
+    formatter/render path. This does NOT change values, only column names and order.
     """
     if df is None or df.empty:
-        return df
+        return pd.DataFrame(columns=_OUT_COLS)
 
-    out = df.copy()
+    cols = {c: _RENAME_MAP.get(c, _RENAME_MAP.get(c.strip().upper(), c)) for c in df.columns}
+    out = df.rename(columns=cols).copy()
 
-    # QUESTION -> question_code
+    # Fill any known aliases if still missing
     if "question_code" not in out.columns:
-        if "QUESTION" in out.columns:
-            out = out.rename(columns={"QUESTION": "question_code"})
-        else:
-            for c in out.columns:
-                if c.strip().lower() == "question":
-                    out = out.rename(columns={c: "question_code"})
-                    break
+        if "QUESTION" in df.columns:
+            out.rename(columns={"QUESTION": "question_code"}, inplace=True)
 
-    # SURVEYR -> year
     if "year" not in out.columns:
-        if "SURVEYR" in out.columns:
-            out = out.rename(columns={"SURVEYR": "year"})
-        else:
-            for c in out.columns:
-                if c.strip().lower() in ("surveyr", "year"):
-                    out = out.rename(columns={c: "year"})
-                    break
+        if "SURVEYR" in df.columns:
+            out.rename(columns={"SURVEYR": "year"}, inplace=True)
 
-    # DEMCODE -> group_value
     if "group_value" not in out.columns:
-        if "DEMCODE" in out.columns:
-            out = out.rename(columns={"DEMCODE": "group_value"})
-        else:
-            for c in out.columns:
-                if c.strip().lower() == "demcode":
-                    out = out.rename(columns={c: "group_value"})
-                    break
+        for c in ("DEMCODE", "group", "group_code"):
+            if c in df.columns:
+                out.rename(columns={c: "group_value"}, inplace=True)
+                break
 
-    # POS/NEU/NEG rename
-    if "positive_pct" not in out.columns and "POSITIVE" in out.columns:
-        out = out.rename(columns={"POSITIVE": "positive_pct"})
-    if "neutral_pct" not in out.columns and "NEUTRAL" in out.columns:
-        out = out.rename(columns={"NEUTRAL": "neutral_pct"})
-    if "negative_pct" not in out.columns and "NEGATIVE" in out.columns:
-        out = out.rename(columns={"NEGATIVE": "negative_pct"})
-    if "n" not in out.columns and "ANSCOUNT" in out.columns:
-        out = out.rename(columns={"ANSCOUNT": "n"})
+    if "n" not in out.columns:
+        for c in ("ANSCOUNT", "n_responses", "count"):
+            if c in df.columns:
+                out.rename(columns={c: "n"}, inplace=True)
+                break
+
+    if "positive_pct" not in out.columns and "POSITIVE" in df.columns:
+        out.rename(columns={"POSITIVE": "positive_pct"}, inplace=True)
+    if "neutral_pct" not in out.columns and "NEUTRAL" in df.columns:
+        out.rename(columns={"NEUTRAL": "neutral_pct"}, inplace=True)
+    if "negative_pct" not in out.columns and "NEGATIVE" in df.columns:
+        out.rename(columns={"NEGATIVE": "negative_pct"}, inplace=True)
+
+    # Ensure all expected columns exist (preserve order)
+    for c in _OUT_COLS:
+        if c not in out.columns:
+            out[c] = pd.NA
+
+    out = out[_OUT_COLS]
+
+    # Light-touch string hygiene for identifiers (values themselves unchanged semantically)
+    if "question_code" in out.columns:
+        out["question_code"] = out["question_code"].astype("string").str.strip().str.upper()
+    if "group_value" in out.columns:
+        gv = out["group_value"].astype("string").str.strip()
+        # Keep "All" if the loader already set it; otherwise leave as-is (loader is canonical)
+        out["group_value"] = gv
+
+    # Keep year as integer if possible (non-fatal if it can't cast)
+    try:
+        out["year"] = pd.to_numeric(out["year"], errors="coerce").astype("Int16")
+    except Exception:
+        pass
 
     return out
 
 
-# ---- Public: main query wrapper ---------------------------------------------
+# ---- Public API -------------------------------------------------------------
 def fetch_per_question(
     question_code: str,
-    years: Iterable[int],
-    demcodes: Iterable[Optional[str]],
+    years: Iterable[int | str],
+    demcodes: Optional[Iterable[Optional[str]]] = None,
+    *,
+    include_baseline: bool = True,
 ) -> pd.DataFrame:
     """
-    Fetch results for a single question across the selected years and demographic codes.
-    - Calls the repo's load_results2024_filtered for each demcode
-    - Concats parts and returns a single DataFrame (may be empty)
+    Fetches rows for a single question across selected years and demographic codes.
 
-    Args:
-        question_code: e.g., "Q01"
-        years: e.g., [2019, 2020, 2022, 2024]
-        demcodes: iterable of demographic codes; may include None for overall
+    Behavior (restored):
+      - If a demographic list is provided, include the PS-wide baseline ("All respondents")
+        by prepending group_value=None to the request.
+      - If no demcodes are provided (i.e., overall selection), fetch baseline only.
+      - Deduplicate codes while preserving order: baseline first, then subgroups.
 
-    Returns:
-        pd.DataFrame (possibly empty). Caller is responsible for:
-          - normalize_results(df)
-          - suppression handling
-          - display formatting
+    Returns a normalized DataFrame with the expected Menu 1 schema.
     """
     if load_results2024_filtered is None:
-        return pd.DataFrame()
+        # Hard failure path kept minimal; downstream will show a friendly message.
+        return pd.DataFrame(columns=_OUT_COLS)
 
-    parts = []
-    for code in demcodes:
+    # 1) Build the exact group_value sequence to fetch
+    seq: List[Optional[str]] = []
+
+    # include baseline for any demographic request
+    if include_baseline:
+        seq.append(None)  # None means "overall" to the loader -> returns group_value == "All"
+
+    # append provided codes (if any)
+    if demcodes:
+        for code in demcodes:
+            # Preserve None codes if caller already included; they'll dedupe below
+            seq.append(None if code in (None, "", "All") else str(code))
+    else:
+        # No demcodes means overall-only (baseline already appended if include_baseline)
+        pass
+
+    # De-duplicate while preserving order (ensures baseline first, then unique subgroups)
+    seen = set()
+    group_values: List[Optional[str]] = []
+    for v in seq or [None]:
+        key = "None" if v is None else str(v)
+        if key not in seen:
+            seen.add(key)
+            group_values.append(v)
+
+    # 2) Execute queries and collect parts
+    parts: List[pd.DataFrame] = []
+    for gv in group_values:
         try:
             df_part = load_results2024_filtered(
                 question_code=question_code,
                 years=list(years),
-                group_value=(None if code in (None, "", "All") else str(code)),
+                group_value=gv,  # None -> overall ("All respondents")
             )
             if df_part is not None and not df_part.empty:
                 parts.append(df_part)
         except Exception:
-            # Keep robust; skip failing slice rather than crashing the page
+            # Robust to any single-slice error: continue
             continue
 
     if not parts:
-        return pd.DataFrame()
+        return pd.DataFrame(columns=_OUT_COLS)
 
-    return pd.concat(parts, ignore_index=True)
+    out = pd.concat(parts, ignore_index=True)
+    out = _normalize_columns(out)
+
+    # 3) Friendly ordering: baseline first, then subgroup codes; within each, sort by year asc
+    try:
+        # Baseline flag
+        out["__is_baseline__"] = (out["group_value"].astype("string") == "All")
+        # Preserve subgroup input order after baseline:
+        order_map = {str(v): i for i, v in enumerate([v for v in group_values if v is not None])}
+        out["__sub_order__"] = out["group_value"].astype("string").map(order_map).fillna(1e9)
+        out = out.sort_values(["__is_baseline__", "__sub_order__", "year"], ascending=[False, True, True])
+        out = out.drop(columns=["__is_baseline__", "__sub_order__"])
+    except Exception:
+        # If anything goes wrong, return as-is (still includes baseline)
+        pass
+
+    return out
