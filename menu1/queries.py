@@ -5,6 +5,7 @@ Query wrappers and normalization for Menu 1.
 - Provides a stable, testable surface over utils.data_loader
 - Keeps all column name normalization in one place
 - Restores the "All respondents" baseline row in demographic tabulations
+- Back-compat: re-exports `normalize_results(df)` for callers that import it
 """
 
 from __future__ import annotations
@@ -52,30 +53,25 @@ def _normalize_columns(df: pd.DataFrame) -> pd.DataFrame:
     if df is None or df.empty:
         return pd.DataFrame(columns=_OUT_COLS)
 
+    # Map/alias known columns
     cols = {c: _RENAME_MAP.get(c, _RENAME_MAP.get(c.strip().upper(), c)) for c in df.columns}
     out = df.rename(columns=cols).copy()
 
-    # Fill any known aliases if still missing
-    if "question_code" not in out.columns:
-        if "QUESTION" in df.columns:
-            out.rename(columns={"QUESTION": "question_code"}, inplace=True)
-
-    if "year" not in out.columns:
-        if "SURVEYR" in df.columns:
-            out.rename(columns={"SURVEYR": "year"}, inplace=True)
-
+    # Ensure canonical names if present under known aliases
+    if "question_code" not in out.columns and "QUESTION" in df.columns:
+        out.rename(columns={"QUESTION": "question_code"}, inplace=True)
+    if "year" not in out.columns and "SURVEYR" in df.columns:
+        out.rename(columns={"SURVEYR": "year"}, inplace=True)
     if "group_value" not in out.columns:
         for c in ("DEMCODE", "group", "group_code"):
             if c in df.columns:
                 out.rename(columns={c: "group_value"}, inplace=True)
                 break
-
     if "n" not in out.columns:
         for c in ("ANSCOUNT", "n_responses", "count"):
             if c in df.columns:
                 out.rename(columns={c: "n"}, inplace=True)
                 break
-
     if "positive_pct" not in out.columns and "POSITIVE" in df.columns:
         out.rename(columns={"POSITIVE": "positive_pct"}, inplace=True)
     if "neutral_pct" not in out.columns and "NEUTRAL" in df.columns:
@@ -90,13 +86,9 @@ def _normalize_columns(df: pd.DataFrame) -> pd.DataFrame:
 
     out = out[_OUT_COLS]
 
-    # Light-touch string hygiene for identifiers (values themselves unchanged semantically)
-    if "question_code" in out.columns:
-        out["question_code"] = out["question_code"].astype("string").str.strip().str.upper()
-    if "group_value" in out.columns:
-        gv = out["group_value"].astype("string").str.strip()
-        # Keep "All" if the loader already set it; otherwise leave as-is (loader is canonical)
-        out["group_value"] = gv
+    # Light-touch string hygiene for identifiers (values themselves already canonical from loader)
+    out["question_code"] = out["question_code"].astype("string").str.strip().str.upper()
+    out["group_value"] = out["group_value"].astype("string").str.strip()
 
     # Keep year as integer if possible (non-fatal if it can't cast)
     try:
@@ -105,6 +97,16 @@ def _normalize_columns(df: pd.DataFrame) -> pd.DataFrame:
         pass
 
     return out
+
+
+# ---- Back-compat export -----------------------------------------------------
+def normalize_results(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Backward-compatible alias so older code can:
+        from menu1.queries import normalize_results
+    without breaking. Delegates to the internal normalizer.
+    """
+    return _normalize_columns(df)
 
 
 # ---- Public API -------------------------------------------------------------
@@ -140,7 +142,6 @@ def fetch_per_question(
     # append provided codes (if any)
     if demcodes:
         for code in demcodes:
-            # Preserve None codes if caller already included; they'll dedupe below
             seq.append(None if code in (None, "", "All") else str(code))
     else:
         # No demcodes means overall-only (baseline already appended if include_baseline)
@@ -178,15 +179,12 @@ def fetch_per_question(
 
     # 3) Friendly ordering: baseline first, then subgroup codes; within each, sort by year asc
     try:
-        # Baseline flag
         out["__is_baseline__"] = (out["group_value"].astype("string") == "All")
-        # Preserve subgroup input order after baseline:
         order_map = {str(v): i for i, v in enumerate([v for v in group_values if v is not None])}
         out["__sub_order__"] = out["group_value"].astype("string").map(order_map).fillna(1e9)
         out = out.sort_values(["__is_baseline__", "__sub_order__", "year"], ascending=[False, True, True])
         out = out.drop(columns=["__is_baseline__", "__sub_order__"])
     except Exception:
-        # If anything goes wrong, return as-is (still includes baseline)
         pass
 
     return out
