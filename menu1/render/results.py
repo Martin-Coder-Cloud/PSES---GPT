@@ -53,7 +53,7 @@ def _source_link_line(source_title: str, source_url: str) -> None:
         unsafe_allow_html=True
     )
 
-# ====================== FACT-CHECK VALIDATOR HELPERS (added) ======================
+# ====================== FACT-CHECK VALIDATOR HELPERS (focused on datapoints) ======================
 
 _INT_RE = re.compile(r"-?\d+")
 
@@ -161,28 +161,53 @@ def _allowed_numbers_from_disp(df: pd.DataFrame, metric_col: str) -> Tuple[Set[i
 
     return allowed, years
 
-def _extract_integers_with_sentences(text: str) -> List[Tuple[int, str]]:
+def _extract_datapoint_integers_with_sentences(text: str) -> List[Tuple[int, str]]:
     """
-    Extract integers from text, keeping the sentence they appear in.
-    Naive sentence split on punctuation.
+    Extract only 'data-point' integers from text, keeping the sentence they appear in.
+    We ONLY keep numbers in these contexts:
+      - inside parentheses: '(90)'
+      - followed by 'point'/'points': '12 points', 'down 2 points'
+      - followed by '%'
+      - after verbs: 'is 79', 'was 81', 'were 80', 'at 75', 'reached 83', 'stood at 78'
+      - after connectors: 'from 84', 'to 79', 'vs 72'
+    We IGNORE everything else (e.g., 'aged 24 years', '30–34 years').
     """
     if not text:
         return []
-    # Simple sentence split
+
     sentences = re.split(r'(?<=[\.\!\?])\s+', text.strip())
     found: List[Tuple[int, str]] = []
+
+    # Patterns for datapoint contexts
+    patterns = [
+        re.compile(r"\((\d+)\)"),                                 # (90)
+        re.compile(r"\b(\d+)\s*points?\b", re.IGNORECASE),        # 12 points
+        re.compile(r"\b(\d+)\s*%\b"),                             # 79%
+        re.compile(r"\b(?:is|was|were|at|reached|stood(?:\s+at)?)\s+(\d+)\b", re.IGNORECASE),  # is 79
+        re.compile(r"\bfrom\s+(\d+)\b", re.IGNORECASE),           # from 84
+        re.compile(r"\bto\s+(\d+)\b", re.IGNORECASE),             # to 79
+        re.compile(r"\bvs\.?\s+(\d+)\b", re.IGNORECASE),          # vs 72
+    ]
+
     for s in sentences:
-        for m in _INT_RE.finditer(s):
-            try:
-                n = int(m.group(0))
-                found.append((n, s))
-            except Exception:
-                continue
+        # Collect matches per sentence
+        nums: Set[int] = set()
+        for pat in patterns:
+            for m in pat.finditer(s):
+                try:
+                    n = int(m.group(1))
+                    nums.add(n)
+                except Exception:
+                    continue
+        # Add (num, sentence)
+        for n in sorted(nums):
+            found.append((n, s))
     return found
 
 def _validate_narrative(narrative: str, allowed: Set[int], years: Set[int]) -> dict:
     """
     Validate narrative integers against the allowed set; ignore year numbers.
+    Only considers integers extracted by `_extract_datapoint_integers_with_sentences`.
     Returns:
       {
         "ok": bool,
@@ -196,7 +221,7 @@ def _validate_narrative(narrative: str, allowed: Set[int], years: Set[int]) -> d
     problems: List[dict] = []
     bad: Set[int] = set()
 
-    seen = _extract_integers_with_sentences(narrative)
+    seen = _extract_datapoint_integers_with_sentences(narrative)
     for n, sent in seen:
         if _is_year_like(n) or (n in years):
             continue
@@ -206,7 +231,7 @@ def _validate_narrative(narrative: str, allowed: Set[int], years: Set[int]) -> d
 
     return {"ok": (len(bad) == 0), "bad_numbers": bad, "problems": problems}
 
-# ==================== END FACT-CHECK VALIDATOR HELPERS (added) ====================
+# ==================== END FACT-CHECK VALIDATOR HELPERS ====================
 
 def _compute_ai_narratives(
     *,
@@ -383,7 +408,7 @@ def tabs_summary_and_per_q(
                 st.markdown("**Overall**")
                 st.write(overall_narrative)
 
-            # ================== FACT CHECK VALIDATION UI (added) ==================
+            # ================== FACT CHECK VALIDATION UI ==================
             with st.spinner("Fact check validation…"):
                 # Validate each per-question narrative against its table
                 results_rows: List[dict] = []
@@ -453,7 +478,7 @@ def tabs_summary_and_per_q(
                     # ok is None → not applicable
                     note = row.get("note", "validation not applicable")
                     st.markdown(f"ℹ️ **{sec}** — {note}")
-            # =============== END FACT CHECK VALIDATION UI (added) ===============
+            # =============== END FACT CHECK VALIDATION UI ===============
 
     # ---------------------- Per-question tabs ----------------------
     for idx, qcode in enumerate(tab_labels, start=1):
