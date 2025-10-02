@@ -145,21 +145,89 @@ def build_per_q_prompt(
     return json.dumps(payload, ensure_ascii=False)
 
 def build_overall_prompt(
-    tiles: List[Dict[str, object]],  # [{"question_code","question_text","latest_year","latest_value_int"}]
+    tiles: Optional[List[Dict[str, object]]] = None,
+    *,
+    # ---- Legacy call style (shim) ----
+    tab_labels: Optional[List[str]] = None,
+    pivot_df: Optional[pd.DataFrame] = None,
+    q_to_metric: Optional[Dict[str, str]] = None,
+    **kwargs,
 ) -> str:
     """
     Build a compact payload for the multi-question overview.
+
+    Supports two call styles:
+      1) build_overall_prompt(tiles=[{question_code, question_text, latest_year, latest_value_int}, ...])
+      2) build_overall_prompt(tab_labels=[...], pivot_df=<DataFrame>, q_to_metric={...})
+
+    In style (2), we construct 'tiles' from the pivot:
+      - latest_year = max numeric-convertible column in pivot_df
+      - latest_value_int = int(pivot_df.loc[q, latest_year]) when available
     """
+    # If tiles were provided explicitly, use them as-is.
+    if tiles is None:
+        tiles = []
+
+    # Legacy path: build tiles from (tab_labels, pivot_df)
+    if not tiles and tab_labels is not None and pivot_df is not None:
+        # Determine latest year column (numeric-convertible)
+        year_cols: List[int] = []
+        for c in pivot_df.columns:
+            try:
+                year_cols.append(int(c))
+            except Exception:
+                # ignore non-year columns (e.g., strings)
+                continue
+        latest_year: Optional[int] = max(year_cols) if year_cols else None
+
+        for q in tab_labels:
+            latest_val_int: Optional[int] = None
+            if latest_year is not None:
+                try:
+                    if q in getattr(pivot_df.index, "levels", [pivot_df.index])[0]:
+                        # simple index with question codes
+                        v = pivot_df.loc[q, latest_year]
+                    else:
+                        # fallback: try direct .loc (works for many simple indexes)
+                        v = pivot_df.loc[q, latest_year]
+                    # If v is a Series (multiindex row), take the first numeric value
+                    if hasattr(v, "values"):
+                        # pull first numeric-like value
+                        vv = None
+                        for item in (list(v.values) if hasattr(v, "values") else [v]):
+                            try:
+                                vv = int(item)
+                                break
+                            except Exception:
+                                try:
+                                    vv = int(round(float(item)))
+                                    break
+                                except Exception:
+                                    continue
+                        v = vv
+                    latest_val_int = int(v) if v is not None else None
+                except Exception:
+                    latest_val_int = None
+            tile = {
+                "question_code": str(q),
+                "question_text": "",  # not strictly needed for the overall payload
+                "latest_year": latest_year if latest_year is not None else None,
+                "latest_value_int": latest_val_int if latest_val_int is not None else None,
+            }
+            tiles.append(tile)
+
+    # Keep only clean integer entries
     clean: List[Dict[str, object]] = []
     for t in tiles:
         try:
             code = str(t.get("question_code"))
-            text = str(t.get("question_text"))
+            text = str(t.get("question_text", ""))  # optional
             yr = int(t.get("latest_year"))
             val = int(t.get("latest_value_int"))
             clean.append({"question_code": code, "question_text": text, "latest_year": yr, "latest_value": val})
         except Exception:
             continue
+
     payload = {"overview": clean}
     return json.dumps(payload, ensure_ascii=False)
 
