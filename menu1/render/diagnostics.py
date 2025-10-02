@@ -2,7 +2,9 @@
 # (original file + approved changes)
 #  • Parameters panel is code-first + shows Resolved DEMCODE(s)
 #  • Raw data (debug) tab shows unsuppressed, unpivoted rows
-#  • NEW section: DEMCODE scanner (PS-wide) with optional "Force CSV scan (PS-wide)"
+#  • DEMCODE scanner (PS-wide) with optional "Force CSV scan (PS-wide)"
+#  • FIX: replace brittle multi-line strings with safe triple-quoted strings
+#         and remove mojibake characters.
 
 from __future__ import annotations
 from typing import Any, Dict, Optional, List
@@ -57,7 +59,9 @@ except Exception:
 def _json_box(obj: Dict[str, Any], title: str) -> None:
     st.markdown(f"#### {title}")
     st.markdown(
-        f"<div class='diag-box'><pre>{json.dumps(obj, ensure_ascii=False, indent=2)}</pre></div>",
+        """<div class='diag-box'><pre>{}</pre></div>""".format(
+            json.dumps(obj, ensure_ascii=False, indent=2)
+        ),
         unsafe_allow_html=True
     )
 
@@ -69,7 +73,8 @@ def parameters_preview(qdf: pd.DataFrame, demo_df: pd.DataFrame) -> None:
     CHANGE (approved earlier): show codes, not labels; and include resolved DEMCODE(s).
     Everything else preserved.
     """
-    code_to_display = dict(zip(qdf["code"], qdf["display"]))  # kept for cross-check, not displayed
+    # Kept for potential cross-checks (not displayed)
+    code_to_display = dict(zip(qdf["code"], qdf["display"])) if "code" in qdf.columns and "display" in qdf.columns else {}
 
     # Question CODES (what actually hits the DB)
     sel_codes: List[str] = st.session_state.get(K_SELECTED_CODES, [])  # ← codes
@@ -228,6 +233,227 @@ def raw_data_debug_tab(qdf: pd.DataFrame, demo_df: pd.DataFrame) -> None:
     # --- DEMCODE scanner (PS-wide) -------------------------------------------
     st.markdown("#### DEMCODE scanner (PS-wide)")
     st.caption(
-        "Lists actual DEMCODE values present for the selected question(s) and year(s) "
-        "at PS-wide (LEVEL1ID==0). Ignores the demographic filter. "
-        "Use this to verify presence independent of the render pipeline
+        """Lists actual DEMCODE values present for the selected question(s) and year(s) at PS-wide (LEVEL1ID==0).
+Ignores the demographic filter. Use this to verify presence independent of the render pipeline."""
+    )
+
+    force_csv = st.checkbox(
+        "Force CSV scan (PS-wide)",
+        value=False,
+        help="Bypass caches and scan the vetted CSV directly."
+    )
+
+    # Helper: detect code column in Demographics.xlsx
+    code_col = None
+    for c in ["DEMCODE", "DemCode", "CODE", "Code", "CODE_E", "Demographic code"]:
+        if c in demo_df.columns:
+            code_col = c
+            break
+
+    # Normalize selection for scanner
+    qcodes_norm = [str(q).strip().upper() for q in (sel_codes or [])]
+    years_norm  = [int(y) for y in (years_selected or [])]
+
+    if not qcodes_norm or not years_norm:
+        st.info("Select at least one question and year to scan DEMCODEs.")
+        return
+
+    try:
+        if not force_csv:
+            # In-memory PS-wide scan
+            df_all = preload_pswide_dataframe()
+            if isinstance(df_all, pd.DataFrame) and not df_all.empty:
+                mask = df_all["question_code"].isin(qcodes_norm) & df_all["year"].astype(int).isin(years_norm)
+                df_slice = df_all.loc[mask, ["group_value"]].copy()
+                if df_slice.empty:
+                    st.warning("No PS-wide rows found for the selected question(s) and year(s).")
+                else:
+                    # value counts
+                    vc = df_slice["group_value"].astype("string").str.strip().value_counts(dropna=False)
+                    counts = vc.rename("rows").to_frame().reset_index().rename(columns={"index": "group_value"})
+                    # Join to metadata
+                    join_df = demo_df.copy()
+                    if code_col:
+                        join_df["__code_str__"] = demo_df[code_col].astype("string").str.strip()
+                        counts["__code_str__"] = counts["group_value"].astype("string").str.strip()
+                        counts = counts.merge(
+                            join_df[["__code_str__", "DESCRIP_E", "DEMCODE Category"]],
+                            how="left", on="__code_str__"
+                        ).drop(columns="__code_str__", errors="ignore")
+                    # Sort & show
+                    counts = counts.sort_values("rows", ascending=False)
+                    st.dataframe(
+                        counts[["group_value", "DESCRIP_E", "DEMCODE Category", "rows"]],
+                        use_container_width=True, hide_index=True
+                    )
+            else:
+                st.warning("In-memory PS-wide DataFrame is empty or unavailable; use CSV scan.")
+        else:
+            if ensure_results2024_local is None:
+                st.error("CSV scan unavailable: ensure_results2024_local() not importable.")
+            else:
+                csv_path = ensure_results2024_local()
+                wanted_q = set(qcodes_norm)
+                wanted_y = set(years_norm)
+                counts = Counter()
+                # Stream CSV in chunks (PS-wide only)
+                usecols = ["LEVEL1ID", "SURVEYR", "QUESTION", "DEMCODE"]
+                for chunk in pd.read_csv(csv_path, compression="gzip", usecols=usecols, chunksize=2_000_000, low_memory=True):
+                    # PS-wide filter
+                    lvl_mask = pd.to_numeric(chunk["LEVEL1ID"], errors="coerce").fillna(0).astype(int).eq(0) if "LEVEL1ID" in chunk.columns else pd.Series(True, index=chunk.index)
+                    # Question/year filter
+                    q_ser = chunk["QUESTION"].astype("string").str.strip().str.upper()
+                    y_ser = pd.to_numeric(chunk["SURVEYR"], errors="coerce").astype("Int64")
+                    mask = lvl_mask & q_ser.isin(list(wanted_q)) & y_ser.isin(list(wanted_y))
+                    if not mask.any():
+                        continue
+                    gv = chunk.loc[mask, "DEMCODE"].astype("string").str.strip().fillna("All")
+                    # empty DEMCODE → "All" (PS-wide overall)
+                    gv = gv.mask(gv == "", "All")
+                    # accumulate
+                    counts.update(gv.tolist())
+
+                if not counts:
+                    st.warning("No PS-wide rows found in CSV for the selected question(s) and year(s).")
+                else:
+                    counts_df = pd.DataFrame(sorted(counts.items(), key=lambda x: x[1], reverse=True), columns=["group_value", "rows"])
+                    if code_col:
+                        demo_df["__code_str__"] = demo_df[code_col].astype("string").str.strip()
+                        counts_df["__code_str__"] = counts_df["group_value"].astype("string").str.strip()
+                        counts_df = counts_df.merge(
+                            demo_df[["__code_str__", "DESCRIP_E", "DEMCODE Category"]],
+                            how="left", on="__code_str__"
+                        ).drop(columns="__code_str__", errors="ignore")
+                    st.dataframe(
+                        counts_df[["group_value", "DESCRIP_E", "DEMCODE Category", "rows"]],
+                        use_container_width=True, hide_index=True
+                    )
+    except Exception as e:
+        st.error(f"DEMCODE scanner error: {e}")
+
+# --------------------------------------------------------------------------------------
+# App setup status (unchanged)
+# --------------------------------------------------------------------------------------
+def backend_info_panel(qdf: pd.DataFrame, sdf: pd.DataFrame, demo_df: pd.DataFrame) -> None:
+    info: Dict[str, Any] = {}
+    try:
+        info = get_backend_info() or {}
+    except Exception:
+        info = {"engine": "csv.gz"}
+    try:
+        df_ps = preload_pswide_dataframe()
+        if isinstance(df_ps, pd.DataFrame) and not df_ps.empty:
+            ycol = "year" if "year" in df_ps.columns else ("SURVEYR" if "SURVEYR" in df_ps.columns else None)
+            qcol = "question_code" if "question_code" in df_ps.columns else ("QUESTION" if "QUESTION" in df_ps.columns else None)
+            yr_min = int(pd.to_numeric(df_ps[ycol], errors="coerce").min()) if ycol else None
+            yr_max = int(pd.to_numeric(df_ps[ycol], errors="coerce").max()) if ycol else None
+            info.update({
+                "in_memory": True,
+                "pswide_rows": int(len(df_ps)),
+                "unique_questions": int(df_ps[qcol].astype(str).nunique()) if qcol else None,
+                "year_range": f"{yr_min}-{yr_max}" if yr_min and yr_max else None,
+            })
+        else:
+            info.update({"in_memory": False})
+    except Exception:
+        pass
+    try: info["metadata_questions"] = int(len(qdf))
+    except Exception: pass
+    try: info["metadata_scales"]   = int(len(sdf))
+    except Exception: pass
+    try: info["metadata_demographics"] = int(len(demo_df))
+    except Exception: pass
+    _json_box(info, "App setup status")
+
+# --------------------------------------------------------------------------------------
+# AI status (unchanged)
+# --------------------------------------------------------------------------------------
+def ai_status_panel() -> None:
+    key = (st.secrets.get("OPENAI_API_KEY", "") or os.environ.get("OPENAI_API_KEY", ""))
+    model = (st.secrets.get("OPENAI_MODEL", "") or os.environ.get("OPENAI_MODEL", ""))
+    status = {
+        "api_key_present": bool(key),
+        "model_name": model or "(default/unspecified)",
+        "how_to_set_key": "Set OPENAI_API_KEY in Streamlit secrets or environment.",
+        "how_to_set_model": "Optionally set OPENAI_MODEL to override the default model.",
+    }
+    _json_box(status, "AI status (summaries)")
+
+# --------------------------------------------------------------------------------------
+# Search status (unchanged)
+# --------------------------------------------------------------------------------------
+def search_status_panel() -> None:
+    """
+    Show whether local sentence-transformer embeddings are available & active.
+    Falls back to import check if the search module helper isn't present.
+    """
+    status: Dict[str, Any] = {}
+    try:
+        from utils.hybrid_search import get_embedding_status  # type: ignore
+        status = get_embedding_status() or {}
+    except Exception:
+        status = {}
+    if not status:
+        try:
+            have_st = importlib.util.find_spec("sentence_transformers") is not None
+        except Exception:
+            have_st = False
+        status = {
+            "sentence_transformers_installed": have_st,
+            "model_loaded": False,
+            "model_name": None,
+            "catalogues_indexed": 0,
+        }
+    # Show both possible env var overrides for the model
+    status["MENU1_EMBED_MODEL_env"] = os.environ.get("MENU1_EMBED_MODEL", None)
+    status["PSES_EMBED_MODEL_env"]  = os.environ.get("PSES_EMBED_MODEL", None)
+    _json_box(status, "Search status (semantic embeddings)")
+
+# --------------------------------------------------------------------------------------
+# Last query (unchanged)
+# --------------------------------------------------------------------------------------
+def last_query_panel() -> None:
+    last = get_last_query_info() or {"status": "No query yet"}
+    _json_box(last, "Last query")
+
+def mark_last_query(
+    *,
+    started_ts: Optional[float] = None,
+    finished_ts: Optional[float] = None,
+    engine: Optional[str] = None,
+    extra: Optional[Dict[str, Any]] = None,
+) -> None:
+    try:
+        eng = engine or (get_backend_info() or {}).get("engine", "unknown")
+    except Exception:
+        eng = engine or "unknown"
+    started = datetime.fromtimestamp(started_ts).strftime("%Y-%m-%d %H:%M:%S") if started_ts else None
+    finished = datetime.fromtimestamp(finished_ts).strftime("%Y-%m-%d %H:%M:%S") if finished_ts else datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    elapsed = round((finished_ts - started_ts), 2) if (started_ts and finished_ts) else None
+    payload: Dict[str, Any] = {
+        "started": started or "(unknown)",
+        "finished": finished,
+        "elapsed_seconds": elapsed,
+        "engine": eng,
+    }
+    if extra:
+        payload.update(extra)
+    set_last_query_info(payload)
+
+# --------------------------------------------------------------------------------------
+# Tabs entry point (first tab includes Raw + DEMCODE scanner)
+# --------------------------------------------------------------------------------------
+def render_diagnostics_tabs(qdf: pd.DataFrame, sdf: pd.DataFrame, demo_df: pd.DataFrame) -> None:
+    tabs = st.tabs(["Raw data (debug)", "Parameters", "App setup", "AI status", "Search status", "Last query"])
+    with tabs[0]:
+        raw_data_debug_tab(qdf, demo_df)
+    with tabs[1]:
+        parameters_preview(qdf, demo_df)
+    with tabs[2]:
+        backend_info_panel(qdf, sdf, demo_df)
+    with tabs[3]:
+        ai_status_panel()
+    with tabs[4]:
+        search_status_panel()
+    with tabs[5]:
+        last_query_panel()
