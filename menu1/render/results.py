@@ -62,13 +62,33 @@ def _is_year_like(n: int) -> bool:
     return 1900 <= n <= 2100
 
 def _to_int(v: Any) -> Optional[int]:
+    """
+    Safe integer caster for fact-check logic:
+    - returns None for None/NaN/pd.NA/non-numeric
+    - returns int(...) for valid integers/floats
+    """
     try:
-        return int(v)
-    except Exception:
-        try:
-            return int(round(float(v)))
-        except Exception:
+        if v is None:
             return None
+        # pandas NA support (without hard dependency)
+        try:
+            import math
+            if isinstance(v, float) and math.isnan(v):
+                return None
+        except Exception:
+            pass
+        if isinstance(v, int):
+            return int(v)
+        f = float(v)
+        try:
+            import math
+            if math.isnan(f):
+                return None
+        except Exception:
+            pass
+        return int(round(f))
+    except Exception:
+        return None
 
 def _pick_display_metric(df: pd.DataFrame, prefer: Optional[str] = None) -> Optional[str]:
     """
@@ -190,7 +210,6 @@ def _extract_datapoint_integers_with_sentences(text: str) -> List[Tuple[int, str
     ]
 
     for s in sentences:
-        # Collect matches per sentence
         nums: Set[int] = set()
         for pat in patterns:
             for m in pat.finditer(s):
@@ -199,7 +218,6 @@ def _extract_datapoint_integers_with_sentences(text: str) -> List[Tuple[int, str
                     nums.add(n)
                 except Exception:
                     continue
-        # Add (num, sentence)
         for n in sorted(nums):
             found.append((n, s))
     return found
@@ -230,6 +248,38 @@ def _validate_narrative(narrative: str, allowed: Set[int], years: Set[int]) -> d
             problems.append({"number": n, "sentence": sent, "reason": "not in table or allowed differences"})
 
     return {"ok": (len(bad) == 0), "bad_numbers": bad, "problems": problems}
+
+# ---------- Display-only NA formatter (added) ----------
+
+def _fmt_na_for_display(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Return a copy for UI display where missing values (None/NaN/pd.NA/'None'/'nan')
+    are shown as 'N/A'. Does not mutate the input and is only used at render points.
+    """
+    out = df.copy()
+    # Ensure mixed string/numeric allowed at display
+    try:
+        out = out.astype(object)
+    except Exception:
+        pass
+
+    # Replace pandas missing
+    out = out.where(pd.notna(out), other="N/A")
+
+    # Normalize literal strings like 'None', 'none', 'nan'
+    def _norm_cell(x):
+        if x is None:
+            return "N/A"
+        if isinstance(x, str) and x.strip().lower() in {"none", "nan"}:
+            return "N/A"
+        return x
+
+    for c in out.columns:
+        try:
+            out[c] = out[c].map(_norm_cell)
+        except Exception:
+            out[c] = out[c].apply(_norm_cell)
+    return out
 
 # ==================== END FACT-CHECK VALIDATOR HELPERS ====================
 
@@ -366,7 +416,8 @@ def tabs_summary_and_per_q(
                 )
 
         # The table (rows are codes or code×demographic; columns are years)
-        st.dataframe(pivot.round(1).reset_index(), use_container_width=True)
+        summary_df = pivot.round(1).reset_index()
+        st.dataframe(_fmt_na_for_display(summary_df), use_container_width=True)
 
         # Source line directly under the tabulation
         _source_link_line(source_title, source_url)
@@ -485,7 +536,7 @@ def tabs_summary_and_per_q(
         with tabs[idx]:
             qtext = code_to_text.get(qcode, "")
             st.subheader(f"{qcode} — {qtext}")
-            st.dataframe(per_q_disp[qcode], use_container_width=True)
+            st.dataframe(_fmt_na_for_display(per_q_disp[qcode]), use_container_width=True)
             _source_link_line(source_title, source_url)
 
     # ---------------------- Persistent footer (all tabs) ----------------------
