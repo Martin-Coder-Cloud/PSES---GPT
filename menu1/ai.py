@@ -3,8 +3,10 @@
 AI prompt and calling utilities for Menu 1.
 
 - AI_SYSTEM_PROMPT: a concise but explicit system instruction
-- build_per_q_prompt(...): builds the JSON "user" payload for a single question
-- build_overall_prompt(...): builds the JSON "user" payload for the multi-question summary
+- build_per_q_payload(...): builds the JSON "user" payload for a single question
+- build_overall_payload(...): builds the JSON "user" payload for the multi-question summary
+- (Back-compat) build_per_q_prompt(...): alias to build_per_q_payload(...)
+- (Back-compat) build_overall_prompt(...): alias to build_overall_payload(...)
 - call_openai_json(...): robust caller that returns (json_text, error_hint)
 - extract_narrative(...): safe JSON parse helper returning the text narrative or None
 """
@@ -21,10 +23,10 @@ import pandas as pd
 from .constants import DEFAULT_OPENAI_MODEL
 
 # =====================================================================================
-# System prompt (refined)
+# System prompt (refined — Option 1)
 # =====================================================================================
 AI_SYSTEM_PROMPT: str = (
-    "You are preparing insights for the Government of Canada\'s Public Service Employee Survey (PSES).\n\n"
+    "You are preparing insights for the Government of Canada's Public Service Employee Survey (PSES).\n\n"
     "Context\n"
     "- The PSES informs improvements to people management in the federal public service.\n"
     "- Results help identify strengths and concerns in areas such as engagement, inclusion, and well-being.\n"
@@ -72,7 +74,6 @@ def _series_json(df_disp: pd.DataFrame, metric_col: str) -> List[Dict[str, float
         try:
             v = int(r["Metric"])
         except Exception:
-            # fall back to rounding if integer cast impossible
             try:
                 v = int(round(float(r["Metric"])))
             except Exception:
@@ -162,6 +163,17 @@ def build_overall_payload(
             continue
     payload = {"overview": clean}
     return json.dumps(payload, ensure_ascii=False)
+
+# -------------------------------------------------------------------------------------
+# Back-compat aliases (approved Option A)
+# -------------------------------------------------------------------------------------
+def build_per_q_prompt(*args, **kwargs):
+    """Alias for legacy imports; delegates to build_per_q_payload."""
+    return build_per_q_payload(*args, **kwargs)
+
+def build_overall_prompt(*args, **kwargs):
+    """Alias for legacy imports; delegates to build_overall_payload."""
+    return build_overall_payload(*args, **kwargs)
 
 # =====================================================================================
 # Model caller (JSON mode) and helpers
