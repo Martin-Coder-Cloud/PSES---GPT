@@ -102,6 +102,44 @@ def ensure_results2024_local(file_id: Optional[str] = None) -> str:
     return LOCAL_GZ_PATH
 
 # =============================================================================
+# Canonicalization helpers
+# =============================================================================
+def _canon_demcode_series(s: pd.Series) -> pd.Series:
+    """
+    Canonicalize DEMCODE/group_value as a string:
+      - trim whitespace
+      - remove trailing .0 / .000 (e.g., 8474.0 -> 8474)
+      - remove trailing zeros from fractional part (8474.50 -> 8474.5)
+      - remove trailing dot (123. -> 123)
+      - blanks/NaN -> "All"
+    """
+    s = s.astype("string")
+    s = s.str.strip()
+    # drop .0... entirely
+    s = s.str.replace(r"\.0+$", "", regex=True)
+    # drop trailing zeros in fractional part but keep at least one significant (e.g., .50 -> .5)
+    s = s.str.replace(r"(\.\d*?[1-9])0+$", r"\1", regex=True)
+    # drop dangling dot
+    s = s.str.replace(r"\.$", "", regex=True)
+    # normalize blanks to "All"
+    s = s.mask(s.isna() | (s == ""), "All")
+    return s
+
+def _canon_demcode_value(v: Optional[str]) -> Optional[str]:
+    """Canonicalize a single DEMCODE value (used on the filter target)."""
+    if v is None:
+        return None
+    s = str(v).strip()
+    if s == "" or s.lower() == "all":
+        return None  # None means overall in our filter API
+    # same transforms as the series helper
+    import re
+    s = re.sub(r"\.0+$", "", s)
+    s = re.sub(r"(\.\d*?[1-9])0+$", r"\1", s)
+    s = re.sub(r"\.$", "", s)
+    return s
+
+# =============================================================================
 # Helpers
 # =============================================================================
 def _csv_has_level1id(csv_path: str) -> bool:
@@ -117,11 +155,11 @@ def _normalize_df_types(df: pd.DataFrame) -> pd.DataFrame:
     Final, canonical normalization applied to all code paths:
       - year           → Int16
       - question_code  → string, TRIM, UPPER
-      - group_value    → string, TRIM, blanks/NaN → "All"
+      - group_value    → canonicalized string (8474.0 -> 8474), blanks/NaN → "All"
       - metrics        → typed
     """
-    if df.empty:
-        return df
+    if df is None or df.empty:
+        return df if isinstance(df, pd.DataFrame) else pd.DataFrame(columns=OUT_COLS)
 
     df = df.reindex(columns=OUT_COLS)
 
@@ -136,10 +174,8 @@ def _normalize_df_types(df: pd.DataFrame) -> pd.DataFrame:
     q = df["question_code"].astype("string")
     df["question_code"] = q.str.strip().str.upper().astype(DTYPES["question_code"])
 
-    # group_value: TRIM; blanks/NA → "All"
-    gv = df["group_value"].astype("string")
-    gv = gv.str.strip()
-    df["group_value"] = gv.mask(gv.isna() | (gv == ""), "All").astype(DTYPES["group_value"])
+    # group_value: canonicalize (handles 8474.0 -> 8474 and blanks -> "All")
+    df["group_value"] = _canon_demcode_series(df["group_value"]).astype(DTYPES["group_value"])
 
     return df
 
@@ -154,17 +190,26 @@ def _build_parquet_with_duckdb(csv_path: str) -> None:
     has_lvl1 = _csv_has_level1id(csv_path)
     where_clause = "WHERE CAST(LEVEL1ID AS INT) = 0" if has_lvl1 else ""
 
-    # NOTE: question_code is NORMALIZED here: UPPER(TRIM(QUESTION))
+    # Note: DEMCODE canonicalization is applied via regex_replace in SQL.
     con.execute(f"""
         CREATE OR REPLACE TABLE pses AS
         SELECT
-          CAST(SURVEYR AS INT)                                 AS year,
-          UPPER(TRIM(CAST(QUESTION AS VARCHAR)))               AS question_code,
-          COALESCE(NULLIF(TRIM(CAST(DEMCODE AS VARCHAR)), ''),'All') AS group_value,
-          CAST(ANSCOUNT AS INT)                                AS n,
-          CAST(POSITIVE AS DOUBLE)                             AS positive_pct,
-          CAST(NEUTRAL  AS DOUBLE)                             AS neutral_pct,
-          CAST(NEGATIVE AS DOUBLE)                             AS negative_pct,
+          CAST(SURVEYR AS INT)                                         AS year,
+          UPPER(TRIM(CAST(QUESTION AS VARCHAR)))                       AS question_code,
+          COALESCE(
+            NULLIF(
+              REGEXP_REPLACE(
+                REGEXP_REPLACE(TRIM(CAST(DEMCODE AS VARCHAR)), '(\\.[0-9]*?[1-9])0+$', '\\1'),
+                '\\.0+$', ''
+              ),
+              ''
+            ),
+            'All'
+          )                                                             AS group_value,
+          CAST(ANSCOUNT AS INT)                                        AS n,
+          CAST(POSITIVE AS DOUBLE)                                     AS positive_pct,
+          CAST(NEUTRAL  AS DOUBLE)                                     AS neutral_pct,
+          CAST(NEGATIVE AS DOUBLE)                                     AS negative_pct,
           CAST(answer1  AS DOUBLE) AS answer1,
           CAST(answer2  AS DOUBLE) AS answer2,
           CAST(answer3  AS DOUBLE) AS answer3,
@@ -202,11 +247,11 @@ def _build_parquet_with_pandas(csv_path: str) -> None:
     if "LEVEL1ID" in df.columns:
         df = df[pd.to_numeric(df["LEVEL1ID"], errors="coerce").fillna(0).astype(int).eq(0)]
 
-    # Normalize to OUT_COLS (apply TRIM/UPPER here)
+    # Normalize to OUT_COLS (apply TRIM/UPPER + DEMCODE canonicalization)
     out = pd.DataFrame({
         "year":          pd.to_numeric(df["SURVEYR"], errors="coerce").astype("Int64"),
         "question_code": df["QUESTION"].astype("string").str.strip().str.upper(),
-        "group_value":   df["DEMCODE"].astype("string").str.strip().fillna("All"),
+        "group_value":   _canon_demcode_series(df["DEMCODE"]),
         "n":             pd.to_numeric(df["ANSCOUNT"], errors="coerce").astype("Int64"),
         "positive_pct":  pd.to_numeric(df["POSITIVE"], errors="coerce"),
         "neutral_pct":   pd.to_numeric(df["NEUTRAL"],  errors="coerce"),
@@ -219,7 +264,6 @@ def _build_parquet_with_pandas(csv_path: str) -> None:
         "answer6": pd.to_numeric(df.get("answer6"), errors="coerce"),
         "answer7": pd.to_numeric(df.get("answer7"), errors="coerce"),
     })
-    out.loc[out["group_value"].astype("string").str.strip() == "", "group_value"] = "All"
 
     os.makedirs(PARQUET_ROOTDIR, exist_ok=True)
     table = pa.Table.from_pandas(out[OUT_COLS], preserve_index=False)
@@ -357,6 +401,7 @@ def preload_pswide_dataframe() -> pd.DataFrame:
             table = dataset.to_table(columns=OUT_COLS)
             df = table.to_pandas(types_mapper=pd.ArrowDtype)
             if df is not None and not df.empty:
+                # final canonical normalization (idempotent)
                 return _normalize_df_types(df)
     except Exception:
         # Fall through to CSV preload
@@ -374,7 +419,7 @@ def preload_pswide_dataframe() -> pd.DataFrame:
             out = pd.DataFrame({
                 "year":          pd.to_numeric(sel["SURVEYR"], errors="coerce"),
                 "question_code": sel["QUESTION"].astype("string").str.strip().str.upper(),
-                "group_value":   sel["DEMCODE"].astype("string").str.strip().fillna("All"),
+                "group_value":   _canon_demcode_series(sel["DEMCODE"]),
                 "n":             pd.to_numeric(sel["ANSCOUNT"], errors="coerce"),
                 "positive_pct":  pd.to_numeric(sel["POSITIVE"], errors="coerce"),
                 "neutral_pct":   pd.to_numeric(sel["NEUTRAL"],  errors="coerce"),
@@ -387,7 +432,6 @@ def preload_pswide_dataframe() -> pd.DataFrame:
                 "answer6": pd.to_numeric(sel.get("answer6"), errors="coerce"),
                 "answer7": pd.to_numeric(sel.get("answer7"), errors="coerce"),
             })
-            out.loc[out["group_value"].astype("string").str.strip() == "", "group_value"] = "All"
             frames.append(out)
         df = (pd.concat(frames, ignore_index=True) if frames else pd.DataFrame(columns=OUT_COLS))
         return _normalize_df_types(df)
@@ -411,13 +455,13 @@ def _parquet_query(question_code: str, years: Iterable[int | str], group_value: 
     # Compare using normalized value (UPPER/TRIM applied at build)
     q = str(question_code).strip().upper()
     years_int = [int(y) for y in years]
-    gv = None if (group_value is None or str(group_value).strip() == "" or str(group_value).strip().lower() == "all") else str(group_value).strip()
+    gv_norm = _canon_demcode_value(group_value)  # canonicalize target
 
     filt = (pc.field("question_code") == q) & (pc.field("year").isin(years_int))
-    if gv is None:
+    if gv_norm is None:
         filt = filt & (pc.field("group_value") == "All")
     else:
-        filt = filt & (pc.field("group_value") == gv)
+        filt = filt & (pc.field("group_value") == gv_norm)
 
     tbl = dataset.to_table(columns=OUT_COLS, filter=filt)
     df = tbl.to_pandas(types_mapper=pd.ArrowDtype)
@@ -434,8 +478,9 @@ def _csv_stream_filter(
 ) -> pd.DataFrame:
     path = ensure_results2024_local()
     years_int = [int(y) for y in years]
+    q_norm = str(question_code).strip().str.upper() if hasattr(str(question_code), "strip") else str(question_code).upper()
     q_norm = str(question_code).strip().upper()
-    gv = None if (group_value is None or str(group_value).strip() == "" or str(group_value).strip().lower() == "all") else str(group_value).strip()
+    gv_target = _canon_demcode_value(group_value)  # canonical form or None (overall)
 
     frames: list[pd.DataFrame] = []
     for chunk in pd.read_csv(path, compression="gzip", usecols=CSV_USECOLS, chunksize=chunksize, low_memory=True):
@@ -444,24 +489,26 @@ def _csv_stream_filter(
         else:
             mask_lvl = pd.Series(True, index=chunk.index)
 
-        # Normalize QUESTION for equality
+        # Normalize QUESTION/YEAR for equality
         q_ser = chunk["QUESTION"].astype(str).str.strip().str.upper()
         y_ser = pd.to_numeric(chunk["SURVEYR"], errors="coerce")
 
         mask = (q_ser == q_norm) & (y_ser.isin(years_int)) & mask_lvl
 
-        if gv is None:
-            gv_ser = chunk["DEMCODE"].astype(str).str.strip()
-            mask &= (gv_ser.eq("")) | (gv_ser.isna())
+        # Canonicalize DEMCODE column before comparing
+        gv_ser = _canon_demcode_series(chunk["DEMCODE"])
+
+        if gv_target is None:
+            mask &= (gv_ser == "All")
         else:
-            mask &= (chunk["DEMCODE"].astype(str).str.strip() == gv)
+            mask &= (gv_ser == gv_target)
 
         if mask.any():
             sel = chunk.loc[mask, :]
             out = pd.DataFrame({
                 "year":          pd.to_numeric(sel["SURVEYR"], errors="coerce"),
                 "question_code": sel["QUESTION"].astype("string").str.strip().str.upper(),
-                "group_value":   sel["DEMCODE"].astype("string").str.strip().fillna("All"),
+                "group_value":   _canon_demcode_series(sel["DEMCODE"]),
                 "n":             pd.to_numeric(sel["ANSCOUNT"], errors="coerce"),
                 "positive_pct":  pd.to_numeric(sel["POSITIVE"], errors="coerce"),
                 "neutral_pct":   pd.to_numeric(sel["NEUTRAL"],  errors="coerce"),
@@ -474,7 +521,6 @@ def _csv_stream_filter(
                 "answer6": pd.to_numeric(sel.get("answer6"), errors="coerce"),
                 "answer7": pd.to_numeric(sel.get("answer7"), errors="coerce"),
             })
-            out.loc[out["group_value"].astype("string").str.strip() == "", "group_value"] = "All"
             frames.append(out)
 
     df = pd.concat(frames, ignore_index=True) if frames else pd.DataFrame(columns=OUT_COLS)
@@ -504,9 +550,9 @@ def load_results2024_filtered(
         if isinstance(df_all, pd.DataFrame) and not df_all.empty:
             q = str(question_code).strip().upper()
             years_int = [int(y) for y in years]
-            gv_norm = None if (group_value is None or str(group_value).strip() == "" or str(group_value).strip().lower() == "all") else str(group_value).strip()
+            gv_norm = _canon_demcode_value(group_value)  # None for overall
 
-            # Build masks using normalized comparisons (df_all is already normalized)
+            # Build masks using normalized comparisons (df_all already normalized)
             mask = (df_all["question_code"] == q) & (df_all["year"].astype(int).isin(years_int))
             if gv_norm is None:
                 mask &= (df_all["group_value"] == "All")
@@ -545,7 +591,7 @@ def load_results2024_filtered(
                 rows=rows,
                 question_code=str(question_code),
                 years=",".join(str(y) for y in years),
-                group_value=("All" if group_value in (None, "", "all", "All") else str(group_value)),
+                group_value=("All" if _canon_demcode_value(group_value) is None else _canon_demcode_value(group_value)),
                 parquet_dir=PARQUET_ROOTDIR,
                 csv_path=LOCAL_GZ_PATH,
                 parquet_error=None,
@@ -565,7 +611,7 @@ def load_results2024_filtered(
         rows=rows,
         question_code=str(question_code),
         years=",".join(str(y) for y in years),
-        group_value=("All" if group_value in (None, "", "all", "All") else str(group_value)),
+        group_value=("All" if _canon_demcode_value(group_value) is None else _canon_demcode_value(group_value)),
         parquet_dir=PARQUET_ROOTDIR,
         csv_path=LOCAL_GZ_PATH,
         parquet_error=parquet_error,
@@ -591,8 +637,8 @@ def _compute_pswide_rowcount_csv() -> int:
             if "LEVEL1ID" in chunk.columns:
                 mask = pd.to_numeric(chunk["LEVEL1ID"], errors="coerce").fillna(0).astype(int).eq(0)
             else:
-                gv = chunk["DEMCODE"].astype(str).str.strip()
-                mask = (gv.eq("")) | (gv.isna())
+                gv = _canon_demcode_series(chunk["DEMCODE"])
+                mask = (gv == "All")
             rows += int(mask.sum())
         return rows
     except Exception:
