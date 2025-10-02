@@ -1,251 +1,213 @@
 # menu1/render/diagnostics.py
-# Diagnostics panels for Menu 1.
-# Change approved by user: make Parameters panel show CODE-FIRST values
-# (question codes, years, and DEMCODEs), with labels only as optional hints.
+# (your file as provided; only a tiny change inside parameters_preview())
 
 from __future__ import annotations
-from typing import Any, Dict, Optional, List
+from typing import Any, Dict, Optional
 from datetime import datetime
 import json
 import os
+import importlib.util
 
 import pandas as pd
 import streamlit as st
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Safe imports from local modules (avoid hard failures if a helper is missing)
-# ─────────────────────────────────────────────────────────────────────────────
+from ..constants import DEFAULT_YEARS
+from ..state import (
+    K_SELECTED_CODES, K_MULTI_QUESTIONS, K_DEMO_MAIN, K_SELECT_ALL_YEARS,
+    YEAR_KEYS, SUBGROUP_PREFIX, get_last_query_info, set_last_query_info,
+)
+
+# Optional backend info / preload (best-effort)
+try:
+    from utils.data_loader import get_backend_info  # type: ignore
+except Exception:
+    def get_backend_info() -> dict:  # type: ignore
+        return {"engine": "csv.gz", "in_memory": False}
 
 try:
-    from ..constants import DEFAULT_YEARS
+    from utils.data_loader import preload_pswide_dataframe  # type: ignore
 except Exception:
-    DEFAULT_YEARS = [2019, 2020, 2022, 2024]
+    def preload_pswide_dataframe():  # type: ignore
+        return None
 
-try:
-    from ..state import (
-        K_SELECTED_CODES,
-        K_MULTI_QUESTIONS,
-        K_DEMO_MAIN,
-        K_SELECT_ALL_YEARS,
-        SUBGROUP_PREFIX,
-    )
-except Exception:
-    # Fallback key names if state module interface changes
-    K_SELECTED_CODES = "selected_question_codes"
-    K_MULTI_QUESTIONS = "multi_questions"
-    K_DEMO_MAIN = "demo_main"
-    K_SELECT_ALL_YEARS = "select_all_years"
-    SUBGROUP_PREFIX = "sub_"
 
-# Loader diagnostics (optional)
-try:
-    from utils.data_loader import (
-        get_backend_info,        # returns dict about engine/memory/dataset
-        get_last_query_diag,     # returns dict about last run (engine, elapsed_ms, etc.)
-        set_last_query_info,     # store dict about current run (used by "Last query" tab)
-    )
-except Exception:
-    def get_backend_info() -> Dict[str, Any]:
-        return {}
-    def get_last_query_diag() -> Dict[str, Any]:
-        return {}
-    def set_last_query_info(payload: Dict[str, Any]) -> None:
-        pass
-
-# ─────────────────────────────────────────────────────────────────────────────
-# Small helpers
-# ─────────────────────────────────────────────────────────────────────────────
-
-def _json_box(payload: Dict[str, Any], title: str = "") -> None:
-    if title:
-        st.markdown(f"#### {title}")
+def _json_box(obj: Dict[str, Any], title: str) -> None:
+    st.markdown(f"#### {title}")
     st.markdown(
-        f"<div class='diag-box'><pre>{json.dumps(payload, ensure_ascii=False, indent=2)}</pre></div>",
-        unsafe_allow_html=True,
+        f"<div class='diag-box'><pre>{json.dumps(obj, ensure_ascii=False, indent=2)}</pre></div>",
+        unsafe_allow_html=True
     )
 
-def _detect_dem_code_column(demo_df: pd.DataFrame) -> Optional[str]:
-    candidates = ["DEMCODE", "DemCode", "CODE", "Code", "CODE_E", "Demographic code"]
-    for c in candidates:
-        if c in demo_df.columns:
-            return c
-    return None
-
-# ─────────────────────────────────────────────────────────────────────────────
-# 1) PARAMETERS PANEL (CODE-FIRST)
-# ─────────────────────────────────────────────────────────────────────────────
-
+# --------------------------------------------------------------------------------------
+# (unchanged panels except the tiny, approved change in parameters_preview)
+# --------------------------------------------------------------------------------------
 def parameters_preview(qdf: pd.DataFrame, demo_df: pd.DataFrame) -> None:
     """
-    Show the exact parameters that will be sent to the data layer.
-    - Questions: codes (not labels)
-    - Years: selected list
-    - Demographics: resolved DEMCODE list (codes only; None for overall)
-    Labels are shown only as small hints for quick cross-checks.
+    CHANGE (approved): show codes, not labels; and include resolved DEMCODE(s).
+    Everything else preserved.
     """
-    # 1) Question codes
-    sel_q_codes: List[str] = st.session_state.get(K_SELECTED_CODES, []) or []
-    # Optional display hint (if question metadata has columns 'code' and 'display')
-    code_to_display: Dict[str, str] = {}
-    try:
-        if isinstance(qdf, pd.DataFrame) and {"code", "display"}.issubset(qdf.columns):
-            code_to_display = dict(zip(qdf["code"].astype(str), qdf["display"].astype(str)))
-    except Exception:
-        pass
-    q_display = [code_to_display.get(str(c), str(c)) for c in sel_q_codes]
+    # Original line kept (still useful if you ever want to cross-check display),
+    # but we will output codes below.
+    code_to_display = dict(zip(qdf["code"], qdf["display"]))
 
-    # 2) Years selected (respect "select all" toggle)
-    years_selected: List[int] = []
+    # Question CODES (not labels)
+    sel_codes = st.session_state.get(K_SELECTED_CODES, [])  # <- codes that hit the DB
+
+    # Years (unchanged logic)
+    years_selected = []
     select_all = bool(st.session_state.get(K_SELECT_ALL_YEARS, True))
     for y in DEFAULT_YEARS:
         key = f"year_{y}"
         val = True if select_all else bool(st.session_state.get(key, False))
         if val:
-            years_selected.append(int(y))
+            years_selected.append(y)
 
-    # 3) Resolve DEMCODEs from Demographics.xlsx (codes only)
-    DEMO_CAT_COL = "DEMCODE Category"
-    LABEL_COL    = "DESCRIP_E"
-    code_col     = _detect_dem_code_column(demo_df) if isinstance(demo_df, pd.DataFrame) else None
-
+    # Demographic category + subgroup (unchanged state reads)
     demo_cat = st.session_state.get(K_DEMO_MAIN, "All respondents")
     if demo_cat and demo_cat != "All respondents":
-        sub_key  = f"{SUBGROUP_PREFIX}{str(demo_cat).replace(' ', '_')}"
-        subgroup = st.session_state.get(sub_key, "") or None
+        sub_key = f"{SUBGROUP_PREFIX}{str(demo_cat).replace(' ', '_')}"
+        subgroup = st.session_state.get(sub_key, "") or "All in category"
     else:
-        subgroup = None
+        subgroup = "All respondents"
 
-    demcodes: List[Optional[str]] = []
-    dem_disp_map: Dict[Optional[str], str] = {}
+    # NEW: Resolve DEMCODE(s) from Demographics metadata (codes only)
+    DEMO_CAT_COL = "DEMCODE Category"
+    LABEL_COL    = "DESCRIP_E"
+    # detect code column in uploaded Demographics.xlsx
+    code_col = None
+    for c in ["DEMCODE", "DemCode", "CODE", "Code", "CODE_E", "Demographic code"]:
+        if c in demo_df.columns:
+            code_col = c
+            break
 
-    if not demo_cat or demo_cat == "All respondents":
-        # Overall rows (blank DEMCODE in data)
-        demcodes = [None]
-        dem_disp_map = {None: "All respondents"}
-    else:
-        # Focus the selected category
-        df_cat = demo_df.copy()
-        try:
-            if DEMO_CAT_COL in demo_df.columns:
-                df_cat = demo_df[demo_df[DEMO_CAT_COL].astype(str) == str(demo_cat)]
-        except Exception:
-            pass
+    def _resolve_demcodes() -> list:
+        # Overall → None indicates PS-wide rows
+        if (not demo_cat) or (demo_cat == "All respondents"):
+            return [None]
+        df_cat = demo_df
+        if DEMO_CAT_COL in demo_df.columns:
+            df_cat = demo_df[demo_df[DEMO_CAT_COL].astype(str) == str(demo_cat)]
+        # Subgroup chosen → single code
+        if subgroup not in (None, "", "All in category", "All respondents") and code_col and LABEL_COL in df_cat.columns:
+            r = df_cat[df_cat[LABEL_COL].astype(str).str.strip().str.lower() == str(subgroup).strip().lower()]
+            if not r.empty:
+                return [str(r.iloc[0][code_col]).strip()]
+        # Category only → all codes in category
+        if code_col and LABEL_COL in df_cat.columns and not df_cat.empty:
+            codes = df_cat[code_col].astype(str).str.strip().tolist()
+            return [c for c in codes if c != ""]
+        # Fallback: overall
+        return [None]
 
-        # Subgroup chosen → single code (robust, trimmed, case-insensitive)
-        if subgroup and code_col and LABEL_COL in df_cat.columns:
-            try:
-                r = df_cat[
-                    df_cat[LABEL_COL].astype(str).str.strip().str.lower()
-                    == str(subgroup).strip().lower()
-                ]
-                if not r.empty:
-                    code = str(r.iloc[0][code_col]).strip()
-                    demcodes = [code]
-                    dem_disp_map = {code: str(subgroup)}
-                else:
-                    subgroup = None  # fall through to "all in category"
-            except Exception:
-                subgroup = None
+    demcodes = _resolve_demcodes()
 
-        # Category only (no subgroup) → all codes in the category
-        if not demcodes:
-            if code_col and LABEL_COL in df_cat.columns and not df_cat.empty:
-                try:
-                    codes  = df_cat[code_col].astype(str).str.strip().tolist()
-                    labels = df_cat[LABEL_COL].astype(str).tolist()
-                    keep   = [(c, l) for c, l in zip(codes, labels) if c != ""]
-                    demcodes   = [c for c, _ in keep]
-                    dem_disp_map = {c: l for c, l in keep}
-                except Exception:
-                    demcodes = [None]
-                    dem_disp_map = {None: "All respondents"}
-            else:
-                # Defensive fallback: never pass labels to data layer
-                demcodes = [None]
-                dem_disp_map = {None: "All respondents"}
-
-    # 4) Emit CODE-FIRST diagnostics payload
+    # Code-first preview payload (only this changed)
     preview = {
-        "Questions (codes)": sel_q_codes,                 # ← what hits the DB
-        "Years (selected)": years_selected,               # ← what hits the DB
-        "Demographic (category)": demo_cat or "All respondents",
-        "Subgroup (label)": subgroup or ("All in category" if demo_cat != "All respondents" else "All respondents"),
-        "Resolved DEMCODE(s)": demcodes,                  # ← what hits the DB (codes; None for overall)
-        # Optional hints for quick visual check (not used by DB)
-        "Questions (display hint)": q_display,
-        "DEMCODE display (hint)": dem_disp_map,
+        "Selected questions": sel_codes,            # <-- codes (previously labels)
+        "Years (selected)": years_selected,
+        "Demographic category": demo_cat or "All respondents",
+        "Subgroup": subgroup,
+        "Resolved DEMCODE(s)": demcodes,            # <-- added
     }
-
-    st.markdown("#### Parameters preview (code-first)")
-    _json_box(preview)
-
-# ─────────────────────────────────────────────────────────────────────────────
-# 2) BACKEND / APP SETUP PANEL  (unchanged behavior)
-# ─────────────────────────────────────────────────────────────────────────────
+    _json_box(preview, "Parameters preview")
 
 def backend_info_panel(qdf: pd.DataFrame, sdf: pd.DataFrame, demo_df: pd.DataFrame) -> None:
-    info = {}
+    info: Dict[str, Any] = {}
     try:
-        bi = get_backend_info() or {}
-        info.update(bi)
-        # Add simple metadata counts (useful to sanity-check loaded metadata)
-        try: info["metadata_questions"] = int(len(qdf))
-        except Exception: pass
-        try: info["metadata_scales"] = int(len(sdf))
-        except Exception: pass
-        try: info["metadata_demographics"] = int(len(demo_df))
-        except Exception: pass
+        info = get_backend_info() or {}
+    except Exception:
+        info = {"engine": "csv.gz"}
+    try:
+        df_ps = preload_pswide_dataframe()
+        if isinstance(df_ps, pd.DataFrame) and not df_ps.empty:
+            ycol = "year" if "year" in df_ps.columns else ("SURVEYR" if "SURVEYR" in df_ps.columns else None)
+            qcol = "question_code" if "question_code" in df_ps.columns else ("QUESTION" if "QUESTION" in df_ps.columns else None)
+            yr_min = int(pd.to_numeric(df_ps[ycol], errors="coerce").min()) if ycol else None
+            yr_max = int(pd.to_numeric(df_ps[ycol], errors="coerce").max()) if ycol else None
+            info.update({
+                "in_memory": True,
+                "pswide_rows": int(len(df_ps)),
+                "unique_questions": int(df_ps[qcol].astype(str).nunique()) if qcol else None,
+                "year_range": f"{yr_min}â€“{yr_max}" if yr_min and yr_max else None,
+            })
+        else:
+            info.update({"in_memory": False})
     except Exception:
         pass
+    try: info["metadata_questions"] = int(len(qdf))
+    except Exception: pass
+    try: info["metadata_scales"]   = int(len(sdf))
+    except Exception: pass
+    try: info["metadata_demographics"] = int(len(demo_df))
+    except Exception: pass
     _json_box(info, "App setup status")
 
-# ─────────────────────────────────────────────────────────────────────────────
-# 3) AI STATUS PANEL  (kept lightweight; no behavior change)
-# ─────────────────────────────────────────────────────────────────────────────
-
 def ai_status_panel() -> None:
-    payload = {}
-    # If you store AI toggles or last prompt in session, show them here
-    for k in ["ai_enabled", "ai_model", "ai_latency_ms", "ai_last_prompt"]:
-        if k in st.session_state:
-            payload[k] = st.session_state.get(k)
-    _json_box(payload, "AI status")
-
-# ─────────────────────────────────────────────────────────────────────────────
-# 4) SEARCH STATUS PANEL  (no functional change; tiny guards only)
-# ─────────────────────────────────────────────────────────────────────────────
+    key = (st.secrets.get("OPENAI_API_KEY", "") or os.environ.get("OPENAI_API_KEY", ""))
+    model = (st.secrets.get("OPENAI_MODEL", "") or os.environ.get("OPENAI_MODEL", ""))
+    status = {
+        "api_key_present": bool(key),
+        "model_name": model or "(default/unspecified)",
+        "how_to_set_key": "Set OPENAI_API_KEY in Streamlit secrets or environment.",
+        "how_to_set_model": "Optionally set OPENAI_MODEL to override the default model.",
+    }
+    _json_box(status, "AI status (summaries)")
 
 def search_status_panel() -> None:
-    diag = {}
+    """
+    Show whether local sentence-transformer embeddings are available & active.
+    Falls back to import check if the search module helper isn't present.
+    """
+    status: Dict[str, Any] = {}
     try:
-        diag = get_last_query_diag() or {}
+        from utils.hybrid_search import get_embedding_status  # type: ignore
+        status = get_embedding_status() or {}
     except Exception:
-        pass
-    _json_box(diag, "Search engine status")
-
-# ─────────────────────────────────────────────────────────────────────────────
-# 5) LAST QUERY PANEL  (unchanged behavior; shows what you stored)
-# ─────────────────────────────────────────────────────────────────────────────
+        status = {}
+    if not status:
+        try:
+            have_st = importlib.util.find_spec("sentence_transformers") is not None
+        except Exception:
+            have_st = False
+        status = {
+            "sentence_transformers_installed": have_st,
+            "model_loaded": False,
+            "model_name": None,
+            "catalogues_indexed": 0,
+        }
+    # Show both possible env var overrides for the model
+    status["MENU1_EMBED_MODEL_env"] = os.environ.get("MENU1_EMBED_MODEL", None)
+    status["PSES_EMBED_MODEL_env"]  = os.environ.get("PSES_EMBED_MODEL", None)
+    _json_box(status, "Search status (semantic embeddings)")
 
 def last_query_panel() -> None:
-    payload = st.session_state.get("menu1_last_query_info", {})
-    _json_box(payload, "Last query (app-level)")
+    last = get_last_query_info() or {"status": "No query yet"}
+    _json_box(last, "Last query")
 
-def set_last_query(payload: Dict[str, Any]) -> None:
-    """Optional helper your app may call after each run to persist a summary."""
+def mark_last_query(
+    *,
+    started_ts: Optional[float] = None,
+    finished_ts: Optional[float] = None,
+    engine: Optional[str] = None,
+    extra: Optional[Dict[str, Any]] = None,
+) -> None:
+    from datetime import datetime
     try:
-        st.session_state["menu1_last_query_info"] = dict(payload)
+        eng = engine or (get_backend_info() or {}).get("engine", "unknown")
     except Exception:
-        pass
-    try:
-        set_last_query_info(payload)
-    except Exception:
-        # ignore if not available
-        pass
-
-# ─────────────────────────────────────────────────────────────────────────────
-# Entry point for diagnostics tab rendering (names kept unchanged)
-# ─────────────────────────────────────────────────────────────────────────────
+        eng = engine or "unknown"
+    started = datetime.fromtimestamp(started_ts).strftime("%Y-%m-%d %H:%M:%S") if started_ts else None
+    finished = datetime.fromtimestamp(finished_ts).strftime("%Y-%m-%d %H:%M:%S") if finished_ts else datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    elapsed = round((finished_ts - started_ts), 2) if (started_ts and finished_ts) else None
+    payload: Dict[str, Any] = {
+        "started": started or "(unknown)",
+        "finished": finished,
+        "elapsed_seconds": elapsed,
+        "engine": eng,
+    }
+    if extra:
+        payload.update(extra)
+    set_last_query_info(payload)
 
 def render_diagnostics_tabs(qdf: pd.DataFrame, sdf: pd.DataFrame, demo_df: pd.DataFrame) -> None:
     tabs = st.tabs(["Parameters", "App setup", "AI status", "Search status", "Last query"])
