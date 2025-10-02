@@ -1,8 +1,10 @@
 # menu1/render/diagnostics.py
-# (your file as provided; only a tiny change inside parameters_preview())
+# (original file restored; only two approved changes)
+#  • Parameters panel is code-first + shows Resolved DEMCODE(s)
+#  • NEW diagnostics tab: "Raw data (debug)" to show unsuppressed, unpivoted rows
 
 from __future__ import annotations
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, List
 from datetime import datetime
 import json
 import os
@@ -30,6 +32,19 @@ except Exception:
     def preload_pswide_dataframe():  # type: ignore
         return None
 
+# Optional query wrappers
+_FETCH_FROM_QUERIES = True
+try:
+    # Preferred: use your existing wrapper that normalizes columns
+    from ..queries import fetch_per_question  # type: ignore
+except Exception:
+    _FETCH_FROM_QUERIES = False
+    # Fallback: call the loader directly if wrapper isn't available
+    try:
+        from utils.data_loader import load_results2024_filtered  # type: ignore
+    except Exception:
+        load_results2024_filtered = None  # type: ignore
+
 
 def _json_box(obj: Dict[str, Any], title: str) -> None:
     st.markdown(f"#### {title}")
@@ -39,22 +54,21 @@ def _json_box(obj: Dict[str, Any], title: str) -> None:
     )
 
 # --------------------------------------------------------------------------------------
-# (unchanged panels except the tiny, approved change in parameters_preview)
+# Approved change #1 — PARAMETERS: show codes (not labels) + Resolved DEMCODE(s)
 # --------------------------------------------------------------------------------------
 def parameters_preview(qdf: pd.DataFrame, demo_df: pd.DataFrame) -> None:
     """
     CHANGE (approved): show codes, not labels; and include resolved DEMCODE(s).
     Everything else preserved.
     """
-    # Original line kept (still useful if you ever want to cross-check display),
-    # but we will output codes below.
+    # We keep this mapping in case you want to cross-check display, but we output codes
     code_to_display = dict(zip(qdf["code"], qdf["display"]))
 
-    # Question CODES (not labels)
-    sel_codes = st.session_state.get(K_SELECTED_CODES, [])  # <- codes that hit the DB
+    # Question CODES (what actually hits the DB)
+    sel_codes: List[str] = st.session_state.get(K_SELECTED_CODES, [])  # ← codes
 
     # Years (unchanged logic)
-    years_selected = []
+    years_selected: List[int] = []
     select_all = bool(st.session_state.get(K_SELECT_ALL_YEARS, True))
     for y in DEFAULT_YEARS:
         key = f"year_{y}"
@@ -70,18 +84,17 @@ def parameters_preview(qdf: pd.DataFrame, demo_df: pd.DataFrame) -> None:
     else:
         subgroup = "All respondents"
 
-    # NEW: Resolve DEMCODE(s) from Demographics metadata (codes only)
+    # Resolve DEMCODE(s) from Demographics metadata (codes only)
     DEMO_CAT_COL = "DEMCODE Category"
     LABEL_COL    = "DESCRIP_E"
-    # detect code column in uploaded Demographics.xlsx
-    code_col = None
+    code_col     = None
     for c in ["DEMCODE", "DemCode", "CODE", "Code", "CODE_E", "Demographic code"]:
         if c in demo_df.columns:
             code_col = c
             break
 
     def _resolve_demcodes() -> list:
-        # Overall → None indicates PS-wide rows
+        # Overall → None indicates PS-wide rows in the loader
         if (not demo_cat) or (demo_cat == "All respondents"):
             return [None]
         df_cat = demo_df
@@ -101,7 +114,7 @@ def parameters_preview(qdf: pd.DataFrame, demo_df: pd.DataFrame) -> None:
 
     demcodes = _resolve_demcodes()
 
-    # Code-first preview payload (only this changed)
+    # Code-first preview payload
     preview = {
         "Selected questions": sel_codes,            # <-- codes (previously labels)
         "Years (selected)": years_selected,
@@ -111,6 +124,117 @@ def parameters_preview(qdf: pd.DataFrame, demo_df: pd.DataFrame) -> None:
     }
     _json_box(preview, "Parameters preview")
 
+# --------------------------------------------------------------------------------------
+# NEW approved tab — Raw data (debug): unsuppressed, unpivoted rows
+# --------------------------------------------------------------------------------------
+def raw_data_debug_tab(qdf: pd.DataFrame, demo_df: pd.DataFrame) -> None:
+    """
+    Re-executes the current selection and shows the raw rows BEFORE any suppression,
+    shaping, or tabulation. Purely for diagnostics/validation.
+    """
+    # 1) Read current selection from state (same as Parameters panel)
+    sel_codes: List[str] = st.session_state.get(K_SELECTED_CODES, []) or []
+    years_selected: List[int] = []
+    select_all = bool(st.session_state.get(K_SELECT_ALL_YEARS, True))
+    for y in DEFAULT_YEARS:
+        key = f"year_{y}"
+        val = True if select_all else bool(st.session_state.get(key, False))
+        if val:
+            years_selected.append(int(y))
+
+    demo_cat = st.session_state.get(K_DEMO_MAIN, "All respondents")
+    if demo_cat and demo_cat != "All respondents":
+        sub_key = f"{SUBGROUP_PREFIX}{str(demo_cat).replace(' ', '_')}"
+        subgroup = st.session_state.get(sub_key, "") or None
+    else:
+        subgroup = None
+
+    # 2) Resolve DEMCODE(s) from Demographics.xlsx (codes only)
+    DEMO_CAT_COL = "DEMCODE Category"
+    LABEL_COL    = "DESCRIP_E"
+    code_col     = None
+    for c in ["DEMCODE", "DemCode", "CODE", "Code", "CODE_E", "Demographic code"]:
+        if c in demo_df.columns:
+            code_col = c
+            break
+
+    def _resolve_demcodes_codes_only() -> List[Optional[str]]:
+        if (not demo_cat) or (demo_cat == "All respondents"):
+            return [None]
+        df_cat = demo_df
+        if DEMO_CAT_COL in demo_df.columns:
+            df_cat = demo_df[demo_df[DEMO_CAT_COL].astype(str) == str(demo_cat)]
+        if subgroup and code_col and LABEL_COL in df_cat.columns:
+            r = df_cat[df_cat[LABEL_COL].astype(str).str.strip().str.lower() == str(subgroup).strip().lower()]
+            if not r.empty:
+                return [str(r.iloc[0][code_col]).strip()]
+            # if subgroup not found → fall through to all-in-category
+        if code_col and LABEL_COL in df_cat.columns and not df_cat.empty:
+            codes = df_cat[code_col].astype(str).str.strip().tolist()
+            return [c for c in codes if c != ""]
+        return [None]
+
+    demcodes: List[Optional[str]] = _resolve_demcodes_codes_only()
+
+    # 3) Fetch raw slices
+    parts: List[pd.DataFrame] = []
+    if not sel_codes or not years_selected:
+        st.info("Select at least one question and one year to view raw data.")
+        return
+
+    try:
+        if _FETCH_FROM_QUERIES:
+            # Use your wrapper (loops over demcodes internally)
+            for q in sel_codes:
+                try:
+                    df_q = fetch_per_question(q, years_selected, demcodes)  # type: ignore
+                    if df_q is not None and not df_q.empty:
+                        parts.append(df_q)
+                except Exception:
+                    continue
+        else:
+            # Direct loader fallback (no normalization changes)
+            if load_results2024_filtered is None:
+                st.error("Raw data path unavailable: neither queries.fetch_per_question nor loader function is importable.")
+                return
+            for q in sel_codes:
+                for code in demcodes:
+                    try:
+                        df_part = load_results2024_filtered(  # type: ignore
+                            question_code=q,
+                            years=list(years_selected),
+                            group_value=(None if code in (None, "", "All") else str(code)),
+                        )
+                        if df_part is not None and not df_part.empty:
+                            parts.append(df_part)
+                    except Exception:
+                        continue
+    except Exception as e:
+        st.error(f"Error while fetching raw data: {e}")
+        return
+
+    if not parts:
+        st.warning("No raw rows were returned for this selection.")
+        st.caption(f"(Questions={sel_codes}; Years={years_selected}; DEMCODEs={demcodes})")
+        return
+
+    df_raw = pd.concat(parts, ignore_index=True)
+
+    # 4) Present raw, unsuppressed, unpivoted rows
+    st.markdown("#### Raw data (debug)")
+    st.caption(f"Rows: {len(df_raw):,}  |  Columns: {list(df_raw.columns)}")
+    # Sort for readability if normalized columns are present
+    sort_cols = [c for c in ["question_code", "year", "group_value"] if c in df_raw.columns]
+    if sort_cols:
+        try:
+            df_raw = df_raw.sort_values(sort_cols)
+        except Exception:
+            pass
+    st.dataframe(df_raw, use_container_width=True, hide_index=True)
+
+# --------------------------------------------------------------------------------------
+# Unchanged panels (as in your original file)
+# --------------------------------------------------------------------------------------
 def backend_info_panel(qdf: pd.DataFrame, sdf: pd.DataFrame, demo_df: pd.DataFrame) -> None:
     info: Dict[str, Any] = {}
     try:
@@ -210,14 +334,16 @@ def mark_last_query(
     set_last_query_info(payload)
 
 def render_diagnostics_tabs(qdf: pd.DataFrame, sdf: pd.DataFrame, demo_df: pd.DataFrame) -> None:
-    tabs = st.tabs(["Parameters", "App setup", "AI status", "Search status", "Last query"])
+    tabs = st.tabs(["Raw data (debug)", "Parameters", "App setup", "AI status", "Search status", "Last query"])
     with tabs[0]:
-        parameters_preview(qdf, demo_df)
+        raw_data_debug_tab(qdf, demo_df)
     with tabs[1]:
-        backend_info_panel(qdf, sdf, demo_df)
+        parameters_preview(qdf, demo_df)
     with tabs[2]:
-        ai_status_panel()
+        backend_info_panel(qdf, sdf, demo_df)
     with tabs[3]:
-        search_status_panel()
+        ai_status_panel()
     with tabs[4]:
+        search_status_panel()
+    with tabs[5]:
         last_query_panel()
