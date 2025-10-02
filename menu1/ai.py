@@ -25,7 +25,7 @@ except Exception:
     DEFAULT_OPENAI_MODEL = "gpt-4o-mini"  # safe fallback; can be overridden by env OPENAI_MODEL
 
 # -----------------------------
-# Exact AI system prompt (Option 1 with gap-over-time)
+# Exact AI system prompt (Option 1 with gap-over-time, % everywhere)
 # -----------------------------
 AI_SYSTEM_PROMPT = (
     "You are preparing insights for the Government of Canada's Public Service Employee Survey (PSES).\n\n"
@@ -40,14 +40,15 @@ AI_SYSTEM_PROMPT = (
     "- If a value needed for a comparison is missing, omit that comparison rather than inferring.\n"
     "- Public Service–wide scope ONLY; do not reference specific departments unless present in the payload.\n\n"
     "Analysis rules (allowed computations ONLY)\n"
-    "- Begin with the latest year's result for the selected question (metric_label) if present.\n"
-    "- Trend (overall): If a previous year exists, compute the signed change in points (latest - previous) as an integer and report it (e.g., \"down 2 points\"). If not, skip.\n"
-    "- Gaps (latest year): Compute absolute gaps in points between demographic groups (integer subtraction). Mention only the largest 1–2 gaps and state which group is higher/lower (e.g., \"Women (82) vs Another gender (72): 10-point gap\").\n"
-    "- Gap-over-time: For each highlighted gap, compute the gap for each year where BOTH groups have values. State whether the gap has widened, narrowed, or remained stable since the earliest year with both groups (or, if only two adjacent years exist, vs the previous), and report the change in points with the reference year (e.g., \"gap narrowed by 3 points since 2020\"). If fewer than two such years exist, omit this sentence.\n"
+    "- Latest year = the maximum year present in the payload.\n"
+    "- Trend (overall): If a previous year exists, compute the signed change (latest - previous) as an integer and report it as a change in % points (e.g., \"down 2% points\"). If not, skip.\n"
+    "- Gaps (latest year): Compute absolute gaps between demographic groups (integer subtraction) and report them in % points (e.g., \"Women (82%) vs Another gender (72%): 10% points gap\"). Mention only the largest 1–2 gaps.\n"
+    "- Gap-over-time: For each highlighted gap, compute the gap for each year where BOTH groups have values. State whether the gap has widened, narrowed, or remained stable since the earliest year with both groups (or vs the previous if only two years exist), and report the change in % points (e.g., \"gap narrowed by 3% points since 2020\"). If fewer than two such years exist, omit this sentence.\n"
     "- Do NOT compute multi-year averages, rates of change, or anything beyond the integer subtractions described above.\n\n"
     "Style & output\n"
+    "- Report level values as integers followed by a percent sign (e.g., \"79%\", \"84%\").\n"
+    "- Reserve \"percent points\" strictly for differences or gaps: write them as integers followed by \"% points\" (e.g., \"down 2% points\", \"a 10% points gap\"). Never describe a level as \"points\".\n"
     "- Professional, concise, neutral. Narrative style (1–3 short sentences, no lists).\n"
-    "- When citing values, keep them as plain integers (optionally append \"%\" if the UI uses percent symbols) and use \"points\" for changes/gaps.\n"
     "- Output VALID JSON with exactly one key: \"narrative\".\n"
 )
 
@@ -61,10 +62,12 @@ def _is_all_label(x: object) -> bool:
 
 def _to_int_strict(v: object) -> Optional[int]:
     try:
-        return int(v)  # already integer-like
+        return int(v)
     except Exception:
         try:
             f = float(v)
+            if pd.isna(f):
+                return None
             return int(round(f))
         except Exception:
             return None
@@ -144,13 +147,28 @@ def build_per_q_prompt(
     }
     return json.dumps(payload, ensure_ascii=False)
 
+def _safe_int(v) -> Optional[int]:
+    """Return int(v) if numeric and not NaN; otherwise None."""
+    try:
+        if v is None:
+            return None
+        f = float(v)
+        if pd.isna(f):
+            return None
+        return int(round(f))
+    except Exception:
+        try:
+            return int(v)
+        except Exception:
+            return None
+
 def build_overall_prompt(
     tiles: Optional[List[Dict[str, object]]] = None,
     *,
     # ---- Legacy call style (shim) ----
     tab_labels: Optional[List[str]] = None,
     pivot_df: Optional[pd.DataFrame] = None,
-    q_to_metric: Optional[Dict[str, str]] = None,
+    q_to_metric: Optional[Dict[str, str]] = None,  # accepted but not required
     **kwargs,
 ) -> str:
     """
@@ -161,8 +179,8 @@ def build_overall_prompt(
       2) build_overall_prompt(tab_labels=[...], pivot_df=<DataFrame>, q_to_metric={...})
 
     In style (2), we construct 'tiles' from the pivot:
-      - latest_year = max numeric-convertible column in pivot_df
-      - latest_value_int = int(pivot_df.loc[q, latest_year]) when available
+      - For each question, choose the most recent year column that has a numeric value.
+      - Skip questions with no numeric value in any year.
     """
     # If tiles were provided explicitly, use them as-is.
     if tiles is None:
@@ -170,51 +188,53 @@ def build_overall_prompt(
 
     # Legacy path: build tiles from (tab_labels, pivot_df)
     if not tiles and tab_labels is not None and pivot_df is not None:
-        # Determine latest year column (numeric-convertible)
+        # Determine numeric-convertible year columns, sorted descending (latest first)
         year_cols: List[int] = []
         for c in pivot_df.columns:
             try:
                 year_cols.append(int(c))
             except Exception:
-                # ignore non-year columns (e.g., strings)
                 continue
-        latest_year: Optional[int] = max(year_cols) if year_cols else None
+        year_cols = sorted(year_cols, reverse=True)
 
         for q in tab_labels:
+            latest_year_for_q: Optional[int] = None
             latest_val_int: Optional[int] = None
-            if latest_year is not None:
+
+            # Try to get the row for this question
+            row = None
+            try:
+                row = pivot_df.loc[q]
+            except Exception:
+                # If MultiIndex or other structure: attempt a safer fallback
                 try:
-                    if q in getattr(pivot_df.index, "levels", [pivot_df.index])[0]:
-                        # simple index with question codes
-                        v = pivot_df.loc[q, latest_year]
-                    else:
-                        # fallback: try direct .loc (works for many simple indexes)
-                        v = pivot_df.loc[q, latest_year]
-                    # If v is a Series (multiindex row), take the first numeric value
-                    if hasattr(v, "values"):
-                        # pull first numeric-like value
-                        vv = None
-                        for item in (list(v.values) if hasattr(v, "values") else [v]):
-                            try:
-                                vv = int(item)
-                                break
-                            except Exception:
-                                try:
-                                    vv = int(round(float(item)))
-                                    break
-                                except Exception:
-                                    continue
-                        v = vv
-                    latest_val_int = int(v) if v is not None else None
+                    reset = pivot_df.reset_index()
+                    if q in reset.iloc[:, 0].values:
+                        row = reset[reset.iloc[:, 0] == q].iloc[0]
                 except Exception:
-                    latest_val_int = None
-            tile = {
-                "question_code": str(q),
-                "question_text": "",  # not strictly needed for the overall payload
-                "latest_year": latest_year if latest_year is not None else None,
-                "latest_value_int": latest_val_int if latest_val_int is not None else None,
-            }
-            tiles.append(tile)
+                    row = None
+
+            if row is not None:
+                # Find the newest year with a numeric value
+                for y in year_cols:
+                    try:
+                        v = row[y] if hasattr(row, "__getitem__") else None
+                    except Exception:
+                        v = None
+                    vv = _safe_int(v)
+                    if vv is not None:
+                        latest_year_for_q = int(y)
+                        latest_val_int = int(vv)
+                        break
+
+            # If we found a usable (year, value), create a tile; otherwise skip
+            if latest_year_for_q is not None and latest_val_int is not None:
+                tiles.append({
+                    "question_code": str(q),
+                    "question_text": "",  # optional
+                    "latest_year": latest_year_for_q,
+                    "latest_value_int": latest_val_int,
+                })
 
     # Keep only clean integer entries
     clean: List[Dict[str, object]] = []
