@@ -2,11 +2,10 @@
 """
 AI prompt and calling utilities for Menu 1.
 
-- AI_SYSTEM_PROMPT: a concise but explicit system instruction
-- build_per_q_payload(...): builds the JSON "user" payload for a single question
-- build_overall_payload(...): builds the JSON "user" payload for the multi-question summary
-- (Back-compat) build_per_q_prompt(...): alias to build_per_q_payload(...)
-- (Back-compat) build_overall_prompt(...): alias to build_overall_payload(...)
+PUBLIC API (unchanged names):
+- AI_SYSTEM_PROMPT
+- build_per_q_prompt(...): builds the JSON "user" payload for a single question
+- build_overall_prompt(...): builds the JSON "user" payload for the multi-question summary
 - call_openai_json(...): robust caller that returns (json_text, error_hint)
 - extract_narrative(...): safe JSON parse helper returning the text narrative or None
 """
@@ -14,16 +13,14 @@ AI prompt and calling utilities for Menu 1.
 from __future__ import annotations
 from typing import Dict, List, Optional, Tuple
 import json
-import time
 import os
 import re
-
 import pandas as pd
 
 from .constants import DEFAULT_OPENAI_MODEL
 
 # =====================================================================================
-# System prompt (refined — Option 1)
+# System prompt (Option 1 — approved)
 # =====================================================================================
 AI_SYSTEM_PROMPT: str = (
     "You are preparing insights for the Government of Canada's Public Service Employee Survey (PSES).\n\n"
@@ -50,46 +47,37 @@ AI_SYSTEM_PROMPT: str = (
 )
 
 # =====================================================================================
-# Prompt builders
+# Helpers to build model payloads (public names preserved)
 # =====================================================================================
 
-def _series_json(df_disp: pd.DataFrame, metric_col: str) -> List[Dict[str, float]]:
+def _series_json(df_disp: pd.DataFrame, metric_col: str) -> List[Dict[str, int]]:
     """
     Build a [{year, value}] series from a display dataframe.
-    If a Demographic column exists, averages by year (public-service level view).
+    NOTE: Leaves any intra-year shaping exactly as df_disp provides it; converts to ints.
     """
-    rows: List[Dict[str, float]] = []
+    rows: List[Dict[str, int]] = []
     s = df_disp.copy()
-    if "Demographic" in s.columns:
-        s = s.groupby("Year", as_index=False)[metric_col].mean(numeric_only=True)
-        s = s.rename(columns={metric_col: "Metric"})
-    else:
-        s = s[["Year", metric_col]].rename(columns={metric_col: "Metric"})
-    s = s.dropna(subset=["Year"]).sort_values("Year")
+    s = s.dropna(subset=["Year"])
+    s = s.sort_values("Year")
     for _, r in s.iterrows():
         try:
             y = int(r["Year"])
         except Exception:
             continue
+        v_raw = r.get(metric_col)
         try:
-            v = int(r["Metric"])
+            v = int(v_raw)
         except Exception:
             try:
-                v = int(round(float(r["Metric"])))
+                v = int(round(float(v_raw)))
             except Exception:
                 continue
         rows.append({"year": y, "value": v})
     return rows
 
-def _latest_year(df_disp: pd.DataFrame) -> Optional[int]:
-    try:
-        return int(pd.to_numeric(df_disp["Year"], errors="coerce").max())
-    except Exception:
-        return None
-
 def _groups_json_for_year(df_disp: pd.DataFrame, metric_col: str, year: int) -> List[Dict[str, object]]:
     """
-    Returns [{label, value}] for a single year if a Demographic column exists.
+    Returns [{label, value}] for a single year if a Demographic column exists in df_disp.
     """
     if "Demographic" not in df_disp.columns:
         return []
@@ -98,17 +86,18 @@ def _groups_json_for_year(df_disp: pd.DataFrame, metric_col: str, year: int) -> 
     out: List[Dict[str, object]] = []
     for _, r in s.iterrows():
         label = str(r["Demographic"])
+        v_raw = r.get(metric_col)
         try:
-            v = int(r[metric_col])
+            v = int(v_raw)
         except Exception:
             try:
-                v = int(round(float(r[metric_col])))
+                v = int(round(float(v_raw)))
             except Exception:
                 continue
         out.append({"label": label, "value": v})
     return out
 
-def build_per_q_payload(
+def build_per_q_prompt(
     question_code: str,
     question_text: str,
     df_disp: pd.DataFrame,
@@ -118,12 +107,12 @@ def build_per_q_payload(
 ) -> str:
     """
     Build the per-question JSON payload expected by the model.
-    Returns a JSON string.
+    Returns a JSON string (user message content).
     """
     latest_year = pd.to_numeric(df_disp["Year"], errors="coerce").max()
 
     # Snapshot of groups at the latest year (if demographics in play)
-    group_snapshot: List[Dict[str, float]] = []
+    group_snapshot: List[Dict[str, int]] = []
     if category_in_play and "Demographic" in df_disp.columns and pd.notna(latest_year):
         try:
             latest_int = int(latest_year)
@@ -144,13 +133,13 @@ def build_per_q_payload(
     }
     return json.dumps(payload, ensure_ascii=False)
 
-def build_overall_payload(
+def build_overall_prompt(
     tiles: List[Dict[str, object]],  # list of {"question_code","question_text","latest_year","latest_value_int"}
 ) -> str:
     """
     Build a compact payload for the multi-question overview.
+    Returns a JSON string (user message content).
     """
-    # Keep only clean integer entries
     clean: List[Dict[str, object]] = []
     for t in tiles:
         try:
@@ -164,51 +153,45 @@ def build_overall_payload(
     payload = {"overview": clean}
     return json.dumps(payload, ensure_ascii=False)
 
-# -------------------------------------------------------------------------------------
-# Back-compat aliases (approved Option A)
-# -------------------------------------------------------------------------------------
-def build_per_q_prompt(*args, **kwargs):
-    """Alias for legacy imports; delegates to build_per_q_payload."""
-    return build_per_q_payload(*args, **kwargs)
-
-def build_overall_prompt(*args, **kwargs):
-    """Alias for legacy imports; delegates to build_overall_payload."""
-    return build_overall_payload(*args, **kwargs)
-
 # =====================================================================================
-# Model caller (JSON mode) and helpers
+# Model caller (JSON mode) and helpers — public name preserved
 # =====================================================================================
+
+_JSON_TAIL_RE = re.compile(r"\{.*\}\s*$", re.DOTALL)
 
 def call_openai_json(
-    user_payload_json: str,
+    user_payload_json: Optional[str] = None,
     model_name: Optional[str] = None,
     system_prompt: Optional[str] = None,
     *,
-    # ---- Back-compat aliases (do not document publicly) ----
+    # Back-compat aliases accepted (safe no-ops if unused)
     system: Optional[str] = None,
     model: Optional[str] = None,
-    # --------------------------------------------------------
     temperature: float = 0.0,
     max_tokens: int = 300,
     **kwargs,
 ) -> Tuple[Optional[str], Optional[str]]:
     """
-    Calls the OpenAI API with a JSON-output instruction (model-dependent).
-    Accepts legacy aliases:
-      - system -> system_prompt
-      - model  -> model_name
+    Calls the OpenAI API with a JSON-output instruction.
     Returns (json_text, error_hint). On error, (None, hint).
+
+    Back-compat:
+      - accepts legacy keyword aliases: system -> system_prompt, model -> model_name
+      - if payload is missing/empty, returns a clear error hint instead of raising
     """
+    if not user_payload_json:
+        return None, "empty or missing user_payload_json"
+
     try:
         import openai  # type: ignore
     except Exception:
         return None, "openai package not available"
 
-    # Resolve model and system prompt with back-compat
     resolved_model = model_name or model or os.environ.get("OPENAI_MODEL", DEFAULT_OPENAI_MODEL)
     sys_prompt = system_prompt or system or AI_SYSTEM_PROMPT
 
     try:
+        # New-style client (if available)
         client = openai.OpenAI()
         resp = client.chat.completions.create(
             model=resolved_model,
@@ -221,21 +204,32 @@ def call_openai_json(
             ],
         )
         return (resp.choices[0].message.content, None)
-    except Exception as e:
-        return None, f"openai call failed: {e}"
-
-_JSON_RE = re.compile(r"\{.*\}\s*$", re.DOTALL)
+    except Exception:
+        # Fallback to legacy API if the above path fails
+        try:
+            out = openai.ChatCompletion.create(
+                model=resolved_model,
+                temperature=temperature,
+                max_tokens=max_tokens,
+                messages=[
+                    {"role": "system", "content": sys_prompt},
+                    {"role": "user", "content": user_payload_json},
+                ],
+            )
+            content = out["choices"][0]["message"]["content"]
+            return (content, None)
+        except Exception as e2:
+            return None, f"openai call failed: {e2}"
 
 def extract_narrative(json_text: Optional[str]) -> Optional[str]:
     """
-    Extracts the "narrative" field from a JSON string (robust to minor formatting issues).
-    Returns the narrative string or None.
+    Extracts the "narrative" field from a JSON string.
+    Robust to trailing tokens before the final JSON object.
     """
     if not json_text:
         return None
-    txt = json_text.strip()
-    # Quick trim to last JSON object if the model adds extra leading text
-    m = _JSON_RE.search(txt)
+    txt = str(json_text).strip()
+    m = _JSON_TAIL_RE.search(txt)
     if m:
         txt = m.group(0)
     try:
@@ -247,4 +241,4 @@ def extract_narrative(json_text: Optional[str]) -> Optional[str]:
     val = obj.get("narrative")
     if val is None:
         return None
-    return str(val)
+    return str(val).strip() or None
