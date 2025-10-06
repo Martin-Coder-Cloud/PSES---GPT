@@ -128,6 +128,17 @@ def run() -> None:
         layout.banner()
         layout.title("PSES Explorer Search")
         ai_on, show_diag = layout.toggles()
+
+        # [AI-toggle gate] Track toggle changes without triggering rebuilds
+        _prev_ai = st.session_state.get("menu1_ai_prev", ai_on)
+        if _prev_ai != ai_on:
+            st.session_state["menu1_ai_prev"] = ai_on
+            st.session_state["menu1_ai_toggle_dirty"] = True
+        else:
+            # initialize on first load
+            if "menu1_ai_prev" not in st.session_state:
+                st.session_state["menu1_ai_prev"] = ai_on
+
         layout.instructions()
 
         # Reset when arriving fresh from another menu
@@ -220,6 +231,9 @@ def run() -> None:
                     extra={"notes": "Menu 1 query run"},
                 )
 
+                # [AI-toggle gate] A fresh Search clears the dirty flag
+                st.session_state["menu1_ai_toggle_dirty"] = False
+
         with colB:
             st.markdown("<div id='menu1-reset-btn'>", unsafe_allow_html=True)
             # Label per your UX spec (“Clear parameters” beside Search)
@@ -232,6 +246,8 @@ def run() -> None:
                 st.session_state.pop("menu1_ai_cache", None)
                 st.session_state.pop("menu1_ai_narr_per_q", None)
                 st.session_state.pop("menu1_ai_narr_overall", None)
+                # [AI-toggle gate] Clearing parameters also clears the dirty flag
+                st.session_state.pop("menu1_ai_toggle_dirty", None)
                 # Rerun
                 try:
                     st.rerun()
@@ -243,16 +259,20 @@ def run() -> None:
 
         # Results (center area)
         if state.has_results():
-            payload = state.get_results()
-            results.tabs_summary_and_per_q(
-                payload=payload,
-                ai_on=ai_on,
-                build_overall_prompt=build_overall_prompt,  # pass directly
-                build_per_q_prompt=build_per_q_prompt,      # pass directly
-                call_openai_json=call_openai_json,          # pass directly
-                source_url=SOURCE_URL,
-                source_title=SOURCE_TITLE,
-            )
+            # [AI-toggle gate] If the AI toggle changed since last Search, do not render results
+            if st.session_state.get("menu1_ai_toggle_dirty", False):
+                st.info("AI setting changed — click **Search** to refresh results.")
+            else:
+                payload = state.get_results()
+                results.tabs_summary_and_per_q(
+                    payload=payload,
+                    ai_on=ai_on,
+                    build_overall_prompt=build_overall_prompt,  # pass directly
+                    build_per_q_prompt=build_per_q_prompt,      # pass directly
+                    call_openai_json=call_openai_json,          # pass directly
+                    source_url=SOURCE_URL,
+                    source_title=SOURCE_TITLE,
+                )
 
 
 if __name__ == "__main__":
