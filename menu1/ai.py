@@ -104,6 +104,20 @@ def _coerce_metric_series(s: pd.Series) -> pd.Series:
     return out
 
 
+def _is_year_like(col) -> bool:
+    """True if column label looks like a survey year (int or 4-digit string in [1900,2100])."""
+    try:
+        if isinstance(col, int):
+            return 1900 <= col <= 2100
+        s = str(col)
+        if len(s) == 4 and s.isdigit():
+            y = int(s)
+            return 1900 <= y <= 2100
+        return False
+    except Exception:
+        return False
+
+
 # -----------------------------
 # Per-question prompt builder
 # -----------------------------
@@ -201,18 +215,28 @@ def build_overall_prompt(
     if pv.index.name or pv.index.names:
         pv = pv.reset_index()
 
-    # Identify the question code column
+    # Detect year columns by label and pick question id column from non-year candidates
+    year_cols = [c for c in pv.columns if _is_year_like(c)]
+    id_candidates = [c for c in pv.columns if c not in year_cols]
+
+    # Prefer explicit question-like labels among id candidates; else first non-year column
+    preferred_names = {"question_code", "question", "code"}
     qcol = None
-    for c in pv.columns:
-        if c.lower() in ("question_code", "question", "code"):
+    for c in id_candidates:
+        if str(c).lower() in preferred_names:
             qcol = c
             break
     if qcol is None:
-        qcol = pv.columns[0]
+        if not id_candidates:
+            return _NO_DATA_OVERALL
+        qcol = id_candidates[0]
+
+    # If somehow no year columns detected, treat everything except qcol as year values
+    if not year_cols:
+        year_cols = [c for c in pv.columns if c != qcol]
 
     # Melt wide (years as columns) into long rows
-    year_cols = [c for c in pv.columns if c != qcol]
-    long = pv.melt(id_vars=[qcol], var_name="year", value_name="value")
+    long = pv.melt(id_vars=[qcol], value_vars=year_cols, var_name="year", value_name="value")
 
     # Coerce types
     long["year"] = pd.to_numeric(long["year"], errors="coerce").astype("Int64")
