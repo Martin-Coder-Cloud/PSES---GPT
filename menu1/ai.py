@@ -207,6 +207,12 @@ def build_overall_prompt(
     Build an overall JSON payload across multiple questions (as a string).
     NA-safe melt of the pivot. If nothing usable, return sentinel.
     Assumes pivot rows are keyed by question code (either in index or a column).
+
+    Enhancement:
+    - If available in Streamlit session, include question meanings (code_to_text)
+      and previously computed per-question summaries to enable a synthesis that
+      first summarizes the question-level findings, then adds a short theme-level
+      interpretation. Call sites remain unchanged.
     """
     if pivot_df is None or pivot_df.empty or not tab_labels:
         return _NO_DATA_OVERALL
@@ -263,10 +269,70 @@ def build_overall_prompt(
 
     latest_year = max(r["year"] for r in rows)
 
+    # ---------- NEW: Enrich with question meanings & per-question summaries (if available) ----------
+    questions_meta: List[Dict[str, str]] = []
+    per_q_summaries: List[Dict[str, str]] = []
+
+    try:
+        import streamlit as st  # optional; only to read session state if available
+
+        # Find a mapping code -> text from any payload-like dict in session
+        code_to_text: Optional[Dict[str, str]] = None
+        probable_keys = [
+            "menu1_results", "menu1_results_payload", "menu1_payload",
+            "results", "last_results", "menu1_last_payload"
+        ]
+        for k in probable_keys:
+            v = st.session_state.get(k)
+            if isinstance(v, dict) and "code_to_text" in v and isinstance(v["code_to_text"], dict):
+                code_to_text = v["code_to_text"]
+                break
+        if code_to_text is None:
+            # try any dict containing code_to_text
+            for v in st.session_state.values():
+                if isinstance(v, dict) and "code_to_text" in v and isinstance(v["code_to_text"], dict):
+                    code_to_text = v["code_to_text"]
+                    break
+
+        # Build questions meta using the mapping if present
+        for q in tab_labels:
+            questions_meta.append({
+                "code": str(q),
+                "text": str((code_to_text or {}).get(q, "")),
+                "metric": str(q_to_metric.get(q, "% positive"))
+            })
+
+        # Pull already-computed per-question narratives if present
+        pq = st.session_state.get("menu1_ai_narr_per_q")
+        if isinstance(pq, dict):
+            for q in tab_labels:
+                txt = pq.get(q)
+                if isinstance(txt, str) and txt.strip():
+                    per_q_summaries.append({"code": str(q), "summary": txt.strip()})
+    except Exception:
+        # If Streamlit isn't available or keys are absent, we simply omit these enrichments
+        for q in tab_labels:
+            questions_meta.append({
+                "code": str(q),
+                "text": "",
+                "metric": str(q_to_metric.get(q, "% positive"))
+            })
+        # per_q_summaries stays empty if not readable
+    # -----------------------------------------------------------------------------------------------
+
     payload = {
         "latest_year": int(latest_year),
         "metric_by_question": q_to_metric,  # e.g., {"Q01": "% positive", ...}
-        "rows": rows
+        "rows": rows,
+        # NEW fields (optional, for better synthesis)
+        "questions": questions_meta,                 # [{code,text,metric}, ...]
+        "per_question_summaries": per_q_summaries,   # [{code,summary}, ...]
+        "instructions": (
+            "First, briefly synthesize the question-level summaries provided (if any). "
+            "Then add a short, theme-level interpretation of what these questions collectively suggest. "
+            "Prefer referring to questions by their short meaning (from 'text'); include codes in parentheses only when helpful. "
+            "Use percent for levels and percentage points for changes. Do not invent numbers."
+        ),
     }
 
     user_msg = (
