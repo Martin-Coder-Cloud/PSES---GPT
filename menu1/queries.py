@@ -90,11 +90,31 @@ def _normalize_columns(df: pd.DataFrame) -> pd.DataFrame:
     out["question_code"] = out["question_code"].astype("string").str.strip().str.upper()
     out["group_value"] = out["group_value"].astype("string").str.strip()
 
-    # Keep year as integer if possible (non-fatal if it can't cast)
+    # ---- NEW: NA-safe numeric normalization (minimal, defensive) ------------
+    # year as nullable integer
     try:
         out["year"] = pd.to_numeric(out["year"], errors="coerce").astype("Int16")
     except Exception:
         pass
+
+    # counts as nullable integer
+    try:
+        out["n"] = pd.to_numeric(out["n"], errors="coerce").astype("Int64")
+    except Exception:
+        # fall back to leaving as-is if cast fails for any unexpected reason
+        pass
+
+    # Measures & distributions: numeric + 9999 sentinel -> NA (so render shows "N/A")
+    measure_cols = [
+        "positive_pct", "neutral_pct", "negative_pct",
+        "answer1", "answer2", "answer3", "answer4", "answer5", "answer6", "answer7",
+    ]
+    for c in measure_cols:
+        if c in out.columns:
+            out[c] = pd.to_numeric(out[c], errors="coerce")
+            # 9999 denotes not available/applicable in your dataset
+            out.loc[out[c] == 9999, c] = pd.NA
+            # keep as float (NA-friendly); downstream can format as integer if desired
 
     return out
 
