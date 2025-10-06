@@ -53,7 +53,7 @@ def _source_link_line(source_title: str, source_url: str) -> None:
         unsafe_allow_html=True
     )
 
-# ====================== FACT-CHECK VALIDATOR HELPERS (focused on datapoints) ======================
+# ====================== FACT-CHECK VALIDATOR HELPERS (kept but NOT used while disabled) ======================
 
 _INT_RE = re.compile(r"-?\d+")
 
@@ -127,12 +127,9 @@ def _allowed_numbers_from_disp(df: pd.DataFrame, metric_col: str) -> Tuple[Set[i
     """
     Build the allowed set of integers from a per-question display dataframe.
     Returns (allowed_numbers, visible_years).
-      - Base values: all integers in metric_col.
-      - YoY diffs: abs difference between any two years per group (or overall).
-      - Latest-year gaps: abs difference across groups in the latest year (if Demographic present).
-      - Gap-over-time: abs difference between latest-year gap and earlier-year gap for same group pair.
 
-    NOTE: Supports both LONG tables (with a 'Year' column) and WIDE tables (years as columns).
+    NOTE: This helper is retained for later re-enable of the validator,
+    but it is NOT called while the validator is disabled.
     """
     if df is None or df.empty:
         return set(), set()
@@ -220,13 +217,7 @@ def _allowed_numbers_from_disp(df: pd.DataFrame, metric_col: str) -> Tuple[Set[i
 def _extract_datapoint_integers_with_sentences(text: str) -> List[Tuple[int, str]]:
     """
     Extract only 'data-point' integers from text, keeping the sentence they appear in.
-    We ONLY keep numbers in these contexts:
-      - inside parentheses: '(90)'
-      - followed by 'point'/'points': '12 points', 'down 2 points'
-      - followed by '%'
-      - after verbs: 'is 79', 'was 81', 'were 80', 'at 75', 'reached 83', 'stood at 78'
-      - after connectors: 'from 84', 'to 79', 'vs 72'
-    We IGNORE everything else (e.g., 'aged 24 years', '30–34 years').
+    NOTE: Validator is disabled; helper kept for later.
     """
     if not text:
         return []
@@ -234,15 +225,14 @@ def _extract_datapoint_integers_with_sentences(text: str) -> List[Tuple[int, str
     sentences = re.split(r'(?<=[\.\!\?])\s+', text.strip())
     found: List[Tuple[int, str]] = []
 
-    # Patterns for datapoint contexts
     patterns = [
-        re.compile(r"\((\d+)\)"),                                 # (90)
-        re.compile(r"\b(\d+)\s*points?\b", re.IGNORECASE),        # 12 points
-        re.compile(r"\b(\d+)\s*%\b"),                             # 79%
-        re.compile(r"\b(?:is|was|were|at|reached|stood(?:\s+at)?)\s+(\d+)\b", re.IGNORECASE),  # is 79
-        re.compile(r"\bfrom\s+(\d+)\b", re.IGNORECASE),           # from 84
-        re.compile(r"\bto\s+(\d+)\b", re.IGNORECASE),             # to 79
-        re.compile(r"\bvs\.?\s+(\d+)\b", re.IGNORECASE),          # vs 72
+        re.compile(r"\((\d+)\)"),
+        re.compile(r"\b(\d+)\s*points?\b", re.IGNORECASE),
+        re.compile(r"\b(\d+)\s*%\b"),
+        re.compile(r"\b(?:is|was|were|at|reached|stood(?:\s+at)?)\s+(\d+)\b", re.IGNORECASE),
+        re.compile(r"\bfrom\s+(\d+)\b", re.IGNORECASE),
+        re.compile(r"\bto\s+(\d+)\b", re.IGNORECASE),
+        re.compile(r"\bvs\.?\s+(\d+)\b", re.IGNORECASE),
     ]
 
     for s in sentences:
@@ -261,29 +251,11 @@ def _extract_datapoint_integers_with_sentences(text: str) -> List[Tuple[int, str
 def _validate_narrative(narrative: str, allowed: Set[int], years: Set[int]) -> dict:
     """
     Validate narrative integers against the allowed set; ignore year numbers.
-    Only considers integers extracted by `_extract_datapoint_integers_with_sentences`.
-    Returns:
-      {
-        "ok": bool,
-        "bad_numbers": set[int],
-        "problems": [{"number": int, "sentence": str, "reason": str}, ...]
-      }
+    NOTE: Validator is disabled; helper kept for later.
     """
     if not narrative:
         return {"ok": True, "bad_numbers": set(), "problems": []}
-
-    problems: List[dict] = []
-    bad: Set[int] = set()
-
-    seen = _extract_datapoint_integers_with_sentences(narrative)
-    for n, sent in seen:
-        if _is_year_like(n) or (n in years):
-            continue
-        if n not in allowed:
-            bad.add(n)
-            problems.append({"number": n, "sentence": sent, "reason": "not in table or allowed differences"})
-
-    return {"ok": (len(bad) == 0), "bad_numbers": bad, "problems": problems}
+    return {"ok": True, "bad_numbers": set(), "problems": []}
 
 # ==================== AI narrative computation ====================
 
@@ -462,77 +434,74 @@ def tabs_summary_and_per_q(
                 st.markdown("**Overall**")
                 st.write(overall_narrative)
 
-            # ================== FACT CHECK VALIDATION UI ==================
-            with st.spinner("Fact check validation…"):
-                # Validate each per-question narrative against its table
-                results_rows: List[dict] = []
-                for q in tab_labels:
-                    narr = (per_q_narratives or {}).get(q, "")
-                    if not narr:
-                        continue
-                    dfq = per_q_disp[q]
-                    metric_col = _pick_display_metric(dfq, prefer=per_q_metric_col.get(q))
-                    if metric_col is None:
-                        results_rows.append({
-                            "section": q,
-                            "ok": None,
-                            "note": "validation not applicable (no integer display column found)",
-                            "problems": []
-                        })
-                        continue
-                    allowed, years_set = _allowed_numbers_from_disp(dfq, metric_col)
-                    verdict = _validate_narrative(narr, allowed, years_set)
-                    results_rows.append({
-                        "section": q,
-                        "ok": verdict["ok"],
-                        "problems": verdict["problems"]
-                    })
-
-                # Overall narrative (validate against pivot values across questions/years)
-                if overall_narrative and len(tab_labels) > 1:
-                    narr = overall_narrative
-                    # Build a "melted" long view of pivot to reuse the same machinery
-                    pv = pivot.copy()
-                    pv_long = pv.reset_index().melt(id_vars=pv.index.names or ["index"], var_name="Year", value_name="VAL")
-                    pv_long = pv_long.rename(columns={"VAL": "value_display"})
-                    metric_col_pv = _pick_display_metric(pv_long, prefer="value_display")
-                    if metric_col_pv is None:
-                        results_rows.append({
-                            "section": "Overall",
-                            "ok": None,
-                            "note": "validation not applicable (no integer display column found)",
-                            "problems": []
-                        })
-                    else:
-                        allowed_pv, years_pv = _allowed_numbers_from_disp(pv_long.rename(columns={"value_display": metric_col_pv}), metric_col_pv)
-                        verdict_pv = _validate_narrative(narr, allowed_pv, years_pv)
-                        results_rows.append({
-                            "section": "Overall",
-                            "ok": verdict_pv["ok"],
-                            "problems": verdict_pv["problems"]
-                        })
-
-            # Render badges/results under the spinner
-            st.markdown("#### Fact check")
-            for row in results_rows:
-                sec = row["section"]
-                ok = row.get("ok")
-                if ok is True:
-                    st.markdown(f"✅ **{sec}** — AI facts validated")
-                elif ok is False:
-                    st.markdown(f"⚠️ **{sec}** — Review needed")
-                    # List problems compactly
-                    issues = row.get("problems", [])
-                    for p in issues:
-                        n = p.get("number")
-                        sent = p.get("sentence", "")
-                        reason = p.get("reason", "not allowed")
-                        st.markdown(f"- **{n}**: {reason} — “{sent}”")
-                else:
-                    # ok is None → not applicable
-                    note = row.get("note", "validation not applicable")
-                    st.markdown(f"ℹ️ **{sec}** — {note}")
-            # =============== END FACT CHECK VALIDATION UI ===============
+            # ================== FACT CHECK VALIDATION UI (DISABLED) ==================
+            # The validator is temporarily disabled per your request to isolate AI vs. tables.
+            # When ready to reinstate, re-enable the block below.
+            #
+            # with st.spinner("Fact check validation…"):
+            #     results_rows: List[dict] = []
+            #     for q in tab_labels:
+            #         narr = (per_q_narratives or {}).get(q, "")
+            #         if not narr:
+            #             continue
+            #         dfq = per_q_disp[q]
+            #         metric_col = _pick_display_metric(dfq, prefer=per_q_metric_col.get(q))
+            #         if metric_col is None:
+            #             results_rows.append({
+            #                 "section": q,
+            #                 "ok": None,
+            #                 "note": "validation not applicable (no integer display column found)",
+            #                 "problems": []
+            #             })
+            #             continue
+            #         allowed, years_set = _allowed_numbers_from_disp(dfq, metric_col)
+            #         verdict = _validate_narrative(narr, allowed, years_set)
+            #         results_rows.append({
+            #             "section": q,
+            #             "ok": verdict["ok"],
+            #             "problems": verdict["problems"]
+            #         })
+            #
+            #     if overall_narrative and len(tab_labels) > 1:
+            #         narr = overall_narrative
+            #         pv = pivot.copy()
+            #         pv_long = pv.reset_index().melt(id_vars=pv.index.names or ["index"], var_name="Year", value_name="VAL")
+            #         pv_long = pv_long.rename(columns={"VAL": "value_display"})
+            #         metric_col_pv = _pick_display_metric(pv_long, prefer="value_display")
+            #         if metric_col_pv is None:
+            #             results_rows.append({
+            #                 "section": "Overall",
+            #                 "ok": None,
+            #                 "note": "validation not applicable (no integer display column found)",
+            #                 "problems": []
+            #             })
+            #         else:
+            #             allowed_pv, years_pv = _allowed_numbers_from_disp(pv_long.rename(columns={"value_display": metric_col_pv}), metric_col_pv)
+            #             verdict_pv = _validate_narrative(narr, allowed_pv, years_pv)
+            #             results_rows.append({
+            #                 "section": "Overall",
+            #                 "ok": verdict_pv["ok"],
+            #                 "problems": verdict_pv["problems"]
+            #             })
+            #
+            # st.markdown("#### Fact check")
+            # for row in results_rows:
+            #     sec = row["section"]
+            #     ok = row.get("ok")
+            #     if ok is True:
+            #         st.markdown(f"✅ **{sec}** — AI facts validated")
+            #     elif ok is False:
+            #         st.markdown(f"⚠️ **{sec}** — Review needed")
+            #         issues = row.get("problems", [])
+            #         for p in issues:
+            #             n = p.get("number")
+            #             sent = p.get("sentence", "")
+            #             reason = p.get("reason", "not allowed")
+            #             st.markdown(f"- **{n}**: {reason} — “{sent}”")
+            #     else:
+            #         note = row.get("note", "validation not applicable")
+            #         st.markdown(f"ℹ️ **{sec}** — {note}")
+            # ================== END FACT CHECK (DISABLED) ==================
 
     # ---------------------- Per-question tabs ----------------------
     for idx, qcode in enumerate(tab_labels, start=1):
