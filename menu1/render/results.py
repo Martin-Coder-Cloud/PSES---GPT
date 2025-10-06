@@ -61,6 +61,22 @@ def _is_year_like(n: int) -> bool:
     # treat any 4-digit year-ish as a "year token" we ignore in validation
     return 1900 <= n <= 2100
 
+def _is_year_label(col) -> bool:
+    """
+    True if a column label looks like a survey year (int 1900–2100 or 4-digit string in that range).
+    Used only by the validator to detect wide tables (years as columns).
+    """
+    try:
+        if isinstance(col, int):
+            return 1900 <= col <= 2100
+        s = str(col)
+        if len(s) == 4 and s.isdigit():
+            y = int(s)
+            return 1900 <= y <= 2100
+        return False
+    except Exception:
+        return False
+
 def _to_int(v: Any) -> Optional[int]:
     """
     Safe integer caster for fact-check logic:
@@ -115,17 +131,37 @@ def _allowed_numbers_from_disp(df: pd.DataFrame, metric_col: str) -> Tuple[Set[i
       - YoY diffs: abs difference between any two years per group (or overall).
       - Latest-year gaps: abs difference across groups in the latest year (if Demographic present).
       - Gap-over-time: abs difference between latest-year gap and earlier-year gap for same group pair.
+
+    NOTE: Supports both LONG tables (with a 'Year' column) and WIDE tables (years as columns).
     """
-    if df is None or df.empty or metric_col not in df.columns:
+    if df is None or df.empty:
         return set(), set()
 
-    work = df.copy()
+    # ---- Detect shape; if wide, melt to long with 'Year' + '__MVAL__' ----
+    metric_col_work = metric_col
+    if "Year" not in df.columns or metric_col not in df.columns:
+        # Identify year-like columns
+        ycols = [c for c in df.columns if _is_year_label(c)]
+        if ycols:
+            id_cols = [c for c in df.columns if c not in ycols]
+            melted = df.melt(id_vars=id_cols, value_vars=ycols, var_name="Year", value_name="__MVAL__")
+            work = melted.copy()
+            metric_col_work = "__MVAL__"
+        else:
+            # No Year column and no obvious year-like headers → nothing to validate
+            return set(), set()
+    else:
+        work = df.copy()
+
     # Normalize types
     work["__Year__"] = pd.to_numeric(work.get("Year"), errors="coerce").astype("Int64")
     if "Demographic" not in work.columns:
         work["Demographic"] = "All respondents"
-    # Integerize metric values where possible
-    work["__Val__"] = work[metric_col].apply(_to_int)
+
+    # Integerize metric values where possible (NA-safe)
+    if metric_col_work not in work.columns:
+        return set(), set()
+    work["__Val__"] = work[metric_col_work].apply(_to_int)
 
     # Visible years
     years: Set[int] = set(int(y) for y in work["__Year__"].dropna().unique())
@@ -135,7 +171,7 @@ def _allowed_numbers_from_disp(df: pd.DataFrame, metric_col: str) -> Tuple[Set[i
 
     # YoY diffs (within each group label)
     gdf_work = work.dropna(subset=["__Val__", "__Year__"])
-    for g, gdf in gdf_work.groupby("Demographic", dropna=False):
+    for _, gdf in gdf_work.groupby("Demographic", dropna=False):
         vals = [int(v) for v in gdf.sort_values("__Year__")["__Val__"].tolist() if v is not None]
         for i in range(len(vals)):
             for j in range(i + 1, len(vals)):
