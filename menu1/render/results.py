@@ -1,4 +1,3 @@
-# app/menu1/render/results.py
 """
 Menu 1: Results rendering
 - Summary tab (code-only rows; years as columns)
@@ -12,6 +11,7 @@ Menu 1: Results rendering
 - AI cache to prevent re-calling on reruns/navigations with unchanged results
 """
 
+from __future__ import annotations
 from typing import Dict, Callable, Any, Tuple, List, Set, Optional
 import io
 import json
@@ -249,39 +249,7 @@ def _validate_narrative(narrative: str, allowed: Set[int], years: Set[int]) -> d
 
     return {"ok": (len(bad) == 0), "bad_numbers": bad, "problems": problems}
 
-# ---------- Display-only NA formatter (added) ----------
-
-def _fmt_na_for_display(df: pd.DataFrame) -> pd.DataFrame:
-    """
-    Return a copy for UI display where missing values (None/NaN/pd.NA/'None'/'nan')
-    are shown as 'N/A'. Does not mutate the input and is only used at render points.
-    """
-    out = df.copy()
-    # Ensure mixed string/numeric allowed at display
-    try:
-        out = out.astype(object)
-    except Exception:
-        pass
-
-    # Replace pandas missing
-    out = out.where(pd.notna(out), other="N/A")
-
-    # Normalize literal strings like 'None', 'none', 'nan'
-    def _norm_cell(x):
-        if x is None:
-            return "N/A"
-        if isinstance(x, str) and x.strip().lower() in {"none", "nan"}:
-            return "N/A"
-        return x
-
-    for c in out.columns:
-        try:
-            out[c] = out[c].map(_norm_cell)
-        except Exception:
-            out[c] = out[c].apply(_norm_cell)
-    return out
-
-# ==================== END FACT-CHECK VALIDATOR HELPERS ====================
+# ==================== AI narrative computation ====================
 
 def _compute_ai_narratives(
     *,
@@ -416,8 +384,7 @@ def tabs_summary_and_per_q(
                 )
 
         # The table (rows are codes or code×demographic; columns are years)
-        summary_df = pivot.round(1).reset_index()
-        st.dataframe(_fmt_na_for_display(summary_df), use_container_width=True)
+        st.dataframe(pivot.reset_index(), use_container_width=True)
 
         # Source line directly under the tabulation
         _source_link_line(source_title, source_url)
@@ -536,7 +503,7 @@ def tabs_summary_and_per_q(
         with tabs[idx]:
             qtext = code_to_text.get(qcode, "")
             st.subheader(f"{qcode} — {qtext}")
-            st.dataframe(_fmt_na_for_display(per_q_disp[qcode]), use_container_width=True)
+            st.dataframe(per_q_disp[qcode], use_container_width=True)
             _source_link_line(source_title, source_url)
 
     # ---------------------- Persistent footer (all tabs) ----------------------
@@ -630,7 +597,7 @@ def _render_excel_download(
     with io.BytesIO() as buf:
         with pd.ExcelWriter(buf, engine="xlsxwriter") as writer:
             # Summary
-            pivot.round(1).reset_index().to_excel(writer, sheet_name="Summary_Table", index=False)
+            pivot.reset_index().to_excel(writer, sheet_name="Summary_Table", index=False)
             # Per-question sheets
             for q, df_disp in per_q_disp.items():
                 safe = q[:28]
