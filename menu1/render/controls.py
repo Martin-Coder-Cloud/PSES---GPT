@@ -9,37 +9,46 @@ import streamlit.components.v1 as components  # for a tiny one-time scrollIntoVi
 
 # ─────────────────────────────────────────────────────────────────────────────
 #  Typography & indentation: inject on EVERY rerun (no gating)
-#  Minimal spacing between Select → or → Search (left-aligned)
+#  Ultra-tight spacing for minimalist query menu
 # ─────────────────────────────────────────────────────────────────────────────
 def ensure_pses_styles():
     st.markdown(
         """
         <style>
-          /* Title 2 (Step 1–3) */
+          /* Title 2: Step 1–3 (compact by default) */
           .pses-h2 {
             font-size: 1.08rem;
             font-weight: 600;
-            margin: 1.0em 0 0.4em 0;
+            margin: 0.6em 0 0.2em 0; /* tighter than before */
             color: #222;
           }
-          /* Title 3 (sub-sections: list, or, search, results, selected, subgroup) */
+          /* Extra-tight variant for headers that should hug the previous block (used by Step 2) */
+          .pses-h2-tight-top {
+            margin-top: 0.25em !important;  /* pulls Step 2 closer to the query block above */
+          }
+
+          /* Title 3: sub-sections (compact) */
           .pses-h3 {
             font-size: 1.0rem;
             font-weight: 550;
-            margin: 0.6em 0 0.25em 0; /* tight but readable */
+            margin: 0.45em 0 0.2em 0; /* tighter than before */
             color: #333;
           }
+
           /* Indented content block for Title 3 + its contents */
           .pses-block {
             margin-left: 2.2cm !important;  /* clear, consistent indent */
             padding-left: 0.1cm;
-            margin-top: 0;  /* minimize accidental gaps between stacked blocks */
+            margin-top: 0;   /* avoid accidental gaps between stacked blocks */
             margin-bottom: 0;
           }
+
           /* Utilities for ultra-tight spacing */
           .pses-no-top    { margin-top: 0 !important; }
           .pses-no-bottom { margin-bottom: 0 !important; }
-          .pses-tight-h3  { margin-top: 0 !important; margin-bottom: 0 !important; }
+          .pses-zero      { margin: 0 !important; padding: 0 !important; line-height: 1 !important; }
+          .pses-nudge-up  { margin-top: -0.15em !important; } /* micro pull-up for headings */
+
           .pses-note {
             font-size: 0.9rem;
             color: #666;
@@ -185,16 +194,18 @@ def question_picker(qdf: pd.DataFrame) -> List[str]:
     code_to_display = dict(zip(qdf["code"], qdf["display"]))
     display_to_code = {v: k for k, v in code_to_display.items()}
 
-    # ============================ Step 1 (Title 2 / H2, no indent) ============================
+    # ============================ Step 1 (Title 2 / H2, compact) ==============================
     st.markdown("<div class='pses-h2'>Step 1: Pick up to 5 survey questions</div>", unsafe_allow_html=True)
 
-    # ---- Single indented block: Select → or → Search (Title 3s, no extra spacing) ------------
+    # ---- Single indented block: Select → or → Search (Title 3s, zero extra spacing) ----------
     st.markdown("<div class='pses-block'>", unsafe_allow_html=True)
 
-    # Select from the list
-    st.markdown("<div class='pses-h3 pses-no-bottom'>Select from the list</div>", unsafe_allow_html=True)
+    # Select from the list (nudge up to reduce space under Step 1 title)
+    st.markdown("<div class='pses-h3 pses-no-top pses-nudge-up'>Select from the list</div>", unsafe_allow_html=True)
+
     def _on_list_change_scroll_step2():
         st.session_state[K_SCROLL_TO_STEP2] = True
+
     st.multiselect(
         "Choose one or more from the official list",
         qdf["display"].tolist(),
@@ -205,10 +216,10 @@ def question_picker(qdf: pd.DataFrame) -> List[str]:
         on_change=_on_list_change_scroll_step2,
     )
 
-    # "or" (left-aligned, zero extra spacing)
-    st.markdown("<div class='pses-h3 pses-tight-h3'>or</div>", unsafe_allow_html=True)
+    # "or" (left-aligned, absolutely no spacing above or below)
+    st.markdown("<div class='pses-h3 pses-zero'>or</div>", unsafe_allow_html=True)
 
-    # Search questionnaire by keywords or theme
+    # Search questionnaire by keywords or theme (flush under "or")
     st.markdown("<div class='pses-h3 pses-no-top'>Search questionnaire by keywords or theme</div>", unsafe_allow_html=True)
     query = st.text_input(
         "Enter keywords (e.g., harassment, recognition, onboarding)",
@@ -364,67 +375,10 @@ def question_picker(qdf: pd.DataFrame) -> List[str]:
                 'or search by a question code like “Q01”.'
             )
 
-    # ---------- Merge selections, cap 5 ----------
-    combined_order: List[str] = []
-
-    # Use the global map (preserves order by walking K_HITS list)
-    gmap_all = st.session_state.get(K_GLOBAL_HITS_SELECTED, {})
-    for rec in st.session_state.get(K_HITS, []):
-        code = rec["code"]
-        if gmap_all.get(code, False) and code not in combined_order:
-            combined_order.append(code)
-
-    # Merge in multiselect (official list) picks, preserving order
-    for d in st.session_state.get(K_MULTI_QUESTIONS, []):
-        c = display_to_code.get(d)
-        if c and c not in combined_order:
-            combined_order.append(c)
-
-    if len(combined_order) > 5:
-        combined_order = combined_order[:5]
-        st.warning("Limit is 5 questions; extra selections were ignored.")
-    st.session_state[K_SELECTED_CODES] = combined_order
-
-    # ---- Selected list (Title 3 / H3, indented with content) -------------------------------
-    if st.session_state[K_SELECTED_CODES]:
-        st.markdown("<div class='pses-block'>", unsafe_allow_html=True)
-        st.markdown("<div class='pses-h3'>Selected questions</div>", unsafe_allow_html=True)
-        updated = list(st.session_state[K_SELECTED_CODES])
-
-        for code in list(updated):
-            label = code_to_display.get(code, code)
-            keep = st.checkbox(label, value=True, key=f"sel_{code}")
-            if not keep:
-                # Remove from selected list
-                updated = [c for c in updated if c != code]
-                # Uncheck corresponding hit checkbox if present
-                hk = f"kwhit_{code}"
-                if hk in st.session_state:
-                    st.session_state[hk] = False
-                # Also update global selection map
-                gmap = dict(st.session_state.get(K_GLOBAL_HITS_SELECTED, {}))
-                if code in gmap:
-                    gmap[code] = False
-                    st.session_state[K_GLOBAL_HITS_SELECTED] = gmap
-                # Defer multiselect sync: compute the new display list and apply next run
-                disp = code_to_display.get(code)
-                if disp:
-                    current_displays = list(st.session_state.get(K_MULTI_QUESTIONS, []))
-                    if disp in current_displays:
-                        current_displays = [d for d in current_displays if d != disp]
-                        st.session_state[K_SYNC_MULTI] = current_displays
-                        st.session_state[K_SELECTED_CODES] = updated
-                        st.experimental_rerun()
-
-        if updated != st.session_state[K_SELECTED_CODES]:
-            st.session_state[K_SELECTED_CODES] = updated
-        st.markdown("</div>", unsafe_allow_html=True)
-
-    # ============================ Step 2 (Title 2 / H2, no indent) ============================
+    # ============================ Step 2 (Title 2, pulled closer) ============================
     # anchor for smooth scroll
     st.markdown('<div id="step2_anchor"></div>', unsafe_allow_html=True)
 
-    # One-time scroll if user selected from the list
     if st.session_state.get(K_SCROLL_TO_STEP2, False):
         components.html(
             """
@@ -437,7 +391,8 @@ def question_picker(qdf: pd.DataFrame) -> List[str]:
         )
         st.session_state[K_SCROLL_TO_STEP2] = False
 
-    st.markdown("<div class='pses-h2'>Step 2: Select survey year(s)</div>", unsafe_allow_html=True)
+    # Tight top margin variant to reduce the gap between the Step 1 block and Step 2
+    st.markdown("<div class='pses-h2 pses-h2-tight-top'>Step 2: Select survey year(s)</div>", unsafe_allow_html=True)
     st.session_state.setdefault(K_SELECT_ALL_YEARS, True)
     select_all = st.checkbox("All years", key=K_SELECT_ALL_YEARS)
 
@@ -446,24 +401,18 @@ def question_picker(qdf: pd.DataFrame) -> List[str]:
             st.session_state.setdefault(f"year_{yr}", True)
             st.session_state[f"year_{yr}"] = True
     else:
-        # Explicitly clear every year checkbox when "All years" is OFF
         for yr in DEFAULT_YEARS:
             st.session_state[f"year_{yr}"] = False
 
-    selected_years: List[int] = []
     cols = st.columns(len(DEFAULT_YEARS))
     for i, yr in enumerate(DEFAULT_YEARS):
         with cols[i]:
             st.checkbox(str(yr), key=f"year_{yr}")
-            if st.session_state.get(f"year_{yr}", False):
-                selected_years.append(yr)
-    years_sorted = sorted(selected_years)  # retained for compatibility if needed
 
-    # ============================ Step 3 (Title 2 / H2, no indent) ============================
+    # ============================ Step 3 (Title 2, compact) ==================================
     st.markdown("<div class='pses-h2'>Step 3: Select a demographic category (optional)</div>", unsafe_allow_html=True)
-    # NOTE: The demographic sub-UI lives in demographic_picker(). We DO NOT render another Step 3 there.
+    # Note: demographic sub-UI lives in demographic_picker() — no duplicate Step 3 here.
 
-    # Return selected codes (API unchanged)
     return st.session_state[K_SELECTED_CODES]
 
 # ---- Years (unchanged signature; used by caller) ----------------------------
@@ -538,5 +487,5 @@ def demographic_picker(demo_df: pd.DataFrame):
     return demo_selection, sub_selection, [None], {None: "All respondents"}, False
 
 # ---- Enable search? ---------------------------------------------------------
-def search_button_enabled(question_codes: List[str], years: List[int]) -> bool:
+def search_button_enabled(question_codes: List[int], years: List[int]) -> bool:
     return bool(question_codes) and bool(years)
