@@ -171,8 +171,8 @@ def question_picker(qdf: pd.DataFrame) -> List[str]:
     # ============================ Step 1 (Title 2 / H2) =======================================
     st.markdown("<div class='pses-h2'>Step 1: Pick up to 5 survey questions</div>", unsafe_allow_html=True)
 
-    # (1) EXACT CHANGE: Add two standard spacings (~two text rows) before "Select from the list"
-    st.markdown("<div style='height: 2em'></div>", unsafe_allow_html=True)
+    # (1) CHANGE REDUCED: Use one standard spacing (~one text row) before "Select from the list"
+    st.markdown("<div style='height: 1em'></div>", unsafe_allow_html=True)
 
     # ---- Single indented block: Select → “or” → Search ---------------------------------------
     st.markdown("<div class='pses-block'>", unsafe_allow_html=True)
@@ -196,13 +196,13 @@ def question_picker(qdf: pd.DataFrame) -> List[str]:
     # “or”
     st.markdown("<div class='pses-h3'>or</div>", unsafe_allow_html=True)
 
-    # (2) EXACT CHANGE: Add one standard spacing between "or" and the next subtitle
+    # (2) keep: one standard spacing between "or" and next subtitle
     st.markdown("<div style='height: 1em'></div>", unsafe_allow_html=True)
 
     # Search questionnaire by keywords or theme
     st.markdown("<div class='pses-h3'>Search questionnaire by keywords or theme</div>", unsafe_allow_html=True)
 
-    # (3) EXACT CHANGE: Add one standard spacing before the text input
+    # (3) keep: one standard spacing before the text input
     st.markdown("<div style='height: 1em'></div>", unsafe_allow_html=True)
 
     query = st.text_input(
@@ -375,7 +375,7 @@ def question_picker(qdf: pd.DataFrame) -> List[str]:
 
     st.markdown("<div class='pses-h2'>Step 2: Select survey year(s)</div>", unsafe_allow_html=True)
 
-    # (4) EXACT CHANGE: Add one standard spacing before the “All years” checkbox
+    # keep: one standard spacing before the “All years” checkbox
     st.markdown("<div style='height: 1em'></div>", unsafe_allow_html=True)
 
     st.session_state.setdefault(K_SELECT_ALL_YEARS, True)
