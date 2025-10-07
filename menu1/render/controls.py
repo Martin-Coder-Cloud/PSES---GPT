@@ -9,6 +9,7 @@ import streamlit.components.v1 as components  # for a tiny one-time scrollIntoVi
 
 # ─────────────────────────────────────────────────────────────────────────────
 #  Typography & indentation: inject on EVERY rerun (no gating)
+#  Minimal spacing between "Select from the list" and the "or" + "Search..." blocks
 # ─────────────────────────────────────────────────────────────────────────────
 def ensure_pses_styles():
     st.markdown(
@@ -21,19 +22,23 @@ def ensure_pses_styles():
             margin: 1.0em 0 0.4em 0;
             color: #222;
           }
-          /* Title 3 (sub-sections: list, search, results, selected, subgroup) */
+          /* Title 3 (sub-sections: list, or, search, results, selected, subgroup) */
           .pses-h3 {
             font-size: 1.0rem;
             font-weight: 550;
             margin: 0.7em 0 0.3em 0;
             color: #333;
           }
-          /* Indented content block for Title 3 + its contents.
-             Use a fixed, clearly visible indent and keep it sticky across reruns. */
+          /* Indented content block for Title 3 + its contents */
           .pses-block {
-            margin-left: 2.2cm !important;   /* ≈ a few centimeters */
+            margin-left: 2.2cm !important;  /* clear, consistent indent */
             padding-left: 0.1cm;
           }
+          /* Utilities for ultra-tight spacing */
+          .pses-no-top { margin-top: 0 !important; }
+          .pses-no-bottom { margin-bottom: 0 !important; }
+          .pses-tight { margin-top: -0.45em !important; } /* pull block up toward previous */
+          .pses-center { text-align: center; }
           .pses-note {
             font-size: 0.9rem;
             color: #666;
@@ -184,7 +189,7 @@ def question_picker(qdf: pd.DataFrame) -> List[str]:
 
     # ---- Select from the list (Title 3 / H3, indented with content) --------------------------
     st.markdown("<div class='pses-block'>", unsafe_allow_html=True)
-    st.markdown("<div class='pses-h3'>Select from the list</div>", unsafe_allow_html=True)
+    st.markdown("<div class='pses-h3 pses-no-bottom'>Select from the list</div>", unsafe_allow_html=True)
 
     def _on_list_change_scroll_step2():
         # Trigger a smooth scroll to Step 2 on next render
@@ -201,9 +206,15 @@ def question_picker(qdf: pd.DataFrame) -> List[str]:
     )
     st.markdown("</div>", unsafe_allow_html=True)
 
-    # ---- Keywords/theme Search (Title 3 / H3, indented with content) ------------------------
+    # ---- "or" separator (Title 3, minimal spacing, indented) --------------------------------
     st.markdown("<div class='pses-block'>", unsafe_allow_html=True)
-    st.markdown("<div class='pses-h3'>Search questionnaire by keywords or theme</div>", unsafe_allow_html=True)
+    st.markdown("<div class='pses-h3 pses-no-top pses-no-bottom pses-center'>or</div>", unsafe_allow_html=True)
+    st.markdown("</div>", unsafe_allow_html=True)
+
+    # ---- Keywords/theme Search (Title 3 / H3, indented with MINIMAL spacing) ----------------
+    # Apply pses-tight to pull this block up; pses-no-top to remove top margin on H3
+    st.markdown("<div class='pses-block pses-tight'>", unsafe_allow_html=True)
+    st.markdown("<div class='pses-h3 pses-no-top'>Search questionnaire by keywords or theme</div>", unsafe_allow_html=True)
     query = st.text_input(
         "Enter keywords (e.g., harassment, recognition, onboarding)",
         key=K_KW_QUERY,
