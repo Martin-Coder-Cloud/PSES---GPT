@@ -8,26 +8,28 @@ import streamlit as st
 import streamlit.components.v1 as components  # for a tiny one-time scrollIntoView
 
 # ─────────────────────────────────────────────────────────────────────────────
-#  Typography & indentation — standardized “paragraph-like” minimal spacing
+#  Typography & indentation — uniform “paragraph-like” minimal spacing
 # ─────────────────────────────────────────────────────────────────────────────
 def ensure_pses_styles():
     st.markdown(
         """
         <style>
-          /* ===== Global rhythm: one "sentence" of space everywhere ===== */
-          :root { --pses-gap: 0.28em; } /* tweak this once to tighten/loosen all */
+          /* ===== Global rhythm: minimal sentence-like gap ===== */
+          :root { --pses-gap: 0.28em; } /* adjust once to tighten/loosen all */
 
           /* ===== Headings ===== */
           .pses-h2 {
             font-size: 1.08rem;
             font-weight: 600;
-            margin: var(--pses-gap) 0 var(--pses-gap) 0;
+            /* top gap only; next widget provides its own top gap so we avoid double-spacing */
+            margin: var(--pses-gap) 0 0 0;
             color: #222;
           }
           .pses-h3 {
             font-size: 1.0rem;
             font-weight: 550;
-            margin: var(--pses-gap) 0 var(--pses-gap) 0;
+            /* top gap only; following widget contributes its own top gap */
+            margin: var(--pses-gap) 0 0 0;
             color: #333;
           }
 
@@ -39,18 +41,23 @@ def ensure_pses_styles():
             margin-bottom: 0;
           }
 
-          /* ===== Utilities (used to prevent "double gaps") ===== */
+          /* ===== Streamlit container rhythm ===== */
+          /* Keep block “gap” light so headings don’t double the spacing too much */
+          div[data-testid="stVerticalBlock"] { gap: 0.25rem !important; }
+
+          /* ===== Widgets obey a single top gap (no double-spacing) ===== */
+          /* Multiselect: provide the gap ABOVE it; bottom is zero so the next heading controls its gap */
+          div[data-testid="stMultiSelect"] { margin-top: var(--pses-gap) !important; margin-bottom: 0 !important; }
+          /* Text input: provide the gap ABOVE and a small bottom gap for balance */
+          div[data-testid="stTextInput"]  { margin-top: var(--pses-gap) !important; margin-bottom: var(--pses-gap) !important; }
+          /* Selectbox (Step 3 + subgroup): provide the gap ABOVE; bottom can be standard */
+          div[data-testid="stSelectbox"]  { margin-top: var(--pses-gap) !important; }
+          /* Checkbox (Step 2 “All years” + any others): ensure gap ABOVE so H2 doesn’t touch it */
+          div[data-testid="stCheckbox"]  { margin-top: var(--pses-gap) !important; }
+
+          /* Optional utilities (not used heavily anymore) */
           .pses-mt-0 { margin-top: 0 !important; }
           .pses-mb-0 { margin-bottom: 0 !important; }
-
-          /* ===== Streamlit container rhythm ===== */
-          /* Keep blocks close but readable; this is the base inter-section gap */
-          div[data-testid="stVerticalBlock"] { gap: var(--pses-gap) !important; }
-
-          /* ===== Widgets obey the same rhythm (top/bottom) ===== */
-          div[data-testid="stMultiSelect"] { margin-top: var(--pses-gap) !important; margin-bottom: var(--pses-gap) !important; }
-          div[data-testid="stTextInput"]  { margin-top: var(--pses-gap) !important; margin-bottom: var(--pses-gap) !important; }
-          div[data-testid="stSelectbox"]  { margin-top: var(--pses-gap) !important; margin-bottom: var(--pses-gap) !important; }
         </style>
         """,
         unsafe_allow_html=True,
@@ -199,7 +206,7 @@ def question_picker(qdf: pd.DataFrame) -> List[str]:
     st.markdown("<div class='pses-block'>", unsafe_allow_html=True)
 
     # Select from the list
-    st.markdown("<div class='pses-h3 pses-mb-0'>Select from the list</div>", unsafe_allow_html=True)
+    st.markdown("<div class='pses-h3'>Select from the list</div>", unsafe_allow_html=True)
 
     def _on_list_change_scroll_step2():
         st.session_state[K_SCROLL_TO_STEP2] = True
@@ -214,13 +221,11 @@ def question_picker(qdf: pd.DataFrame) -> List[str]:
         on_change=_on_list_change_scroll_step2,
     )
 
-    # “or” — we avoid double-gaps by removing its top margin; it will sit at exactly one gap,
-    # provided by the multiselect's bottom margin.
-    st.markdown("<div class='pses-h3 pses-mt-0 pses-mb-0'>or</div>", unsafe_allow_html=True)
+    # “or” — gets its minimal gap from its own H3 top margin; the multiselect has zero bottom
+    st.markdown("<div class='pses-h3'>or</div>", unsafe_allow_html=True)
 
-    # Search title — give it a single gap above (so “or” → search title has paragraph spacing),
-    # then remove its bottom margin so the input below provides exactly one gap.
-    st.markdown("<div class='pses-h3 pses-mb-0'>Search questionnaire by keywords or theme</div>", unsafe_allow_html=True)
+    # Search title — H3 has minimal top gap; the input provides its own top gap too
+    st.markdown("<div class='pses-h3'>Search questionnaire by keywords or theme</div>", unsafe_allow_html=True)
 
     query = st.text_input(
         "Enter keywords (e.g., harassment, recognition, onboarding)",
@@ -391,7 +396,7 @@ def question_picker(qdf: pd.DataFrame) -> List[str]:
         )
         st.session_state[K_SCROLL_TO_STEP2] = False
 
-    st.markdown("<div class='pses-h2 pses-mt-0'>Step 2: Select survey year(s)</div>", unsafe_allow_html=True)
+    st.markdown("<div class='pses-h2'>Step 2: Select survey year(s)</div>", unsafe_allow_html=True)
     st.session_state.setdefault(K_SELECT_ALL_YEARS, True)
     select_all = st.checkbox("All years", key=K_SELECT_ALL_YEARS)
 
@@ -413,8 +418,8 @@ def question_picker(qdf: pd.DataFrame) -> List[str]:
     years_sorted = sorted(selected_years)  # retained for compatibility if needed
 
     # ============================ Step 3 (Title 2) ============================================
-    st.markdown("<div class='pses-h2 pses-mt-0'>Step 3: Select a demographic category (optional)</div>", unsafe_allow_html=True)
-    # Note: demographic_picker() renders the dropdowns; CSS ensures minimal gap above them.
+    st.markdown("<div class='pses-h2'>Step 3: Select a demographic category (optional)</div>", unsafe_allow_html=True)
+    # Note: demographic_picker() renders the dropdowns; CSS ensures a minimal gap above them.
 
     # Return selected codes (API unchanged)
     return st.session_state[K_SELECTED_CODES]
