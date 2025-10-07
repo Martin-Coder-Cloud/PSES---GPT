@@ -14,7 +14,7 @@ def ensure_pses_styles():
     st.markdown(
         """
         <style>
-          /* Title 2 (Step 1–3, Results) */
+          /* Title 2 (Step 1–3) */
           .pses-h2 {
             font-size: 1.08rem;
             font-weight: 600;
@@ -28,9 +28,11 @@ def ensure_pses_styles():
             margin: 0.7em 0 0.3em 0;
             color: #333;
           }
-          /* Indented content block for Title 3 + its contents */
+          /* Indented content block for Title 3 + its contents.
+             Use a fixed, clearly visible indent and keep it sticky across reruns. */
           .pses-block {
-            margin-left: 8%;
+            margin-left: 2.2cm !important;   /* ≈ a few centimeters */
+            padding-left: 0.1cm;
           }
           .pses-note {
             font-size: 0.9rem;
