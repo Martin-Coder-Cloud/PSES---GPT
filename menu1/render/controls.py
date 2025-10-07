@@ -8,51 +8,54 @@ import streamlit as st
 import streamlit.components.v1 as components  # for a tiny one-time scrollIntoView
 
 # ─────────────────────────────────────────────────────────────────────────────
-#  Typography & indentation: inject on EVERY rerun (no gating)
-#  Ultra-tight spacing for minimalist query menu
+#  Typography & indentation — ultra-tight, minimalist spacing
 # ─────────────────────────────────────────────────────────────────────────────
 def ensure_pses_styles():
     st.markdown(
         """
         <style>
-          /* Title 2: Step 1–3 (compact by default) */
+          /* Title 2 (Step 1–3) */
           .pses-h2 {
             font-size: 1.08rem;
             font-weight: 600;
-            margin: 0.6em 0 0.2em 0; /* tighter than before */
+            margin: 0.55em 0 0.15em 0; /* compact */
             color: #222;
           }
-          /* Extra-tight variant for headers that should hug the previous block (used by Step 2) */
+          /* Step 2 pulled close to Step 1 (~one row gap) */
           .pses-h2-tight-top {
-            margin-top: 0.25em !important;  /* pulls Step 2 closer to the query block above */
+            margin-top: 0.10em !important;
+            margin-bottom: 0.15em !important;
           }
-
-          /* Title 3: sub-sections (compact) */
+          /* Title 3 (sub-sections) */
           .pses-h3 {
             font-size: 1.0rem;
             font-weight: 550;
-            margin: 0.45em 0 0.2em 0; /* tighter than before */
+            margin: 0.35em 0 0.15em 0; /* compact */
             color: #333;
           }
-
           /* Indented content block for Title 3 + its contents */
           .pses-block {
-            margin-left: 2.2cm !important;  /* clear, consistent indent */
+            margin-left: 2.2cm !important;  /* clear indent */
             padding-left: 0.1cm;
-            margin-top: 0;   /* avoid accidental gaps between stacked blocks */
+            margin-top: 0;
             margin-bottom: 0;
           }
-
-          /* Utilities for ultra-tight spacing */
+          /* Utilities */
           .pses-no-top    { margin-top: 0 !important; }
           .pses-no-bottom { margin-bottom: 0 !important; }
           .pses-zero      { margin: 0 !important; padding: 0 !important; line-height: 1 !important; }
-          .pses-nudge-up  { margin-top: -0.15em !important; } /* micro pull-up for headings */
+          .pses-nudge-up  { margin-top: -0.15em !important; }
+          .pses-note      { font-size: 0.9rem; color: #666; }
 
-          .pses-note {
-            font-size: 0.9rem;
-            color: #666;
-          }
+          /* --- Streamlit widget spacing overrides (target minimal gaps) --- */
+          /* Slightly tighten default vertical rhythm */
+          div[data-testid="stVerticalBlock"] { gap: 0.35rem !important; }
+          /* No space below multiselect (keeps "or" flush) */
+          div[data-testid="stMultiSelect"]   { margin-bottom: 0 !important; }
+          /* No space above/between selectboxes (Step 3 & subgroup) */
+          div[data-testid="stSelectbox"]     { margin-top: 0 !important; }
+          /* Tighten text input spacing (search box under "or") */
+          div[data-testid="stTextInput"]     { margin-top: 0 !important; }
         </style>
         """,
         unsafe_allow_html=True,
@@ -200,7 +203,7 @@ def question_picker(qdf: pd.DataFrame) -> List[str]:
     # ---- Single indented block: Select → or → Search (Title 3s, zero extra spacing) ----------
     st.markdown("<div class='pses-block'>", unsafe_allow_html=True)
 
-    # Select from the list (nudge up to reduce space under Step 1 title)
+    # Select from the list (nudged up to reduce space under Step 1 title)
     st.markdown("<div class='pses-h3 pses-no-top pses-nudge-up'>Select from the list</div>", unsafe_allow_html=True)
 
     def _on_list_change_scroll_step2():
@@ -216,7 +219,7 @@ def question_picker(qdf: pd.DataFrame) -> List[str]:
         on_change=_on_list_change_scroll_step2,
     )
 
-    # "or" (left-aligned, absolutely no spacing above or below)
+    # "or" (left-aligned, absolutely no spacing above/below)
     st.markdown("<div class='pses-h3 pses-zero'>or</div>", unsafe_allow_html=True)
 
     # Search questionnaire by keywords or theme (flush under "or")
@@ -391,7 +394,7 @@ def question_picker(qdf: pd.DataFrame) -> List[str]:
         )
         st.session_state[K_SCROLL_TO_STEP2] = False
 
-    # Tight top margin variant to reduce the gap between the Step 1 block and Step 2
+    # Tight top margin for Step 2 to sit ~one row below previous section
     st.markdown("<div class='pses-h2 pses-h2-tight-top'>Step 2: Select survey year(s)</div>", unsafe_allow_html=True)
     st.session_state.setdefault(K_SELECT_ALL_YEARS, True)
     select_all = st.checkbox("All years", key=K_SELECT_ALL_YEARS)
@@ -404,15 +407,20 @@ def question_picker(qdf: pd.DataFrame) -> List[str]:
         for yr in DEFAULT_YEARS:
             st.session_state[f"year_{yr}"] = False
 
+    selected_years: List[int] = []
     cols = st.columns(len(DEFAULT_YEARS))
     for i, yr in enumerate(DEFAULT_YEARS):
         with cols[i]:
             st.checkbox(str(yr), key=f"year_{yr}")
+            if st.session_state.get(f"year_{yr}", False):
+                selected_years.append(yr)
+    years_sorted = sorted(selected_years)  # retained if needed by caller
 
-    # ============================ Step 3 (Title 2, compact) ==================================
+    # ============================ Step 3 (Title 2, compact; no gap to dropdown) ==============
     st.markdown("<div class='pses-h2'>Step 3: Select a demographic category (optional)</div>", unsafe_allow_html=True)
-    # Note: demographic sub-UI lives in demographic_picker() — no duplicate Step 3 here.
+    # Note: demographic_picker() renders the dropdowns; CSS above removes the gap before them.
 
+    # Return selected codes (API unchanged)
     return st.session_state[K_SELECTED_CODES]
 
 # ---- Years (unchanged signature; used by caller) ----------------------------
@@ -487,5 +495,5 @@ def demographic_picker(demo_df: pd.DataFrame):
     return demo_selection, sub_selection, [None], {None: "All respondents"}, False
 
 # ---- Enable search? ---------------------------------------------------------
-def search_button_enabled(question_codes: List[int], years: List[int]) -> bool:
+def search_button_enabled(question_codes: List[str], years: List[int]) -> bool:
     return bool(question_codes) and bool(years)
