@@ -3,16 +3,11 @@
 AI prompt and calling utilities for Menu 1.
 
 Exports:
-- AI_SYSTEM_PROMPT: strict system instruction for the model.
+- AI_SYSTEM_PROMPT: strict system instruction for the model (exact October 6 version).
 - build_per_q_prompt(...): NA-safe JSON "user" payload for a single question.
-- build_overall_prompt(...): NA-safe JSON "user" payload for a multi-question summary.
+- build_overall_prompt(...): NA-safe JSON "user" payload for a multi-question summary (requires code_to_text).
 - call_openai_json(...): robust caller that returns (json_text, error_hint).
 - extract_narrative(...): helper to pull 'narrative' string out of model JSON.
-
-Design goals:
-- Never invent numbers: only serialize integers from the provided tables.
-- Treat missing values as None (JSON null) and short-circuit to a friendly message if there's no usable data.
-- Percent everywhere; changes are "percentage points".
 """
 
 from __future__ import annotations
@@ -20,32 +15,33 @@ from typing import Dict, List, Optional, Tuple
 import json
 import os
 import time
-
 import pandas as pd
 
 # -----------------------------
-# System prompt (strict; % + % points)
+# Exact AI system prompt (Option 1 with gap-over-time, % everywhere)
 # -----------------------------
 AI_SYSTEM_PROMPT = (
-    "You are preparing insights for the Government of Canada’s Public Service Employee Survey (PSES).\n\n"
+    "You are preparing insights for the Government of Canada's Public Service Employee Survey (PSES).\n\n"
     "Context\n"
-    "- The PSES informs improvements to people management across the federal public service.\n"
-    "- Results help identify strengths and concerns (engagement, equity, inclusion, well-being).\n"
-    "- Trends are tracked across survey cycles.\n"
-    "- Confidentiality is guaranteed; groups <10 are suppressed.\n\n"
-    "Hard constraints\n"
-    "- Use ONLY the provided JSON/table. Do NOT invent, assume, extrapolate, or impute values.\n"
-    "- Scope is Public Service–wide unless the payload explicitly includes groups.\n"
-    "- Treat all numeric values as integer PERCENTAGES; present them with the % sign (e.g., 79%).\n"
-    "- Describe changes as percentage points (e.g., “down 2 percentage points”).\n\n"
-    "Analysis rules\n"
-    "- Start with the latest-year result for the selected question.\n"
-    "- Describe the trend from the earliest year in the payload to the latest year.\n"
-    "- If groups are present for the latest year, report the largest gap (in percentage points) and also state whether\n"
-    "  that gap has widened, narrowed, or remained similar compared with an earlier year (only if both groups have data).\n"
-    "- Only discuss values present in the payload. If something is missing, do not mention it.\n\n"
+    "- The PSES informs improvements to people management in the federal public service.\n"
+    "- Results help identify strengths and concerns in areas such as employee engagement, equity and inclusion, and workplace well-being.\n"
+    "- The survey tracks progress over time to refine action plans. Statistics Canada administers the survey with the Treasury Board of Canada Secretariat. Confidentiality is guaranteed under the Statistics Act (grouped reporting; results for groups <10 are suppressed).\n\n"
+    "Data-use rules (hard constraints)\n"
+    "- Treat the provided JSON/table as the single source of truth.\n"
+    "- Allowed numbers: integers that appear in the payload/table; integer differences formed by subtracting one payload integer from another (e.g., year-over-year changes, gaps between groups); and integer differences between such gaps across years (gap-over-time).\n"
+    "- Do NOT invent numbers, averages, weighted figures, percentages, rescaled values, or decimals. Do NOT round.\n"
+    "- If a value needed for a comparison is missing, omit that comparison rather than inferring.\n"
+    "- Public Service–wide scope ONLY; do not reference specific departments unless present in the payload.\n\n"
+    "Analysis rules (allowed computations ONLY)\n"
+    "- Latest year = the maximum year present in the payload.\n"
+    "- Trend (overall): If a previous year exists, compute the signed change (latest - previous) as an integer and report it as a change in % points (e.g., \"down 2% points\"). If not, skip.\n"
+    "- Gaps (latest year): Compute absolute gaps between demographic groups (integer subtraction) and report them in % points (e.g., \"Women (82%) vs Another gender (72%): 10% points gap\"). Mention only the largest 1–2 gaps.\n"
+    "- Gap-over-time: For each highlighted gap, compute the gap for each year where BOTH groups have values. State whether the gap has widened, narrowed, or remained stable since the earliest year with both groups (or vs the previous if only two years exist), and report the change in % points (e.g., \"gap narrowed by 3% points since 2020\"). If fewer than two such years exist, omit this sentence.\n"
+    "- Do NOT compute multi-year averages, rates of change, or anything beyond the integer subtractions described above.\n\n"
     "Style & output\n"
-    "- Professional, concise, neutral; 1–3 short paragraphs.\n"
+    "- Report level values as integers followed by a percent sign (e.g., \"79%\", \"84%\").\n"
+    "- Reserve \"percent points\" strictly for differences or gaps: write them as integers followed by \"% points\" (e.g., \"down 2% points\", \"a 10% points gap\"). Never describe a level as \"points\".\n"
+    "- Professional, concise, neutral. Narrative style (1–3 short sentences, no lists).\n"
     "- Output VALID JSON with exactly one key: \"narrative\".\n"
 )
 
@@ -54,7 +50,6 @@ AI_SYSTEM_PROMPT = (
 # -----------------------------
 _NO_DATA_PER_Q_PREFIX = "__NO_DATA_PER_Q__:"
 _NO_DATA_OVERALL = "__NO_DATA_OVERALL__"
-
 
 # -----------------------------
 # Internal helpers (NA-safe)
@@ -68,8 +63,6 @@ def _to_py_int(x) -> Optional[int]:
             if pd.isna(x):
                 return None
             return int(round(x))
-        if pd.isna(x):  # pandas NA/NaN
-            return None
         if isinstance(x, int):
             return int(x)
         val = pd.to_numeric(x, errors="coerce")
@@ -79,44 +72,28 @@ def _to_py_int(x) -> Optional[int]:
     except Exception:
         return None
 
-
 def _detect_year_col(df: pd.DataFrame) -> Optional[str]:
     for c in ("Year", "year", "SURVEYR", "survey_year"):
         if c in df.columns:
             return c
+    for c in df.columns:
+        s = str(c)
+        if len(s) == 4 and s.isdigit() and 1900 <= int(s) <= 2100:
+            return "Year"
     return None
 
-
 def _detect_demo_col(df: pd.DataFrame) -> Optional[str]:
-    for c in ("Demographic", "demographic", "group_label", "group"):
+    for c in ("Demographic", "group", "Group", "DEMOLBL", "demographic"):
         if c in df.columns:
             return c
     return None
 
-
 def _coerce_metric_series(s: pd.Series) -> pd.Series:
-    """Numeric with NA; map 9999 -> NA; leave as float/nullable for safety."""
-    out = pd.to_numeric(s, errors="coerce")
-    try:
-        out = out.mask(out == 9999, other=pd.NA)
-    except Exception:
-        pass
-    return out
-
-
-def _is_year_like(col) -> bool:
-    """True if column label looks like a survey year (int or 4-digit string in [1900,2100])."""
-    try:
-        if isinstance(col, int):
-            return 1900 <= col <= 2100
-        s = str(col)
-        if len(s) == 4 and s.isdigit():
-            y = int(s)
-            return 1900 <= y <= 2100
-        return False
-    except Exception:
-        return False
-
+    """9999 and NA -> NA; otherwise safe-int (nullable)."""
+    if s is None or s.empty:
+        return s
+    s2 = pd.to_numeric(s.replace({9999: None}), errors="coerce").astype("Int64")
+    return s2
 
 # -----------------------------
 # Per-question prompt builder
@@ -140,79 +117,63 @@ def build_per_q_prompt(
 
     df = df_disp.copy()
 
-    # Identify columns
     ycol = _detect_year_col(df)
     if not ycol:
         return f"{_NO_DATA_PER_Q_PREFIX}{question_code}"
 
     gcol = _detect_demo_col(df)
     if not gcol:
-        # If no demographic label present in the display table, synthesize an "All respondents" view
         gcol = "__Demographic__"
         df[gcol] = "All respondents"
 
-    # Metric coercion (9999 -> NA)
-    df[metric_col] = _coerce_metric_series(df[metric_col])
-    # Year coercion
-    df[ycol] = pd.to_numeric(df[ycol], errors="coerce").astype("Int64")
+    df["_VAL_"] = _coerce_metric_series(df[metric_col])
 
-    # Serialize only rows with both a Year and a metric value
-    rows: List[Dict[str, Optional[int]]] = []
+    if ycol != "Year":
+        df["Year"] = pd.to_numeric(df[ycol], errors="coerce").astype("Int64")
+    else:
+        df["Year"] = pd.to_numeric(df["Year"], errors="coerce").astype("Int64")
+
+    rows = []
     for _, r in df.iterrows():
-        y = _to_py_int(r.get(ycol))
-        v = _to_py_int(r.get(metric_col))
-        if y is None or v is None:
+        y = _to_py_int(r.get("Year"))
+        v = _to_py_int(r.get("_VAL_"))
+        if y is None:
             continue
         rows.append({
             "year": y,
-            "group": str(r.get(gcol)) if pd.notna(r.get(gcol)) else "All respondents",
+            "group": str(r.get(gcol, "All respondents")),
             "value": v
         })
 
     if not rows:
         return f"{_NO_DATA_PER_Q_PREFIX}{question_code}"
 
-    latest_year = max(r["year"] for r in rows)
-
     payload = {
         "question": {
-            "code": str(question_code),
-            "text": str(question_text or ""),
+            "code": question_code,
+            "text": question_text or question_code,
+            "metric": metric_label
         },
-        "metric_label": str(metric_label or "% positive"),
-        "units": "percent",
         "category_in_play": bool(category_in_play),
-        "latest_year": int(latest_year),
         "rows": rows
     }
-
-    user_msg = (
-        "Analyze the PSES results below without inventing any numbers. "
-        "All values are integer percentages.\n\n"
-        + json.dumps(payload, ensure_ascii=False)
-    )
-    return user_msg
-
+    return json.dumps(payload, ensure_ascii=False)
 
 # -----------------------------
-# Overall (multi-question) prompt builder
+# Overall (multi-question) prompt builder  — REQUIRES code_to_text
 # -----------------------------
 def build_overall_prompt(
     *,
     tab_labels: List[str],
     pivot_df: pd.DataFrame,
     q_to_metric: Dict[str, str],
+    code_to_text: Dict[str, str],
 ) -> str:
     """
     Build an overall JSON payload across multiple questions (as a string).
+    REQUIREMENT: code_to_text is mandatory and used to label each question with its meaning.
     NA-safe melt of the pivot. If nothing usable, return sentinel.
-    Assumes pivot rows are keyed by question code (either in index or a column).
-
-    Enhancement:
-    - If available in Streamlit session, include question meanings (code_to_text)
-      and previously computed per-question summaries to enable a synthesis that
-      first summarizes the question-level findings, then adds a short theme-level
-      interpretation. Call sites remain unchanged.
+    Assumes pivot rows are keyed by question code (in index or a column).
     """
     if pivot_df is None or pivot_df.empty or not tab_labels:
         return _NO_DATA_OVERALL
@@ -221,11 +182,21 @@ def build_overall_prompt(
     if pv.index.name or pv.index.names:
         pv = pv.reset_index()
 
-    # Detect year columns by label and pick question id column from non-year candidates
-    year_cols = [c for c in pv.columns if _is_year_like(c)]
+    # Detect year-like columns (ints or 'YYYY')
+    year_cols = []
+    for c in pv.columns:
+        try:
+            if isinstance(c, int) and 1900 <= c <= 2100:
+                year_cols.append(c)
+            else:
+                s = str(c)
+                if len(s) == 4 and s.isdigit():
+                    y = int(s)
+                    if 1900 <= y <= 2100:
+                        year_cols.append(c)
+        except Exception:
+            continue
     id_candidates = [c for c in pv.columns if c not in year_cols]
-
-    # Prefer explicit question-like labels among id candidates; else first non-year column
     preferred_names = {"question_code", "question", "code"}
     qcol = None
     for c in id_candidates:
@@ -237,29 +208,24 @@ def build_overall_prompt(
             return _NO_DATA_OVERALL
         qcol = id_candidates[0]
 
-    # If somehow no year columns detected, treat everything except qcol as year values
     if not year_cols:
         year_cols = [c for c in pv.columns if c != qcol]
 
-    # Melt wide (years as columns) into long rows
     long = pv.melt(id_vars=[qcol], value_vars=year_cols, var_name="year", value_name="value")
-
-    # Coerce types
     long["year"] = pd.to_numeric(long["year"], errors="coerce").astype("Int64")
     long["value"] = _coerce_metric_series(long["value"])
-
-    # Keep only requested questions
     long = long[long[qcol].astype(str).isin([str(q) for q in tab_labels])]
 
-    # Build rows (skip NA)
-    rows: List[Dict[str, Optional[int]]] = []
+    rows = []
     for _, r in long.iterrows():
         y = _to_py_int(r.get("year"))
         v = _to_py_int(r.get("value"))
         if y is None or v is None:
             continue
+        qcode = str(r.get(qcol))
         rows.append({
-            "question_code": str(r.get(qcol)),
+            "question_code": qcode,
+            "question_text": code_to_text.get(qcode, qcode),
             "year": y,
             "value": v
         })
@@ -269,90 +235,34 @@ def build_overall_prompt(
 
     latest_year = max(r["year"] for r in rows)
 
-    # ---------- NEW: Enrich with question meanings & per-question summaries (if available) ----------
-    questions_meta: List[Dict[str, str]] = []
-    per_q_summaries: List[Dict[str, str]] = []
-
-    try:
-        import streamlit as st  # optional; only to read session state if available
-
-        # Find a mapping code -> text from any payload-like dict in session
-        code_to_text: Optional[Dict[str, str]] = None
-        probable_keys = [
-            "menu1_results", "menu1_results_payload", "menu1_payload",
-            "results", "last_results", "menu1_last_payload"
-        ]
-        for k in probable_keys:
-            v = st.session_state.get(k)
-            if isinstance(v, dict) and "code_to_text" in v and isinstance(v["code_to_text"], dict):
-                code_to_text = v["code_to_text"]
-                break
-        if code_to_text is None:
-            # try any dict containing code_to_text
-            for v in st.session_state.values():
-                if isinstance(v, dict) and "code_to_text" in v and isinstance(v["code_to_text"], dict):
-                    code_to_text = v["code_to_text"]
-                    break
-
-        # Build questions meta using the mapping if present
-        for q in tab_labels:
-            questions_meta.append({
-                "code": str(q),
-                "text": str((code_to_text or {}).get(q, "")),
-                "metric": str(q_to_metric.get(q, "% positive"))
-            })
-
-        # Pull already-computed per-question narratives if present
-        pq = st.session_state.get("menu1_ai_narr_per_q")
-        if isinstance(pq, dict):
-            for q in tab_labels:
-                txt = pq.get(q)
-                if isinstance(txt, str) and txt.strip():
-                    per_q_summaries.append({"code": str(q), "summary": txt.strip()})
-    except Exception:
-        # If Streamlit isn't available or keys are absent, we simply omit these enrichments
-        for q in tab_labels:
-            questions_meta.append({
-                "code": str(q),
-                "text": "",
-                "metric": str(q_to_metric.get(q, "% positive"))
-            })
-        # per_q_summaries stays empty if not readable
-    # -----------------------------------------------------------------------------------------------
+    questions = [
+        {"code": code, "text": code_to_text.get(code, code), "metric": q_to_metric.get(code, "% positive")}
+        for code in tab_labels
+    ]
 
     payload = {
         "latest_year": int(latest_year),
-        "metric_by_question": q_to_metric,  # e.g., {"Q01": "% positive", ...}
-        "rows": rows,
-        # NEW fields (optional, for better synthesis)
-        "questions": questions_meta,                 # [{code,text,metric}, ...]
-        "per_question_summaries": per_q_summaries,   # [{code,summary}, ...]
-        "instructions": (
-            "First, briefly synthesize the question-level summaries provided (if any). "
-            "Then add a short, theme-level interpretation of what these questions collectively suggest. "
-            "Prefer referring to questions by their short meaning (from 'text'); include codes in parentheses only when helpful. "
-            "Use percent for levels and percentage points for changes. Do not invent numbers."
-        ),
+        "questions": questions,
+        "metric_by_question": q_to_metric,
+        "rows": rows
     }
 
+    # Small natural-language preface to anchor behavior; the model still receives strict JSON
     user_msg = (
-        "Synthesize cross-question patterns without inventing any numbers. "
-        "All values are integer percentages.\n\n"
+        "Synthesize cross-question patterns using the question texts (not codes). "
+        "Use ONLY numbers present in the rows; describe differences in % points.\n\n"
         + json.dumps(payload, ensure_ascii=False)
     )
     return user_msg
 
-
 # -----------------------------
-# OpenAI caller (tuple return)
+# Caller: OpenAI (json)
 # -----------------------------
-def call_openai_json(*, system: str, user: str) -> Tuple[Optional[str], Optional[str]]:
+def call_openai_json(system: str, user: str) -> Tuple[Optional[str], Optional[str]]:
     """
-    Invoke the OpenAI chat API and return (json_text, error_hint).
-    Fail-safe:
-      - If `user` is a sentinel indicating no data, return a clear JSON message immediately.
+    Make a JSON-mode chat completion call with retries.
+    Returns (json_text, error_hint).
     """
-    # Fail-safe short-circuits
     if user.startswith(_NO_DATA_PER_Q_PREFIX):
         qcode = user.split(_NO_DATA_PER_Q_PREFIX, 1)[-1] or "the selected question"
         return json.dumps({"narrative": f"No AI summary: no data available for {qcode} under the current filters."}), None
@@ -365,9 +275,8 @@ def call_openai_json(*, system: str, user: str) -> Tuple[Optional[str], Optional
     if not api_key:
         return json.dumps({"narrative": "AI is not configured (no API key)."}), "missing_api_key"
 
-    # Prefer the modern SDK if available
     try:
-        from openai import OpenAI  # type: ignore
+        from openai import OpenAI  # modern SDK
         client = OpenAI(api_key=api_key)
         for attempt in range(2):
             try:
@@ -388,7 +297,7 @@ def call_openai_json(*, system: str, user: str) -> Tuple[Optional[str], Optional
                 else:
                     return json.dumps({"narrative": "AI request failed."}), f"openai_error:{type(e).__name__}"
     except Exception:
-        # Fallback to legacy openai package
+        # Legacy fallback
         try:
             import openai  # type: ignore
             openai.api_key = api_key
@@ -402,15 +311,7 @@ def call_openai_json(*, system: str, user: str) -> Tuple[Optional[str], Optional
                             {"role": "user", "content": user},
                         ],
                     )
-                    content = (resp["choices"][0]["message"]["content"] or "").strip()
-                    # Ensure JSON envelope
-                    try:
-                        json.loads(content)
-                        ok = True
-                    except Exception:
-                        ok = False
-                    if not ok:
-                        content = json.dumps({"narrative": content})
+                    content = (resp.choices[0].message["content"] or "").strip()
                     return content, None
                 except Exception as e:
                     if attempt == 0:
@@ -418,27 +319,20 @@ def call_openai_json(*, system: str, user: str) -> Tuple[Optional[str], Optional
                     else:
                         return json.dumps({"narrative": "AI request failed."}), f"openai_error:{type(e).__name__}"
         except Exception:
-            return json.dumps({"narrative": "AI is unavailable in this environment."}), "no_sdk"
-
-    # Should not reach
-    return json.dumps({"narrative": "AI request failed."}), "unknown"
-
+            return json.dumps({"narrative": "AI is unavailable in this environment."}), "no_openai_sdk"
 
 # -----------------------------
-# Narrative extractor
+# Extractor
 # -----------------------------
 def extract_narrative(json_text: str) -> Optional[str]:
-    """
-    Parse the model's JSON and return the 'narrative' string if present.
-    """
+    """Parse the model's JSON and return the 'narrative' string if present."""
     if not json_text:
         return None
     try:
         obj = json.loads(json_text)
-        if isinstance(obj, dict):
-            val = obj.get("narrative")
-            if isinstance(val, str) and val.strip():
-                return val.strip()
+        val = obj.get("narrative") if isinstance(obj, dict) else None
+        if isinstance(val, str) and val.strip():
+            return val.strip()
     except Exception:
         return None
     return None
