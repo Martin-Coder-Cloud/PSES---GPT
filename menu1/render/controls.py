@@ -158,8 +158,9 @@ def question_picker(qdf: pd.DataFrame) -> List[str]:
     # Indentation via wrapper div (no outer columns nesting)
     st.markdown("<div id='menu1_indent' style='margin-left:8%'>", unsafe_allow_html=True)
 
-    # [UX-2] Wrap the picker in an expander; collapses after a selection
-    with st.expander("Choose a question from the list below", expanded=st.session_state[K_EXP_QPICK_OPEN]):
+    # ---- Option A: Select from the list -------------------------------------------------
+    st.markdown("**Select from the list**")  # bold title
+    with st.expander("Select from the list", expanded=st.session_state[K_EXP_QPICK_OPEN]):
         st.multiselect(
             "Choose one or more from the official list",
             qdf["display"].tolist(),
@@ -169,8 +170,9 @@ def question_picker(qdf: pd.DataFrame) -> List[str]:
             placeholder="",
         )
 
-        st.markdown("<div style='margin:.1rem 0 .1rem .5rem;font-size:.9rem;font-weight:600;color:rgba(49,51,63,.8);'>or</div>", unsafe_allow_html=True)
-
+    # ---- Option B: Keywords/theme Search (separate expander, not nested) ---------------
+    st.markdown("**Keywords/theme Search**")  # bold title
+    with st.expander("Keywords/theme Search", expanded=True):
         st.markdown("<div class='field-label'>Search questionnaire by keywords or theme</div>", unsafe_allow_html=True)
         query = st.text_input(
             "Enter keywords (e.g., harassment, recognition, onboarding)",
@@ -179,20 +181,18 @@ def question_picker(qdf: pd.DataFrame) -> List[str]:
             placeholder='Type keywords like “career advancement”, “harassment”, “recognition”…',
         )
 
-        # ---------- Buttons row (Search & Clear on same line directly under input) ----------
+        # Buttons row (Search & Clear on same line directly under input)
         bcol1, bcol2 = st.columns([0.5, 0.5])
         with bcol1:
             if st.button("Search the questionnaire", key=K_FIND_HITS_BTN):
                 q = (query or "").strip()
                 if not q:
-                    # Do NOT also warn later; single message policy handled below.
                     st.session_state[K_SEARCH_DONE] = True
                     st.session_state[K_LAST_QUERY] = ""
                     st.session_state[K_HITS] = []
                     st.session_state[K_HITS_PAGE_LEX] = 0
                     st.session_state[K_HITS_PAGE_SEM] = 0
                 else:
-                    # Visible inline status is handled below; just run the search.
                     t0 = time.time()
                     hits_df = _run_keyword_search(qdf, q, top_k=120)
 
@@ -234,20 +234,12 @@ def question_picker(qdf: pd.DataFrame) -> List[str]:
                 st.session_state[K_DO_CLEAR] = True
                 st.experimental_rerun()
 
-        # [UX-4] Remove semantic engine status from here (moved to Technical Parameters later)
-        # sem_status = get_embedding_status()
-        # if sem_status.get("semantic_library_installed") and (sem_status.get("model_loaded") or sem_status.get("embedding_index_ready")):
-        #     st.caption("Semantic engine: **active**")
-        # else:
-        #     st.caption("Semantic engine: **inactive**")
-
         # Info message about number of hits (only if a search occurred)
         if st.session_state.get(K_SEARCH_DONE, False):
             n_total = len(st.session_state.get(K_HITS, []) or [])
             if n_total > 0:
                 st.info(f"Found {n_total} total matches meeting the quality threshold.")
             else:
-                # Single, clear warning when there are no hits — shown here only (no duplicates)
                 last_q = (st.session_state.get(K_LAST_QUERY) or "").strip()
                 safe_q = last_q if last_q else "your search"
                 st.warning(
@@ -256,90 +248,84 @@ def question_picker(qdf: pd.DataFrame) -> List[str]:
                     'or search by a question code like “Q01”.'
                 )
 
-        # [UX-3] Remove debug toggle and always show scores in semantic tab
-        # st.checkbox("Show semantic scores (debug)", key=K_DEBUG_SHOW_SCORES)
+    # ---- Search results expander (separate, not nested) --------------------------------
+    hits = st.session_state.get(K_HITS, [])
 
-        # ---------- Results (tabs with pagination) ----------
-        hits = st.session_state.get(K_HITS, [])
-
-        # [UX-5] Detect if user has selected any search result; if so, auto-collapse results expander next run
-        any_selected_from_hits = False
-        for rec in hits:
-            code = rec.get("code")
-            if code:
-                if st.session_state.get(f"kwhit_{code}", False):
-                    any_selected_from_hits = True
-                    break
-        if any_selected_from_hits:
-            st.session_state[K_EXP_RESULTS_OPEN] = False
-        else:
-            # keep open when there are fresh hits but no selection yet
-            if st.session_state.get(K_SEARCH_DONE, False) and hits:
-                st.session_state.setdefault(K_EXP_RESULTS_OPEN, True)
-
-        # Wrap the two results tabs inside an expander
+    # [UX-5] Auto-collapse search results after selecting a hit
+    any_selected_from_hits = False
+    for rec in hits:
+        code = rec.get("code")
+        if code and st.session_state.get(f"kwhit_{code}", False):
+            any_selected_from_hits = True
+            break
+    if any_selected_from_hits:
+        st.session_state[K_EXP_RESULTS_OPEN] = False
+    else:
         if st.session_state.get(K_SEARCH_DONE, False) and hits:
-            with st.expander("Search the questionnaire — results", expanded=st.session_state[K_EXP_RESULTS_OPEN]):  # [UX-5]
-                lex_hits = [r for r in hits if r.get("origin","lex") == "lex"]
-                sem_hits = [r for r in hits if r.get("origin","lex") == "sem"]
+            st.session_state.setdefault(K_EXP_RESULTS_OPEN, True)
 
-                tabs = st.tabs(["Lexical matches", "Other matches (semantic)"])
+    if st.session_state.get(K_SEARCH_DONE, False) and hits:
+        with st.expander("Search the questionnaire — results", expanded=st.session_state[K_EXP_RESULTS_OPEN]):
+            lex_hits = [r for r in hits if r.get("origin", "lex") == "lex"]
+            sem_hits = [r for r in hits if r.get("origin", "lex") == "sem"]
 
-                # Lexical tab
-                with tabs[0]:
-                    total = len(lex_hits)
-                    page  = int(st.session_state.get(K_HITS_PAGE_LEX, 0)) or 0
-                    max_page = max(0, (total - 1) // PAGE_SIZE) if total else 0
-                    page = max(0, min(page, max_page))
-                    start = page * PAGE_SIZE
-                    end   = min(total, start + PAGE_SIZE)
+            tabs = st.tabs(["Lexical matches", "Other matches (semantic)"])
 
-                    if total == 0:
-                        st.warning("No lexical matches.")
-                    else:
-                        st.write(f"Results {start + 1}–{end} of {total} lexical matches meeting the quality threshold:")
-                        for rec in lex_hits[start:end]:
-                            code = rec["code"]; text = rec["text"]
-                            key = f"kwhit_{code}"
-                            st.session_state.setdefault(key, False)
-                            st.checkbox(f"{code} — {text}", key=key)
+            # Lexical tab
+            with tabs[0]:
+                total = len(lex_hits)
+                page  = int(st.session_state.get(K_HITS_PAGE_LEX, 0)) or 0
+                max_page = max(0, (total - 1) // PAGE_SIZE) if total else 0
+                page = max(0, min(page, max_page))
+                start = page * PAGE_SIZE
+                end   = min(total, start + PAGE_SIZE)
 
-                        pcol, ncol = st.columns([0.5, 0.5])
-                        with pcol:
-                            st.button("Prev", disabled=(page <= 0), key="menu1_hits_prev_lex",
-                                      on_click=lambda: st.session_state.update({K_HITS_PAGE_LEX: max(0, page - 1)}))
-                        with ncol:
-                            st.button("Next", disabled=(page >= max_page), key="menu1_hits_next_lex",
-                                      on_click=lambda: st.session_state.update({K_HITS_PAGE_LEX: min(max_page, page + 1)}))
+                if total == 0:
+                    st.warning("No lexical matches.")
+                else:
+                    st.write(f"Results {start + 1}–{end} of {total} lexical matches meeting the quality threshold:")
+                    for rec in lex_hits[start:end]:
+                        code = rec["code"]; text = rec["text"]
+                        key = f"kwhit_{code}"
+                        st.session_state.setdefault(key, False)
+                        st.checkbox(f"{code} — {text}", key=key)
 
-                # Semantic tab
-                with tabs[1]:
-                    total = len(sem_hits)
-                    page  = int(st.session_state.get(K_HITS_PAGE_SEM, 0)) or 0
-                    max_page = max(0, (total - 1) // PAGE_SIZE) if total else 0
-                    page = max(0, min(page, max_page))
-                    start = page * PAGE_SIZE
-                    end   = min(total, start + PAGE_SIZE)
+                    pcol, ncol = st.columns([0.5, 0.5])
+                    with pcol:
+                        st.button("Prev", disabled=(page <= 0), key="menu1_hits_prev_lex",
+                                  on_click=lambda: st.session_state.update({K_HITS_PAGE_LEX: max(0, page - 1)}))
+                    with ncol:
+                        st.button("Next", disabled=(page >= max_page), key="menu1_hits_next_lex",
+                                  on_click=lambda: st.session_state.update({K_HITS_PAGE_LEX: min(max_page, page + 1)}))
 
-                    if total == 0:
-                        st.warning("No other (semantic) matches.")
-                    else:
-                        st.write(f"Results {start + 1}–{end} of {total} other (semantic) matches meeting the quality threshold:")
-                        # [UX-3] Always show semantic score in the label
-                        for rec in sem_hits[start:end]:
-                            code = rec["code"]; text = rec["text"]; score = rec.get("score", 0.0)
-                            label = f"{code} — {text}  _(score: {score:.2f})_"
-                            key = f"kwhit_{code}"
-                            st.session_state.setdefault(key, False)
-                            st.checkbox(label, key=key)
+            # Semantic tab
+            with tabs[1]:
+                total = len(sem_hits)
+                page  = int(st.session_state.get(K_HITS_PAGE_SEM, 0)) or 0
+                max_page = max(0, (total - 1) // PAGE_SIZE) if total else 0
+                page = max(0, min(page, max_page))
+                start = page * PAGE_SIZE
+                end   = min(total, start + PAGE_SIZE)
 
-                        pcol, ncol = st.columns([0.5, 0.5])
-                        with pcol:
-                            st.button("Prev", disabled=(page <= 0), key="menu1_hits_prev_sem",
-                                      on_click=lambda: st.session_state.update({K_HITS_PAGE_SEM: max(0, page - 1)}))
-                        with ncol:
-                            st.button("Next", disabled=(page >= max_page), key="menu1_hits_next_sem",
-                                      on_click=lambda: st.session_state.update({K_HITS_PAGE_SEM: min(max_page, page + 1)}))
+                if total == 0:
+                    st.warning("No other (semantic) matches.")
+                else:
+                    st.write(f"Results {start + 1}–{end} of {total} other (semantic) matches meeting the quality threshold:")
+                    # [UX-3] Always show semantic score in the label
+                    for rec in sem_hits[start:end]:
+                        code = rec["code"]; text = rec["text"]; score = rec.get("score", 0.0)
+                        label = f"{code} — {text}  _(score: {score:.2f})_"
+                        key = f"kwhit_{code}"
+                        st.session_state.setdefault(key, False)
+                        st.checkbox(label, key=key)
+
+                    pcol, ncol = st.columns([0.5, 0.5])
+                    with pcol:
+                        st.button("Prev", disabled=(page <= 0), key="menu1_hits_prev_sem",
+                                  on_click=lambda: st.session_state.update({K_HITS_PAGE_SEM: max(0, page - 1)}))
+                    with ncol:
+                        st.button("Next", disabled=(page >= max_page), key="menu1_hits_next_sem",
+                                  on_click=lambda: st.session_state.update({K_HITS_PAGE_SEM: min(max_page, page + 1)}))
 
     # Close indent wrapper
     st.markdown("</div>", unsafe_allow_html=True)
@@ -464,7 +450,7 @@ def demographic_picker(demo_df: pd.DataFrame):
         labels = df_cat[LABEL_COL].astype(str).tolist()
         keep = [(c, l) for c, l in zip(codes, labels) if str(c).strip() != ""]
         codes = [c for c, _ in keep]
-        disp_map = {c: l for c, l in keep}
+        disp_map = {c: l for c, _ in keep}
         return demo_selection, sub_selection, codes, disp_map, True
 
     if LABEL_COL in df_cat.columns:
