@@ -5,7 +5,7 @@ import re
 import time
 import pandas as pd
 import streamlit as st
-import streamlit.components.v1 as components  # for a tiny one-time scrollIntoView
+import streamlit.components.v1 as components  # for one-time scroll/blur JS
 
 try:
     from utils.hybrid_search import hybrid_question_search, get_embedding_status, get_last_search_metrics  # type: ignore
@@ -37,8 +37,9 @@ K_SYNC_MULTI      = "menu1_sync_multi"            # List[str]: display labels to
 # One-time scroll trigger to reveal Step 2 after selection from list
 K_SCROLL_TO_STEP2 = "menu1_scroll_to_step2"
 
-# NEW: show/hide the list picker itself
+# [PICKER-AUTOHIDE] show/hide the list picker and one-time blur flag
 K_SHOW_PICKER     = "menu1_show_picker"
+K_NEED_BLUR       = "menu1_need_blur"
 
 # Years
 DEFAULT_YEARS = [2024, 2022, 2020, 2019]
@@ -120,7 +121,8 @@ def question_picker(qdf: pd.DataFrame) -> List[str]:
     st.session_state.setdefault(K_AI_ENGINE, {})
     st.session_state.setdefault(K_AI_METRICS, {})
     st.session_state.setdefault(K_SCROLL_TO_STEP2, False)
-    st.session_state.setdefault(K_SHOW_PICKER, True)  # default: show the list
+    st.session_state.setdefault(K_SHOW_PICKER, True)
+    st.session_state.setdefault(K_NEED_BLUR, False)
 
     # 1) Apply deferred CLEAR before any widgets are created
     if st.session_state.get(K_DO_CLEAR, False):
@@ -138,19 +140,22 @@ def question_picker(qdf: pd.DataFrame) -> List[str]:
     code_to_display = dict(zip(qdf["code"], qdf["display"]))
     display_to_code = {v: k for k, v in code_to_display.items()}
 
+    # [PICKER-AUTOHIDE] If there are already selections, hide picker on first render
+    if st.session_state.get(K_SHOW_PICKER, True) and st.session_state.get(K_MULTI_QUESTIONS):
+        st.session_state[K_SHOW_PICKER] = False
+
     # ---------- Step 1 ----------
     st.markdown('<div class="field-label">Step 1: Pick up to 5 survey questions:</div>', unsafe_allow_html=True)
-
-    # Indentation via wrapper div (matches your existing structure)
     st.markdown("<div id='menu1_indent' style='margin-left:8%'>", unsafe_allow_html=True)
 
-    # ---- Select from the list (auto-hides after a change) -------------------
+    # ---- Select from the list (auto-hide + blur after change) ---------------
     st.markdown("**Select from the list**")
 
-    def _on_list_change_scroll_step2_and_hide():
-        # Trigger a smooth scroll to Step 2 on next render AND hide the list
-        st.session_state[K_SCROLL_TO_STEP2] = True
+    def _on_list_change_hide_scroll_blur():
+        # Hide picker, scroll to Step 2, and blur the open dropdown overlay
         st.session_state[K_SHOW_PICKER] = False
+        st.session_state[K_SCROLL_TO_STEP2] = True
+        st.session_state[K_NEED_BLUR] = True
 
     if st.session_state.get(K_SHOW_PICKER, True):
         st.multiselect(
@@ -160,16 +165,30 @@ def question_picker(qdf: pd.DataFrame) -> List[str]:
             label_visibility="collapsed",
             key=K_MULTI_QUESTIONS,
             placeholder="",
-            on_change=_on_list_change_scroll_step2_and_hide,  # hide + scroll
+            on_change=_on_list_change_hide_scroll_blur,  # hide + scroll + blur
         )
+        # [PICKER-BLUR] If needed, blur active element to close the dropdown overlay instantly
+        if st.session_state.get(K_NEED_BLUR, False):
+            components.html(
+                """
+                <script>
+                  try {
+                    const d = parent.document;
+                    if (d && d.activeElement) d.activeElement.blur();
+                    // also try to click the body to ensure any open portal/popover closes
+                    if (d && d.body) d.body.click();
+                  } catch(e) {}
+                </script>
+                """,
+                height=0,
+            )
+            st.session_state[K_NEED_BLUR] = False
     else:
-        # Hidden state: show a small re-open button and a quick summary line
         sel = st.session_state.get(K_MULTI_QUESTIONS, []) or []
         if sel:
             st.caption(f"Selected from list: {len(sel)} item(s).")
         if st.button("➕ Add more from list", key="menu1_reopen_picker", type="secondary"):
-            st.session_state[K_SHOW_PICKER] = True
-            # No rerun needed; Streamlit will rerun after button press automatically
+            st.session_state[K_SHOW_PICKER] = True  # picker will show next rerun
 
     # ---- Keywords/theme Search (unchanged) ----------------------------------
     st.markdown("**Keywords/theme Search**")
