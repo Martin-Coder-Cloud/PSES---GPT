@@ -434,7 +434,7 @@ def demographic_picker(demo_df: pd.DataFrame):
 
     if code_col and LABEL_COL in df_cat.columns:
         codes = df_cat[code_col].astype(str).tolist()
-        labels = df_cat[LABEL_COL].astype str().tolist()  # noqa
+        labels = df_cat[LABEL_COL].astype(str).tolist()  # <-- fixed here
         keep = [(c, l) for c, l in zip(codes, labels) if str(c).strip() != ""]
         codes = [c for c, _ in keep]
         disp_map = {c: l for c, _ in keep}
