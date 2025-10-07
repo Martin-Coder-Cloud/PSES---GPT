@@ -369,8 +369,8 @@ def tabs_summary_and_per_q(
     }
     ai_key = "menu1_ai_" + _hash_key(ai_sig)
 
-    # UI tabs: first Summary, then one per question
-    tabs = st.tabs(["Summary table"] + tab_labels)
+    # UI tabs: first Summary, then one per question, then Technical notes
+    tabs = st.tabs(["Summary table"] + tab_labels + ["Technical notes"])
 
     # We will fill these and also stash them in session for the footer export
     per_q_narratives: Dict[str, str] = st.session_state.get("menu1_ai_narr_per_q", {})
@@ -449,6 +449,18 @@ def tabs_summary_and_per_q(
             st.subheader(f"{qcode} — {qtext}")
             st.dataframe(per_q_disp[qcode], use_container_width=True)
             _source_link_line(source_title, source_url)
+
+    # ---------------------- Technical notes tab (always last) ----------------------
+    with tabs[-1]:
+        st.markdown("### Technical notes")
+        st.markdown(
+            "- **Summary results** are mainly shown as “positive answers” reflecting the affirmative responses. "
+            "Positive answers are calculated by removing the \"Don't know\" and \"Not applicable\" responses from the total responses.\n"
+            "- **Non-response adjustment:** Results have been adjusted for non-response to better represent the target population. "
+            "Therefore, percentages should not be used to determine the number of respondents within a response category.\n"
+            "- **Rounding:** Due to rounding, percentages may not add to 100.\n"
+            "- **Suppression:** Results were suppressed for questions with low respondent counts (under 10) and for low response category counts."
+        )
 
     # ---------------------- Persistent footer (all tabs) ----------------------
     st.markdown("---")
