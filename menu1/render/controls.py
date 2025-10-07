@@ -37,6 +37,9 @@ K_SYNC_MULTI      = "menu1_sync_multi"            # List[str]: display labels to
 # One-time scroll trigger to reveal Step 2 after selection from list
 K_SCROLL_TO_STEP2 = "menu1_scroll_to_step2"
 
+# NEW: show/hide the list picker itself
+K_SHOW_PICKER     = "menu1_show_picker"
+
 # Years
 DEFAULT_YEARS = [2024, 2022, 2020, 2019]
 K_SELECT_ALL_YEARS = "select_all_years"
@@ -117,6 +120,7 @@ def question_picker(qdf: pd.DataFrame) -> List[str]:
     st.session_state.setdefault(K_AI_ENGINE, {})
     st.session_state.setdefault(K_AI_METRICS, {})
     st.session_state.setdefault(K_SCROLL_TO_STEP2, False)
+    st.session_state.setdefault(K_SHOW_PICKER, True)  # default: show the list
 
     # 1) Apply deferred CLEAR before any widgets are created
     if st.session_state.get(K_DO_CLEAR, False):
@@ -140,24 +144,34 @@ def question_picker(qdf: pd.DataFrame) -> List[str]:
     # Indentation via wrapper div (matches your existing structure)
     st.markdown("<div id='menu1_indent' style='margin-left:8%'>", unsafe_allow_html=True)
 
-    # ---- Select from the list (no expander) ---------------------------------
+    # ---- Select from the list (auto-hides after a change) -------------------
     st.markdown("**Select from the list**")
 
-    def _on_list_change_scroll_step2():
-        # Trigger a smooth scroll to Step 2 on next render
+    def _on_list_change_scroll_step2_and_hide():
+        # Trigger a smooth scroll to Step 2 on next render AND hide the list
         st.session_state[K_SCROLL_TO_STEP2] = True
+        st.session_state[K_SHOW_PICKER] = False
 
-    st.multiselect(
-        "Choose one or more from the official list",
-        qdf["display"].tolist(),
-        max_selections=5,
-        label_visibility="collapsed",
-        key=K_MULTI_QUESTIONS,
-        placeholder="",
-        on_change=_on_list_change_scroll_step2,  # one-time scroll trigger
-    )
+    if st.session_state.get(K_SHOW_PICKER, True):
+        st.multiselect(
+            "Choose one or more from the official list",
+            qdf["display"].tolist(),
+            max_selections=5,
+            label_visibility="collapsed",
+            key=K_MULTI_QUESTIONS,
+            placeholder="",
+            on_change=_on_list_change_scroll_step2_and_hide,  # hide + scroll
+        )
+    else:
+        # Hidden state: show a small re-open button and a quick summary line
+        sel = st.session_state.get(K_MULTI_QUESTIONS, []) or []
+        if sel:
+            st.caption(f"Selected from list: {len(sel)} item(s).")
+        if st.button("➕ Add more from list", key="menu1_reopen_picker", type="secondary"):
+            st.session_state[K_SHOW_PICKER] = True
+            # No rerun needed; Streamlit will rerun after button press automatically
 
-    # ---- Keywords/theme Search (no expander) --------------------------------
+    # ---- Keywords/theme Search (unchanged) ----------------------------------
     st.markdown("**Keywords/theme Search**")
     st.markdown("<div class='field-label'>Search questionnaire by keywords or theme</div>", unsafe_allow_html=True)
     query = st.text_input(
@@ -434,7 +448,7 @@ def demographic_picker(demo_df: pd.DataFrame):
 
     if code_col and LABEL_COL in df_cat.columns:
         codes = df_cat[code_col].astype(str).tolist()
-        labels = df_cat[LABEL_COL].astype(str).tolist()  # <-- fixed here
+        labels = df_cat[LABEL_COL].astype(str).tolist()
         keep = [(c, l) for c, l in zip(codes, labels) if str(c).strip() != ""]
         codes = [c for c, _ in keep]
         disp_map = {c: l for c, _ in keep}
