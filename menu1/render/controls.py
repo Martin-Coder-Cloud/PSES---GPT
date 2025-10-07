@@ -265,24 +265,18 @@ def question_picker(qdf: pd.DataFrame) -> List[str]:
             else:
                 st.write(f"Results {start + 1}–{end} of {total} lexical matches meeting the quality threshold:")
 
-                # Pre-sync checkbox state from global map, then render
-                gmap = st.session_state.get(K_GLOBAL_HITS_SELECTED, {})
+                # Use checkbox return value to update global map (no pre-write)
+                gmap = dict(st.session_state.get(K_GLOBAL_HITS_SELECTED, {}))
                 for rec in lex_hits[start:end]:
                     code = rec["code"]; text = rec["text"]
                     key = f"kwhit_{code}"
-                    # initialize/align with global selection before rendering
-                    desired = bool(gmap.get(code, False))
+                    label = f"{code} — {text}"
                     if key in st.session_state:
-                        st.session_state[key] = desired
+                        checked = st.checkbox(label, key=key)
                     else:
-                        st.session_state.setdefault(key, desired)
-                    st.checkbox(f"{code} — {text}", key=key)
-
-                # After render: merge current page states back to global map
-                gmap = dict(gmap)  # copy
-                for rec in lex_hits[start:end]:
-                    code = rec["code"]; key = f"kwhit_{code}"
-                    gmap[code] = bool(st.session_state.get(key, False))
+                        desired = bool(gmap.get(code, False))
+                        checked = st.checkbox(label, key=key, value=desired)
+                    gmap[code] = bool(checked)
                 st.session_state[K_GLOBAL_HITS_SELECTED] = gmap
 
                 pcol, ncol = st.columns([0.5, 0.5])
@@ -306,26 +300,18 @@ def question_picker(qdf: pd.DataFrame) -> List[str]:
                 st.warning("No other (semantic) matches.")
             else:
                 st.write(f"Results {start + 1}–{end} of {total} other (semantic) matches meeting the quality threshold:")
-                # Always show semantic score in the label
 
-                # Pre-sync checkbox state from global map, then render
-                gmap = st.session_state.get(K_GLOBAL_HITS_SELECTED, {})
+                gmap = dict(st.session_state.get(K_GLOBAL_HITS_SELECTED, {}))
                 for rec in sem_hits[start:end]:
                     code = rec["code"]; text = rec["text"]; score = rec.get("score", 0.0)
                     label = f"{code} — {text}  _(score: {score:.2f})_"
                     key = f"kwhit_{code}"
-                    desired = bool(gmap.get(code, False))
                     if key in st.session_state:
-                        st.session_state[key] = desired
+                        checked = st.checkbox(label, key=key)
                     else:
-                        st.session_state.setdefault(key, desired)
-                    st.checkbox(label, key=key)
-
-                # After render: merge current page states back to global map
-                gmap = dict(gmap)
-                for rec in sem_hits[start:end]:
-                    code = rec["code"]; key = f"kwhit_{code}"
-                    gmap[code] = bool(st.session_state.get(key, False))
+                        desired = bool(gmap.get(code, False))
+                        checked = st.checkbox(label, key=key, value=desired)
+                    gmap[code] = bool(checked)
                 st.session_state[K_GLOBAL_HITS_SELECTED] = gmap
 
                 pcol, ncol = st.columns([0.5, 0.5])
