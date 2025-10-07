@@ -617,6 +617,9 @@ def tabs_summary_and_per_q(
             for k in list(st.session_state.keys()):
                 if k.startswith("kwhit_") or k.startswith("sel_"):
                     st.session_state.pop(k, None)
+            # --- Surgical addition: also clear global paginated selections ---
+            st.session_state.pop("menu1_global_hits_selected", None)
+            # -----------------------------------------------------------------
             st.session_state.pop("menu1_ai_cache", None)
             st.session_state.pop("menu1_ai_narr_per_q", None)
             st.session_state.pop("menu1_ai_narr_overall", None)
