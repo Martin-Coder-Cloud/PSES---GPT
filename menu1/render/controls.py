@@ -8,54 +8,49 @@ import streamlit as st
 import streamlit.components.v1 as components  # for a tiny one-time scrollIntoView
 
 # ─────────────────────────────────────────────────────────────────────────────
-#  Typography & indentation — ultra-tight, minimalist spacing
+#  Typography & indentation — standardized “paragraph-like” minimal spacing
 # ─────────────────────────────────────────────────────────────────────────────
 def ensure_pses_styles():
     st.markdown(
         """
         <style>
-          /* Title 2 (Step 1–3) */
+          /* ===== Global rhythm: one "sentence" of space everywhere ===== */
+          :root { --pses-gap: 0.28em; } /* tweak this once to tighten/loosen all */
+
+          /* ===== Headings ===== */
           .pses-h2 {
             font-size: 1.08rem;
             font-weight: 600;
-            margin: 0.55em 0 0.15em 0; /* compact */
+            margin: var(--pses-gap) 0 var(--pses-gap) 0;
             color: #222;
           }
-          /* Step 2 pulled close to Step 1 (~one row gap) */
-          .pses-h2-tight-top {
-            margin-top: 0.10em !important;
-            margin-bottom: 0.15em !important;
-          }
-          /* Title 3 (sub-sections) */
           .pses-h3 {
             font-size: 1.0rem;
             font-weight: 550;
-            margin: 0.35em 0 0.15em 0; /* compact */
+            margin: var(--pses-gap) 0 var(--pses-gap) 0;
             color: #333;
           }
-          /* Indented content block for Title 3 + its contents */
+
+          /* ===== Indented blocks for Title 3 + contents ===== */
           .pses-block {
-            margin-left: 2.2cm !important;  /* clear indent */
+            margin-left: 2.2cm !important;  /* clear, consistent indent */
             padding-left: 0.1cm;
             margin-top: 0;
             margin-bottom: 0;
           }
-          /* Utilities */
-          .pses-no-top    { margin-top: 0 !important; }
-          .pses-no-bottom { margin-bottom: 0 !important; }
-          .pses-zero      { margin: 0 !important; padding: 0 !important; line-height: 1 !important; }
-          .pses-nudge-up  { margin-top: -0.15em !important; }
-          .pses-note      { font-size: 0.9rem; color: #666; }
 
-          /* --- Streamlit widget spacing overrides (target minimal gaps) --- */
-          /* Slightly tighten default vertical rhythm */
-          div[data-testid="stVerticalBlock"] { gap: 0.35rem !important; }
-          /* No space below multiselect (keeps "or" flush) */
-          div[data-testid="stMultiSelect"]   { margin-bottom: 0 !important; }
-          /* No space above/between selectboxes (Step 3 & subgroup) */
-          div[data-testid="stSelectbox"]     { margin-top: 0 !important; }
-          /* Tighten text input spacing (search box under "or") */
-          div[data-testid="stTextInput"]     { margin-top: 0 !important; }
+          /* ===== Utilities (used to prevent "double gaps") ===== */
+          .pses-mt-0 { margin-top: 0 !important; }
+          .pses-mb-0 { margin-bottom: 0 !important; }
+
+          /* ===== Streamlit container rhythm ===== */
+          /* Keep blocks close but readable; this is the base inter-section gap */
+          div[data-testid="stVerticalBlock"] { gap: var(--pses-gap) !important; }
+
+          /* ===== Widgets obey the same rhythm (top/bottom) ===== */
+          div[data-testid="stMultiSelect"] { margin-top: var(--pses-gap) !important; margin-bottom: var(--pses-gap) !important; }
+          div[data-testid="stTextInput"]  { margin-top: var(--pses-gap) !important; margin-bottom: var(--pses-gap) !important; }
+          div[data-testid="stSelectbox"]  { margin-top: var(--pses-gap) !important; margin-bottom: var(--pses-gap) !important; }
         </style>
         """,
         unsafe_allow_html=True,
@@ -197,14 +192,14 @@ def question_picker(qdf: pd.DataFrame) -> List[str]:
     code_to_display = dict(zip(qdf["code"], qdf["display"]))
     display_to_code = {v: k for k, v in code_to_display.items()}
 
-    # ============================ Step 1 (Title 2 / H2, compact) ==============================
+    # ============================ Step 1 (Title 2 / H2) =======================================
     st.markdown("<div class='pses-h2'>Step 1: Pick up to 5 survey questions</div>", unsafe_allow_html=True)
 
-    # ---- Single indented block: Select → or → Search (Title 3s, zero extra spacing) ----------
+    # ---- Single indented block: Select → “or” → Search (uniform minimal spacing) -------------
     st.markdown("<div class='pses-block'>", unsafe_allow_html=True)
 
-    # Select from the list (nudged up to reduce space under Step 1 title)
-    st.markdown("<div class='pses-h3 pses-no-top pses-nudge-up'>Select from the list</div>", unsafe_allow_html=True)
+    # Select from the list
+    st.markdown("<div class='pses-h3 pses-mb-0'>Select from the list</div>", unsafe_allow_html=True)
 
     def _on_list_change_scroll_step2():
         st.session_state[K_SCROLL_TO_STEP2] = True
@@ -219,11 +214,14 @@ def question_picker(qdf: pd.DataFrame) -> List[str]:
         on_change=_on_list_change_scroll_step2,
     )
 
-    # "or" (left-aligned, absolutely no spacing above/below)
-    st.markdown("<div class='pses-h3 pses-zero'>or</div>", unsafe_allow_html=True)
+    # “or” — we avoid double-gaps by removing its top margin; it will sit at exactly one gap,
+    # provided by the multiselect's bottom margin.
+    st.markdown("<div class='pses-h3 pses-mt-0 pses-mb-0'>or</div>", unsafe_allow_html=True)
 
-    # Search questionnaire by keywords or theme (flush under "or")
-    st.markdown("<div class='pses-h3 pses-no-top'>Search questionnaire by keywords or theme</div>", unsafe_allow_html=True)
+    # Search title — give it a single gap above (so “or” → search title has paragraph spacing),
+    # then remove its bottom margin so the input below provides exactly one gap.
+    st.markdown("<div class='pses-h3 pses-mb-0'>Search questionnaire by keywords or theme</div>", unsafe_allow_html=True)
+
     query = st.text_input(
         "Enter keywords (e.g., harassment, recognition, onboarding)",
         key=K_KW_QUERY,
@@ -285,10 +283,9 @@ def question_picker(qdf: pd.DataFrame) -> List[str]:
             st.session_state[K_DO_CLEAR] = True
             st.experimental_rerun()
 
-    # Close the unified indented block
-    st.markdown("</div>", unsafe_allow_html=True)
+    st.markdown("</div>", unsafe_allow_html=True)  # close Step 1 block
 
-    # ---- Search results (Title 3 content: EACH TAB CONTENT IS INDENTED) ----------------------
+    # ---- Search results (Title 3 content: tabs are indented; uniform rhythm inside) ----------
     hits = st.session_state.get(K_HITS, [])
     if st.session_state.get(K_SEARCH_DONE, False):
         if hits:
@@ -297,7 +294,7 @@ def question_picker(qdf: pd.DataFrame) -> List[str]:
 
             tabs = st.tabs(["Lexical matches", "Other matches (semantic)"])
 
-            # Lexical tab (indent INSIDE the tab)
+            # Lexical tab
             with tabs[0]:
                 st.markdown("<div class='pses-block'>", unsafe_allow_html=True)
 
@@ -334,7 +331,7 @@ def question_picker(qdf: pd.DataFrame) -> List[str]:
                                   on_click=lambda: st.session_state.update({K_HITS_PAGE_LEX: min(max_page, page + 1)}))
                 st.markdown("</div>", unsafe_allow_html=True)
 
-            # Semantic tab (indent INSIDE the tab)
+            # Semantic tab
             with tabs[1]:
                 st.markdown("<div class='pses-block'>", unsafe_allow_html=True)
 
@@ -378,7 +375,7 @@ def question_picker(qdf: pd.DataFrame) -> List[str]:
                 'or search by a question code like “Q01”.'
             )
 
-    # ============================ Step 2 (Title 2, pulled closer) ============================
+    # ============================ Step 2 (Title 2) ============================================
     # anchor for smooth scroll
     st.markdown('<div id="step2_anchor"></div>', unsafe_allow_html=True)
 
@@ -394,8 +391,7 @@ def question_picker(qdf: pd.DataFrame) -> List[str]:
         )
         st.session_state[K_SCROLL_TO_STEP2] = False
 
-    # Tight top margin for Step 2 to sit ~one row below previous section
-    st.markdown("<div class='pses-h2 pses-h2-tight-top'>Step 2: Select survey year(s)</div>", unsafe_allow_html=True)
+    st.markdown("<div class='pses-h2 pses-mt-0'>Step 2: Select survey year(s)</div>", unsafe_allow_html=True)
     st.session_state.setdefault(K_SELECT_ALL_YEARS, True)
     select_all = st.checkbox("All years", key=K_SELECT_ALL_YEARS)
 
@@ -414,11 +410,11 @@ def question_picker(qdf: pd.DataFrame) -> List[str]:
             st.checkbox(str(yr), key=f"year_{yr}")
             if st.session_state.get(f"year_{yr}", False):
                 selected_years.append(yr)
-    years_sorted = sorted(selected_years)  # retained if needed by caller
+    years_sorted = sorted(selected_years)  # retained for compatibility if needed
 
-    # ============================ Step 3 (Title 2, compact; no gap to dropdown) ==============
-    st.markdown("<div class='pses-h2'>Step 3: Select a demographic category (optional)</div>", unsafe_allow_html=True)
-    # Note: demographic_picker() renders the dropdowns; CSS above removes the gap before them.
+    # ============================ Step 3 (Title 2) ============================================
+    st.markdown("<div class='pses-h2 pses-mt-0'>Step 3: Select a demographic category (optional)</div>", unsafe_allow_html=True)
+    # Note: demographic_picker() renders the dropdowns; CSS ensures minimal gap above them.
 
     # Return selected codes (API unchanged)
     return st.session_state[K_SELECTED_CODES]
