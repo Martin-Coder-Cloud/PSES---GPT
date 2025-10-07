@@ -190,7 +190,7 @@ def _allowed_numbers_from_disp(df: pd.DataFrame, metric_col: str) -> Tuple[Set[i
         maps: Dict[str, Dict[int, int]] = {}
         for g in work["Demographic"].astype(str).unique().tolist():
             gmap: Dict[int, int] = {}
-            for _, r in work[work["Demographic"].astype(str) == g].iterrows():
+            for _, r in work[work["Demographic"].astype str) == g].iterrows():
                 y = r["__Year__"]; v = r["__Val__"]
                 if pd.notna(y) and v is not None:
                     gmap[int(y)] = int(v)
@@ -353,6 +353,9 @@ def tabs_summary_and_per_q(
     demo_selection                     = payload["demo_selection"]
     sub_selection                      = payload["sub_selection"]
     code_to_text                       = payload["code_to_text"]
+
+    # [stash payload for ai.py] Make question texts discoverable to build_overall_prompt()
+    st.session_state["menu1_results_payload"] = {"code_to_text": code_to_text}
 
     # Build a stable "result signature" so we do NOT recompute AI on benign reruns
     ai_sig = {
