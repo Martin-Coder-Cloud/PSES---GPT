@@ -33,13 +33,9 @@ K_AI_METRICS      = "menu1_ai_metrics"
 K_DO_CLEAR        = "menu1_do_clear"              # bool: clear everything next run
 K_SYNC_MULTI      = "menu1_sync_multi"            # List[str]: display labels to set for multiselect next run
 
-# [UX-3] (Removed old debug toggle for semantic scores)
-# K_DEBUG_SHOW_SCORES = "menu1_debug_show_scores"
-
-# [UX-2/5] Expander control flags + prev-count tracker
+# [UX-2/5] Expander control flags
 K_EXP_QPICK_OPEN   = "menu1_exp_qpick_open"
 K_EXP_RESULTS_OPEN = "menu1_exp_results_open"
-K_PREV_MULTI_COUNT = "menu1_prev_multi_count"
 
 # Years
 DEFAULT_YEARS = [2024, 2022, 2020, 2019]
@@ -121,10 +117,9 @@ def question_picker(qdf: pd.DataFrame) -> List[str]:
     st.session_state.setdefault(K_AI_ENGINE, {})
     st.session_state.setdefault(K_AI_METRICS, {})
 
-    # [UX-2/5] Defaults for expanders + count tracker
+    # [UX-2/5] Defaults for expanders
     st.session_state.setdefault(K_EXP_QPICK_OPEN, True)
     st.session_state.setdefault(K_EXP_RESULTS_OPEN, False)
-    st.session_state.setdefault(K_PREV_MULTI_COUNT, 0)
 
     # 1) Apply deferred CLEAR before any widgets are created
     if st.session_state.get(K_DO_CLEAR, False):
@@ -145,21 +140,16 @@ def question_picker(qdf: pd.DataFrame) -> List[str]:
     # ---------- Step 1 ----------
     st.markdown('<div class="field-label">Step 1: Pick up to 5 survey questions:</div>', unsafe_allow_html=True)
 
-    # [UX-2] Auto-collapse the picker if user just added a question
-    try:
-        cur_cnt = len(st.session_state.get(K_MULTI_QUESTIONS, []))
-        prev_cnt = int(st.session_state.get(K_PREV_MULTI_COUNT, 0))
-        if cur_cnt > prev_cnt:
-            st.session_state[K_EXP_QPICK_OPEN] = False
-        st.session_state[K_PREV_MULTI_COUNT] = cur_cnt
-    except Exception:
-        pass
-
     # Indentation via wrapper div (no outer columns nesting)
     st.markdown("<div id='menu1_indent' style='margin-left:8%'>", unsafe_allow_html=True)
 
     # ---- Option A: Select from the list -------------------------------------------------
     st.markdown("**Select from the list**")  # bold title
+
+    # [UX-2] collapse picker immediately on selection
+    def _collapse_qpick():
+        st.session_state[K_EXP_QPICK_OPEN] = False
+
     with st.expander("Select from the list", expanded=st.session_state[K_EXP_QPICK_OPEN]):
         st.multiselect(
             "Choose one or more from the official list",
@@ -168,6 +158,7 @@ def question_picker(qdf: pd.DataFrame) -> List[str]:
             label_visibility="collapsed",
             key=K_MULTI_QUESTIONS,
             placeholder="",
+            on_change=_collapse_qpick,   # <<< immediate collapse on any change
         )
 
     # ---- Option B: Keywords/theme Search (separate expander, not nested) ---------------
@@ -251,7 +242,7 @@ def question_picker(qdf: pd.DataFrame) -> List[str]:
     # ---- Search results expander (separate, not nested) --------------------------------
     hits = st.session_state.get(K_HITS, [])
 
-    # [UX-5] Auto-collapse search results after selecting a hit
+    # Auto-collapse search results after selecting a hit
     any_selected_from_hits = False
     for rec in hits:
         code = rec.get("code")
@@ -311,7 +302,7 @@ def question_picker(qdf: pd.DataFrame) -> List[str]:
                     st.warning("No other (semantic) matches.")
                 else:
                     st.write(f"Results {start + 1}–{end} of {total} other (semantic) matches meeting the quality threshold:")
-                    # [UX-3] Always show semantic score in the label
+                    # Always show semantic score
                     for rec in sem_hits[start:end]:
                         code = rec["code"]; text = rec["text"]; score = rec.get("score", 0.0)
                         label = f"{code} — {text}  _(score: {score:.2f})_"
@@ -387,7 +378,7 @@ def year_picker() -> List[int]:
             st.session_state.setdefault(f"year_{yr}", True)
             st.session_state[f"year_{yr}"] = True
     else:
-        # [UX-1] Explicitly clear every year checkbox when "All years" is OFF
+        # Explicitly clear every year checkbox when "All years" is OFF
         for yr in DEFAULT_YEARS:
             st.session_state[f"year_{yr}"] = False
 
@@ -460,5 +451,5 @@ def demographic_picker(demo_df: pd.DataFrame):
     return demo_selection, sub_selection, [None], {None: "All respondents"}, False
 
 # ---- Enable search? ---------------------------------------------------------
-def search_button_enabled(question_codes: List[str], years: List[int]) -> bool:
+def search_button_enabled(question_codes: List[int], years: List[int]) -> bool:
     return bool(question_codes) and bool(years)
