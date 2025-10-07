@@ -8,36 +8,38 @@ import streamlit as st
 import streamlit.components.v1 as components  # for a tiny one-time scrollIntoView
 
 # ─────────────────────────────────────────────────────────────────────────────
-#  One-time style injector (controls drives typography)
+#  Typography & indentation: inject on EVERY rerun (no gating)
 # ─────────────────────────────────────────────────────────────────────────────
 def ensure_pses_styles():
-    if "_pses_css_loaded_controls" in st.session_state:
-        return
-    css = """
-    <style>
-      .pses-h2 {
-        font-size: 1.08rem;
-        font-weight: 600;
-        margin: 1.0em 0 0.4em 0;
-        color: #222;
-      }
-      .pses-h3 {
-        font-size: 1.0rem;
-        font-weight: 550;
-        margin: 0.7em 0 0.3em 0;
-        color: #333;
-      }
-      .pses-block {
-        margin-left: 8%;
-      }
-      .pses-note {
-        font-size: 0.9rem;
-        color: #666;
-      }
-    </style>
-    """
-    st.markdown(css, unsafe_allow_html=True)
-    st.session_state["_pses_css_loaded_controls"] = True
+    st.markdown(
+        """
+        <style>
+          /* Title 2 (Step 1–3, Results) */
+          .pses-h2 {
+            font-size: 1.08rem;
+            font-weight: 600;
+            margin: 1.0em 0 0.4em 0;
+            color: #222;
+          }
+          /* Title 3 (sub-sections: list, search, results, selected, subgroup) */
+          .pses-h3 {
+            font-size: 1.0rem;
+            font-weight: 550;
+            margin: 0.7em 0 0.3em 0;
+            color: #333;
+          }
+          /* Indented content block for Title 3 + its contents */
+          .pses-block {
+            margin-left: 8%;
+          }
+          .pses-note {
+            font-size: 0.9rem;
+            color: #666;
+          }
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
 
 try:
     from utils.hybrid_search import hybrid_question_search, get_embedding_status, get_last_search_metrics  # type: ignore
@@ -263,19 +265,19 @@ def question_picker(qdf: pd.DataFrame) -> List[str]:
             st.experimental_rerun()
     st.markdown("</div>", unsafe_allow_html=True)
 
-    # ---- Search results (render when a search occurred) --------------------------------------
+    # ---- Search results (Title 3 content: EACH TAB CONTENT IS INDENTED) ----------------------
     hits = st.session_state.get(K_HITS, [])
     if st.session_state.get(K_SEARCH_DONE, False):
         if hits:
             lex_hits = [r for r in hits if r.get("origin","lex") == "lex"]
             sem_hits = [r for r in hits if r.get("origin","lex") == "sem"]
 
-            # Indent the entire results area under Step 1 (consistent with Title 3 blocks)
-            st.markdown("<div class='pses-block'>", unsafe_allow_html=True)
             tabs = st.tabs(["Lexical matches", "Other matches (semantic)"])
 
-            # Lexical tab
+            # Lexical tab (indent INSIDE the tab)
             with tabs[0]:
+                st.markdown("<div class='pses-block'>", unsafe_allow_html=True)
+
                 total = len(lex_hits)
                 page  = int(st.session_state.get(K_HITS_PAGE_LEX, 0)) or 0
                 max_page = max(0, (total - 1) // PAGE_SIZE) if total else 0
@@ -307,9 +309,12 @@ def question_picker(qdf: pd.DataFrame) -> List[str]:
                     with ncol:
                         st.button("Next", disabled=(page >= max_page), key="menu1_hits_next_lex",
                                   on_click=lambda: st.session_state.update({K_HITS_PAGE_LEX: min(max_page, page + 1)}))
+                st.markdown("</div>", unsafe_allow_html=True)
 
-            # Semantic tab
+            # Semantic tab (indent INSIDE the tab)
             with tabs[1]:
+                st.markdown("<div class='pses-block'>", unsafe_allow_html=True)
+
                 total = len(sem_hits)
                 page  = int(st.session_state.get(K_HITS_PAGE_SEM, 0)) or 0
                 max_page = max(0, (total - 1) // PAGE_SIZE) if total else 0
@@ -340,7 +345,7 @@ def question_picker(qdf: pd.DataFrame) -> List[str]:
                     with ncol:
                         st.button("Next", disabled=(page >= max_page), key="menu1_hits_next_sem",
                                   on_click=lambda: st.session_state.update({K_HITS_PAGE_SEM: min(max_page, page + 1)}))
-            st.markdown("</div>", unsafe_allow_html=True)
+                st.markdown("</div>", unsafe_allow_html=True)
         else:
             last_q = (st.session_state.get(K_LAST_QUERY) or "").strip()
             safe_q = last_q if last_q else "your search"
@@ -447,7 +452,9 @@ def question_picker(qdf: pd.DataFrame) -> List[str]:
 
     # ============================ Step 3 (Title 2 / H2, no indent) ============================
     st.markdown("<div class='pses-h2'>Step 3: Select a demographic category (optional)</div>", unsafe_allow_html=True)
-    # This function returns only question codes; the demographic UI is handled by demographic_picker()
+    # NOTE: The demographic sub-UI lives in demographic_picker(). We DO NOT render another Step 3 there.
+
+    # Return selected codes (API unchanged)
     return st.session_state[K_SELECTED_CODES]
 
 # ---- Years (unchanged signature; used by caller) ----------------------------
@@ -458,9 +465,9 @@ def year_picker() -> List[int]:
             selected_years.append(yr)
     return sorted(selected_years)
 
-# ---- Demographics (format aligned; behavior unchanged) ----------------------
+# ---- Demographics (no H2 here to avoid duplicate Step 3; only H3 when needed) --------------
 def demographic_picker(demo_df: pd.DataFrame):
-    st.markdown("<div class='pses-h2'>Step 3: Select a demographic category (optional)</div>", unsafe_allow_html=True)
+    ensure_pses_styles()
 
     DEMO_CAT_COL = "DEMCODE Category"
     LABEL_COL = "DESCRIP_E"
