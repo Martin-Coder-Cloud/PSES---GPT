@@ -38,6 +38,7 @@ def _ai_cache_put(key: str, value: dict):
     st.session_state["menu1_ai_cache"] = cache
 
 def _source_link_line(source_title: str, source_url: str) -> None:
+    # Requirements: show the title as a clickable link (no raw URL), placed directly under the table.
     st.markdown(
         f"<div style='margin-top:6px; font-size:0.9rem;'>Source: "
         f"<a href='{source_url}' target='_blank'>{source_title}</a></div>",
@@ -64,6 +65,9 @@ def _is_year_label(col) -> bool:
         return False
 
 def _to_int(v: Any) -> Optional[int]:
+    """
+    Original safe integer caster used elsewhere in this file.
+    """
     try:
         if v is None:
             return None
@@ -86,6 +90,31 @@ def _to_int(v: Any) -> Optional[int]:
     except Exception:
         return None
 
+# ---- NEW: stricter NA-tolerant int for the fact-check path only --------------
+def _safe_int(x: Any) -> Optional[int]:
+    """
+    Return a plain int when possible; otherwise None.
+    Handles 'none', 'n/a', '', whitespace, pandas NA/NaN, 9999 (treated as NA).
+    """
+    try:
+        if x is None:
+            return None
+        if isinstance(x, str):
+            s = x.strip().lower()
+            if s in ("", "na", "n/a", "none", "nan", "null"):
+                return None
+        # treat sentinel 9999 as missing (per your display rules)
+        if x == 9999:
+            return None
+        # numeric or numeric-like string
+        v = pd.to_numeric(x, errors="coerce")
+        if pd.isna(v):
+            return None
+        return int(round(float(v)))
+    except Exception:
+        return None
+# -----------------------------------------------------------------------------
+
 def _pick_display_metric(df: pd.DataFrame, prefer: Optional[str] = None) -> Optional[str]:
     if prefer and prefer in df.columns:
         return prefer
@@ -95,11 +124,18 @@ def _pick_display_metric(df: pd.DataFrame, prefer: Optional[str] = None) -> Opti
     return None
 
 def _allowed_numbers_from_disp(df: pd.DataFrame, metric_col: str) -> Tuple[Set[int], Set[int]]:
+    """
+    Build the allowed set of integers from a per-question display dataframe.
+    Returns (allowed_numbers, visible_years).
+
+    Hardened to never raise on mixed/odd values. Any non-coercible token is skipped.
+    """
     if df is None or df.empty:
         return set(), set()
 
     metric_col_work = metric_col
     if "Year" not in df.columns or metric_col not in df.columns:
+        # Identify year-like columns
         ycols = [c for c in df.columns if _is_year_label(c)]
         if ycols:
             id_cols = [c for c in df.columns if c not in ycols]
@@ -111,43 +147,72 @@ def _allowed_numbers_from_disp(df: pd.DataFrame, metric_col: str) -> Tuple[Set[i
     else:
         work = df.copy()
 
+    # Normalize types (robustly)
     work["__Year__"] = pd.to_numeric(work.get("Year"), errors="coerce").astype("Int64")
     if "Demographic" not in work.columns:
         work["Demographic"] = "All respondents"
 
     if metric_col_work not in work.columns:
         return set(), set()
-    work["__Val__"] = work[metric_col_work].apply(_to_int)
 
-    years: Set[int] = set(int(y) for y in work["__Year__"].dropna().unique())
-    allowed: Set[int] = set(int(v) for v in work["__Val__"].dropna().unique())
+    # Safe metric integerization (NA/9999/etc → None)
+    work["__Val__"] = work[metric_col_work].apply(_safe_int)
 
-    gdf_work = work.dropna(subset=["__Val__", "__Year__"])
+    # Visible years set (ints only)
+    years_list = []
+    for y in work["__Year__"].tolist():
+        yi = _safe_int(y)
+        if yi is not None and _is_year_like(yi):
+            years_list.append(yi)
+    years: Set[int] = set(years_list)
+
+    # Base allowed values (ints only)
+    allowed: Set[int] = set()
+    for v in work["__Val__"].tolist():
+        vi = _safe_int(v)
+        if vi is not None:
+            allowed.add(vi)
+
+    # Prepare a cleaned working frame for diffs/gaps
+    gdf_work = work.dropna(subset=["__Year__"]).copy()
+    gdf_work["__YearI__"] = gdf_work["__Year__"].apply(_safe_int)
+    gdf_work["__ValI__"] = gdf_work["__Val__"].apply(_safe_int)
+    gdf_work = gdf_work[gdf_work["__YearI__"].notna() & gdf_work["__ValI__"].notna()]
+
+    # YoY diffs (within each group label)
     for _, gdf in gdf_work.groupby("Demographic", dropna=False):
-        vals = [int(v) for v in gdf.sort_values("__Year__")["__Val__"].tolist() if v is not None]
-        for i in range(len(vals)):
-            for j in range(i + 1, len(vals)):
-                allowed.add(abs(vals[j] - vals[i]))
+        seq = [int(v) for v in gdf.sort_values("__YearI__")["__ValI__"].tolist()]
+        # all absolute pairwise diffs
+        n = len(seq)
+        for i in range(n):
+            for j in range(i + 1, n):
+                allowed.add(abs(seq[j] - seq[i]))
 
+    # Latest-year gaps and gap-over-time
     if years:
         latest = max(years)
-        ydf = work[(work["__Year__"] == latest) & work["__Val__"].notna()]
-        vals = list(ydf[["Demographic", "__Val__"]].itertuples(index=False, name=None))
+
+        ydf = gdf_work[gdf_work["__YearI__"] == latest]
+        vals = list(ydf[["Demographic", "__ValI__"]].itertuples(index=False, name=None))
         for i in range(len(vals)):
             for j in range(i + 1, len(vals)):
                 vi = int(vals[i][1]); vj = int(vals[j][1])
                 allowed.add(abs(vi - vj))
 
-        groups = sorted(ydf["Demographic"].astype(str).unique().tolist())
+        # Build year->val maps per group
+        groups = sorted(gdf_work["Demographic"].astype(str).unique().tolist())
         maps: Dict[str, Dict[int, int]] = {}
-        for g in work["Demographic"].astype(str).unique().tolist():
+        for g in groups:
             gmap: Dict[int, int] = {}
-            for _, r in work[work["Demographic"].astype(str) == g].iterrows():
-                y = r["__Year__"]; v = r["__Val__"]
-                if pd.notna(y) and v is not None:
-                    gmap[int(y)] = int(v)
+            sub = gdf_work[gdf_work["Demographic"].astype(str) == g]
+            for _, r in sub.iterrows():
+                yi = r["__YearI__"]; vi = r["__ValI__"]
+                if pd.notna(yi) and pd.notna(vi):
+                    gmap[int(yi)] = int(vi)
             if gmap:
                 maps[g] = gmap
+
+        # Gap-over-time deltas
         for i in range(len(groups)):
             for j in range(i + 1, len(groups)):
                 g1, g2 = groups[i], groups[j]
@@ -220,10 +285,10 @@ def _compute_ai_narratives(
     build_per_q_prompt: Callable[..., str],
     call_openai_json: Callable[..., Tuple[Optional[str], Optional[str]]],
 ) -> Tuple[Dict[str, str], Optional[str]]:
-    """Compute narratives only (no UI). Used by export and cached path."""
     per_q_narratives: Dict[str, str] = {}
     overall_narrative: Optional[str] = None
 
+    # Per-question
     for q in tab_labels:
         df_disp = per_q_disp[q]
         metric_col = per_q_metric_col[q]
@@ -246,27 +311,17 @@ def _compute_ai_narratives(
         except Exception:
             per_q_narratives[q] = ""
 
+    # Overall
     if len(tab_labels) > 1:
-        # SAFE call: try with code_to_text, fallback without (prevents TypeError)
-        try:
-            content, _hint = call_openai_json(
-                system=AI_SYSTEM_PROMPT,
-                user=build_overall_prompt(
-                    tab_labels=tab_labels,
-                    pivot_df=pivot,
-                    q_to_metric={q: per_q_metric_label[q] for q in tab_labels},
-                    code_to_text=code_to_text,
-                )
+        content, _hint = call_openai_json(
+            system=AI_SYSTEM_PROMPT,
+            user=build_overall_prompt(
+                tab_labels=tab_labels,
+                pivot_df=pivot,
+                q_to_metric={q: per_q_metric_label[q] for q in tab_labels},
+                code_to_text=code_to_text,
             )
-        except TypeError:
-            content, _hint = call_openai_json(
-                system=AI_SYSTEM_PROMPT,
-                user=build_overall_prompt(
-                    tab_labels=tab_labels,
-                    pivot_df=pivot,
-                    q_to_metric={q: per_q_metric_label[q] for q in tab_labels},
-                )
-            )
+        )
         try:
             j = json.loads(content) if content else {}
             overall_narrative = (j.get("narrative") or "").strip()
@@ -306,7 +361,8 @@ def _render_factcheck_advisory(
         except Exception as e:
             st.caption(f"{q}: fact-check skipped ({type(e).__name__}).")
     if not any_issue:
-        st.success("All AI statements appear consistent with the visible tables (numbers checked; years ignored).")
+        # Add an explicit green check mark at the end, as requested
+        st.success("All AI statements appear consistent with the visible tables (numbers checked; years ignored). ✅")
 
 # ----- main renderer ----------------------------------------------------------
 
@@ -342,7 +398,7 @@ def tabs_summary_and_per_q(
     sub_selection                      = payload["sub_selection"]
     code_to_text                       = payload["code_to_text"]
 
-    # Stable "result signature"
+    # Build a stable "result signature"
     ai_sig = {
         "tab_labels": tab_labels,
         "years": years,
@@ -353,7 +409,7 @@ def tabs_summary_and_per_q(
     }
     ai_key = "menu1_ai_" + _hash_key(ai_sig)
 
-    # Tabs: Summary + per-question + Technical notes
+    # Tabs: Summary + per-question + Technical notes (at end)
     tab_titles = ["Summary table"] + tab_labels + ["Technical notes"]
     tabs = st.tabs(tab_titles)
 
@@ -432,7 +488,7 @@ def tabs_summary_and_per_q(
                         st.markdown(f"**{q} — {qtext}**")
                         st.write(txt)
 
-                # Overall last (signature-safe call)
+                # Overall last
                 overall_narrative = None
                 if len(tab_labels) > 1:
                     with st.spinner("AI — synthesizing overall pattern…"):
@@ -443,16 +499,7 @@ def tabs_summary_and_per_q(
                                     tab_labels=tab_labels,
                                     pivot_df=pivot.copy(deep=True),
                                     q_to_metric={q: per_q_metric_label[q] for q in tab_labels},
-                                    code_to_text=code_to_text,  # may not exist in older ai.py
-                                )
-                            )
-                        except TypeError:
-                            content, _hint = call_openai_json(
-                                system=AI_SYSTEM_PROMPT,
-                                user=build_overall_prompt(
-                                    tab_labels=tab_labels,
-                                    pivot_df=pivot.copy(deep=True),
-                                    q_to_metric={q: per_q_metric_label[q] for q in tab_labels},
+                                    code_to_text=code_to_text,
                                 )
                             )
                         except Exception as e:
