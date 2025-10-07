@@ -9,7 +9,7 @@ import streamlit.components.v1 as components  # for a tiny one-time scrollIntoVi
 
 # ─────────────────────────────────────────────────────────────────────────────
 #  Typography & indentation: inject on EVERY rerun (no gating)
-#  Minimal spacing between "Select from the list" and the "or" + "Search..." blocks
+#  Minimal spacing between Select → or → Search (left-aligned)
 # ─────────────────────────────────────────────────────────────────────────────
 def ensure_pses_styles():
     st.markdown(
@@ -26,19 +26,20 @@ def ensure_pses_styles():
           .pses-h3 {
             font-size: 1.0rem;
             font-weight: 550;
-            margin: 0.7em 0 0.3em 0;
+            margin: 0.6em 0 0.25em 0; /* tight but readable */
             color: #333;
           }
           /* Indented content block for Title 3 + its contents */
           .pses-block {
             margin-left: 2.2cm !important;  /* clear, consistent indent */
             padding-left: 0.1cm;
+            margin-top: 0;  /* minimize accidental gaps between stacked blocks */
+            margin-bottom: 0;
           }
           /* Utilities for ultra-tight spacing */
-          .pses-no-top { margin-top: 0 !important; }
+          .pses-no-top    { margin-top: 0 !important; }
           .pses-no-bottom { margin-bottom: 0 !important; }
-          .pses-tight { margin-top: -0.45em !important; } /* pull block up toward previous */
-          .pses-center { text-align: center; }
+          .pses-tight-h3  { margin-top: 0 !important; margin-bottom: 0 !important; }
           .pses-note {
             font-size: 0.9rem;
             color: #666;
@@ -187,14 +188,13 @@ def question_picker(qdf: pd.DataFrame) -> List[str]:
     # ============================ Step 1 (Title 2 / H2, no indent) ============================
     st.markdown("<div class='pses-h2'>Step 1: Pick up to 5 survey questions</div>", unsafe_allow_html=True)
 
-    # ---- Select from the list (Title 3 / H3, indented with content) --------------------------
+    # ---- Single indented block: Select → or → Search (Title 3s, no extra spacing) ------------
     st.markdown("<div class='pses-block'>", unsafe_allow_html=True)
+
+    # Select from the list
     st.markdown("<div class='pses-h3 pses-no-bottom'>Select from the list</div>", unsafe_allow_html=True)
-
     def _on_list_change_scroll_step2():
-        # Trigger a smooth scroll to Step 2 on next render
         st.session_state[K_SCROLL_TO_STEP2] = True
-
     st.multiselect(
         "Choose one or more from the official list",
         qdf["display"].tolist(),
@@ -204,16 +204,11 @@ def question_picker(qdf: pd.DataFrame) -> List[str]:
         placeholder="",
         on_change=_on_list_change_scroll_step2,
     )
-    st.markdown("</div>", unsafe_allow_html=True)
 
-    # ---- "or" separator (Title 3, minimal spacing, indented) --------------------------------
-    st.markdown("<div class='pses-block'>", unsafe_allow_html=True)
-    st.markdown("<div class='pses-h3 pses-no-top pses-no-bottom pses-center'>or</div>", unsafe_allow_html=True)
-    st.markdown("</div>", unsafe_allow_html=True)
+    # "or" (left-aligned, zero extra spacing)
+    st.markdown("<div class='pses-h3 pses-tight-h3'>or</div>", unsafe_allow_html=True)
 
-    # ---- Keywords/theme Search (Title 3 / H3, indented with MINIMAL spacing) ----------------
-    # Apply pses-tight to pull this block up; pses-no-top to remove top margin on H3
-    st.markdown("<div class='pses-block pses-tight'>", unsafe_allow_html=True)
+    # Search questionnaire by keywords or theme
     st.markdown("<div class='pses-h3 pses-no-top'>Search questionnaire by keywords or theme</div>", unsafe_allow_html=True)
     query = st.text_input(
         "Enter keywords (e.g., harassment, recognition, onboarding)",
@@ -273,9 +268,10 @@ def question_picker(qdf: pd.DataFrame) -> List[str]:
 
     with bcol2:
         if st.button("Clear search & selections", key="menu1_clear_all"):
-            # Defer the clear to next run to avoid widget mutation error
             st.session_state[K_DO_CLEAR] = True
             st.experimental_rerun()
+
+    # Close the unified indented block
     st.markdown("</div>", unsafe_allow_html=True)
 
     # ---- Search results (Title 3 content: EACH TAB CONTENT IS INDENTED) ----------------------
