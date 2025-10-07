@@ -330,7 +330,7 @@ def _compute_ai_narratives(
 
     return per_q_narratives, overall_narrative
 
-# ----- advisory fact-check renderer ------------------------------------------
+# ----- AI Fact Check (expander with dynamic title) ---------------------------
 
 def _render_factcheck_advisory(
     *,
@@ -339,30 +339,53 @@ def _render_factcheck_advisory(
     per_q_metric_col: Dict[str, str],
     per_q_narratives: Dict[str, str],
 ) -> None:
-    st.markdown("#### Fact check (advisory)")
     any_issue = False
+    details: List[Tuple[str, str]] = []  # (level, message)
+
     for q in tab_labels:
         try:
             df_disp = per_q_disp.get(q)
             if not isinstance(df_disp, pd.DataFrame) or df_disp.empty:
+                # No table to validate against; non-blocking.
+                details.append(("caption", f"{q}: fact-check skipped (no table)."))
                 continue
+
             metric_col = per_q_metric_col.get(q) or _pick_display_metric(df_disp)
             if not metric_col:
+                details.append(("caption", f"{q}: fact-check skipped (no metric column)."))
                 continue
+
             allowed, years = _allowed_numbers_from_disp(df_disp.copy(deep=True), metric_col)
             narrative = per_q_narratives.get(q, "") or ""
             res = _validate_narrative(narrative, allowed, years)
+
             if not res["ok"]:
                 any_issue = True
                 nums = ", ".join(str(x) for x in sorted(res["bad_numbers"]))
-                st.warning(f"{q}: potential mismatches detected ({nums}).")
+                if nums:
+                    details.append(("warning", f"{q}: potential mismatches detected ({nums})."))
+                else:
+                    details.append(("warning", f"{q}: potential mismatches detected."))
             else:
-                st.caption(f"{q}: no numeric inconsistencies detected.")
+                details.append(("caption", f"{q}: no numeric inconsistencies detected."))
         except Exception as e:
-            st.caption(f"{q}: fact-check skipped ({type(e).__name__}).")
-    if not any_issue:
-        # Add an explicit green check mark at the end, as requested
-        st.success("All AI statements appear consistent with the visible tables (numbers checked; years ignored). ✅")
+            # Advisory path should never hard-fail the UI
+            details.append(("caption", f"{q}: fact-check skipped ({type(e).__name__})."))
+
+    title = "AI Fact Check — data validated ✅" if not any_issue else "AI Fact Check — issues detected ❌"
+
+    with st.expander(title, expanded=False):
+        if not any_issue:
+            st.success("The data points in the summaries were validated and correspond to the data provided.")
+        else:
+            st.error("Some AI statements may not match the tables. Review details below.")
+
+        # Per-question details
+        for level, msg in details:
+            if level == "warning":
+                st.warning(msg)
+            else:
+                st.caption(msg)
 
 # ----- main renderer ----------------------------------------------------------
 
@@ -520,7 +543,7 @@ def tabs_summary_and_per_q(
                 st.session_state["menu1_ai_narr_per_q"] = per_q_narratives
                 st.session_state["menu1_ai_narr_overall"] = overall_narrative
 
-            # Fact-check (advisory)
+            # AI Fact Check (now in expander with dynamic title)
             try:
                 _render_factcheck_advisory(
                     tab_labels=tab_labels,
@@ -529,7 +552,7 @@ def tabs_summary_and_per_q(
                     per_q_narratives=per_q_narratives,
                 )
             except Exception:
-                st.caption("Fact check unavailable for this run.")
+                st.caption("AI Fact Check unavailable for this run.")
 
     # ---------------------- Per-question tabs ----------------------
     for idx, qcode in enumerate(tab_labels, start=1):
@@ -617,9 +640,8 @@ def tabs_summary_and_per_q(
             for k in list(st.session_state.keys()):
                 if k.startswith("kwhit_") or k.startswith("sel_"):
                     st.session_state.pop(k, None)
-            # --- Surgical addition: also clear global paginated selections ---
+            # ensure global paginated selections are cleared too
             st.session_state.pop("menu1_global_hits_selected", None)
-            # -----------------------------------------------------------------
             st.session_state.pop("menu1_ai_cache", None)
             st.session_state.pop("menu1_ai_narr_per_q", None)
             st.session_state.pop("menu1_ai_narr_overall", None)
