@@ -178,8 +178,8 @@ def question_picker(qdf: pd.DataFrame) -> List[str]:
 
     # ---- Keywords/theme Search (no expander) --------------------------------
     # Removed the old heading: **Keywords/theme Search**
-    # Render the sibling subtitle as H3 to match "Select from the list"
-    st.markdown("<h3 style='margin:0.25rem 0;'>Search questionnaire by keywords or theme</h3>", unsafe_allow_html=True)
+    # Match the sibling subtitle format exactly (bold markdown):
+    st.markdown("**Search questionnaire by keywords or theme**")
     query = st.text_input(
         "Enter keywords (e.g., harassment, recognition, onboarding)",
         key=K_KW_QUERY,
@@ -482,7 +482,8 @@ def demographic_picker(demo_df: pd.DataFrame):
     if code_col and LABEL_COL in df_cat.columns:
         codes = df_cat[code_col].astype(str).tolist()
         labels = df_cat[LABEL_COL].astype(str).tolist()  # fixed
-        keep = [(c, l) for c, l in zip(codes, labels) if str(c).strip() != ""]
+        keep = [(c, l) for c, l in zip(codes, labels) if str(c).strip() != ""
+        ]
         codes = [c for c, _ in keep]
         disp_map = {c: l for c, _ in keep}
         return demo_selection, sub_selection, codes, disp_map, True
