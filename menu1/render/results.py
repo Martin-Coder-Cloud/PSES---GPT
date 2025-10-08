@@ -376,7 +376,7 @@ def _render_data_validation_subsection(
         except Exception as e:
             details.append(("caption", f"{q}: validation skipped ({type(e).__name__})."))
 
-    # Subsection heading
+    # Subsection heading (smaller than AI Summary)
     st.markdown("### AI Data Validation")
 
     # One-sentence outcome (green check or red cross)
@@ -437,6 +437,9 @@ def tabs_summary_and_per_q(
         "pivot_sig": _hash_key(pivot),
     }
     ai_key = "menu1_ai_" + _hash_key(ai_sig)
+
+    # --- NEW: Title above the tabulations (same size as AI Summary)
+    st.markdown("## Results")
 
     # Tabs: Summary + per-question + Technical notes (at end)
     tab_titles = ["Summary table"] + tab_labels + ["Technical notes"]
@@ -573,7 +576,7 @@ def tabs_summary_and_per_q(
             st.session_state["menu1_ai_narr_per_q"] = per_q_narratives
             st.session_state["menu1_ai_narr_overall"] = overall_narrative
 
-        # --- New: AI Data Validation subsection (under AI Summary) ---
+        # --- AI Data Validation subsection (under AI Summary) ---
         try:
             _render_data_validation_subsection(
                 tab_labels=tab_labels,
