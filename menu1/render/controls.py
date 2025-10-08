@@ -183,7 +183,7 @@ def question_picker(qdf: pd.DataFrame) -> List[str]:
         "Enter keywords (e.g., harassment, recognition, onboarding)",
         key=K_KW_QUERY,
         label_visibility="collapsed",
-        placeholder='Type keywords like “career advancement”, “harassment”, “recognition”…',
+        placeholder='Type keywords like "career advancement", "harassment", "recognition"...',
     )
 
     # Buttons row (Search & Clear)
@@ -300,7 +300,7 @@ def question_picker(qdf: pd.DataFrame) -> List[str]:
                     gmap = dict(st.session_state.get(K_GLOBAL_HITS_SELECTED, {}))
                     for rec in sem_hits[start:end]:
                         code = rec["code"]; text = rec["text"]; score = rec.get("score", 0.0)
-                        label = f"{code} — {text}  _(score: {score:.2f})_"
+                        label = f"{code} — {text}  (score: {score:.2f})"
                         key = f"kwhit_{code}"
                         if key in st.session_state:
                             checked = st.checkbox(label, key=key)
@@ -321,9 +321,9 @@ def question_picker(qdf: pd.DataFrame) -> List[str]:
             last_q = (st.session_state.get(K_LAST_QUERY) or "").strip()
             safe_q = last_q if last_q else "your search"
             st.warning(
-                f'No questions matched “{safe_q}”. '
-                'Try broader/different keywords (e.g., synonyms), split phrases, '
-                'or search by a question code like “Q01”.'
+                f'No questions matched "{safe_q}". '
+                "Try broader/different keywords (e.g., synonyms), split phrases, "
+                'or search by a question code like "Q01".'
             )
 
     # ---------- Merge selections, cap 5 ---------- (unchanged)
@@ -400,7 +400,7 @@ def question_picker(qdf: pd.DataFrame) -> List[str]:
         st.session_state[K_SCROLL_TO_STEP2] = False
 
     st.markdown("## Step 2: Select survey year(s)")
-    # (spacing) ONE standard spacing before the “All years” checkbox
+    # (spacing) ONE standard spacing before the "All years" checkbox
     st.markdown("<div style='height: 1em'></div>", unsafe_allow_html=True)
 
     st.session_state.setdefault(K_SELECT_ALL_YEARS, True)
@@ -439,8 +439,6 @@ def question_picker(qdf: pd.DataFrame) -> List[str]:
 
 # ---- Years (unchanged signature; used by caller) ----------------------------
 def year_picker() -> List[int]:
-    # This function now only returns the selected years computed in question_picker()
-    # to preserve the original external API, we recompute here identically.
     selected_years: List[int] = []
     for yr in DEFAULT_YEARS:
         if st.session_state.get(f"year_{yr}", False):
@@ -498,7 +496,7 @@ def demographic_picker(demo_df: pd.DataFrame):
 
     if code_col and LABEL_COL in df_cat.columns:
         codes = df_cat[code_col].astype(str).tolist()
-        labels = df_cat[LABEL_COL].astype str().tolist()
+        labels = df_cat[LABEL_COL].astype(str).tolist()  # fixed
         keep = [(c, l) for c, l in zip(codes, labels) if str(c).strip() != ""]
         codes = [c for c, _ in keep]
         disp_map = {c: l for c, _ in keep}
