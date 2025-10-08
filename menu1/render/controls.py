@@ -181,7 +181,6 @@ def question_picker(qdf: pd.DataFrame) -> List[str]:
     st.markdown("<div class='pses-h3'>Select from the list</div>", unsafe_allow_html=True)
 
     def _on_list_change_scroll_step2():
-        # Trigger a smooth scroll to Step 2 on next render
         st.session_state[K_SCROLL_TO_STEP2] = True
 
     st.multiselect(
@@ -195,17 +194,16 @@ def question_picker(qdf: pd.DataFrame) -> List[str]:
     )
     st.markdown("</div>", unsafe_allow_html=True)
 
-    # ---- “or” (H3 + spacer, still indented) -------------------------------------------------
+    # ---- “or” (H3; kept tight, no extra spacer) ---------------------------------------------
     st.markdown("<div class='pses-block'>", unsafe_allow_html=True)
     st.markdown("<div class='pses-h3'>or</div>", unsafe_allow_html=True)
-    # 1em spacer after "or"
-    st.markdown("<div style='height: 1em'></div>", unsafe_allow_html=True)
+    # removed the previous <div style='height: 1em'></div> here to avoid a double gap
     st.markdown("</div>", unsafe_allow_html=True)
 
     # ---- Search questionnaire by keywords or theme (H3 + indented block) --------------------
     st.markdown("<div class='pses-block'>", unsafe_allow_html=True)
     st.markdown("<div class='pses-h3'>Search questionnaire by keywords or theme</div>", unsafe_allow_html=True)
-    # 1em spacer before the text input
+    # keep 1em spacer before the text input for readability
     st.markdown("<div style='height: 1em'></div>", unsafe_allow_html=True)
 
     query = st.text_input(
@@ -220,7 +218,6 @@ def question_picker(qdf: pd.DataFrame) -> List[str]:
     with bcol1:
         if st.button("Search the questionnaire", key=K_FIND_HITS_BTN):
             q = (query or "").strip()
-            # Reset paginated hit selections on a *new* search universe
             st.session_state[K_GLOBAL_HITS_SELECTED] = {}
             if not q:
                 st.session_state[K_SEARCH_DONE] = True
@@ -232,11 +229,9 @@ def question_picker(qdf: pd.DataFrame) -> List[str]:
                 t0 = time.time()
                 hits_df = _run_keyword_search(qdf, q, top_k=120)
 
-                # Diagnostics snapshots
                 st.session_state[K_AI_ENGINE]  = get_embedding_status()
                 st.session_state[K_AI_METRICS] = get_last_search_metrics()
 
-                # Record last query + results
                 st.session_state[K_SEARCH_DONE] = True
                 st.session_state[K_LAST_QUERY] = q
                 if isinstance(hits_df, pd.DataFrame) and not hits_df.empty:
@@ -246,7 +241,6 @@ def question_picker(qdf: pd.DataFrame) -> List[str]:
                 st.session_state[K_HITS_PAGE_LEX] = 0
                 st.session_state[K_HITS_PAGE_SEM] = 0
 
-                # Mark timing in diagnostics (best-effort)
                 try:
                     from .diagnostics import mark_last_query  # type: ignore
                     metrics = st.session_state[K_AI_METRICS] or {}
@@ -357,14 +351,12 @@ def question_picker(qdf: pd.DataFrame) -> List[str]:
     # ---------- Merge selections, cap 5 ----------
     combined_order: List[str] = []
 
-    # Use the global map (preserves order by walking K_HITS list)
     gmap_all = st.session_state.get(K_GLOBAL_HITS_SELECTED, {})
     for rec in st.session_state.get(K_HITS, []):
         code = rec["code"]
         if gmap_all.get(code, False) and code not in combined_order:
             combined_order.append(code)
 
-    # Merge in multiselect (official list) picks, preserving order
     for d in st.session_state.get(K_MULTI_QUESTIONS, []):
         c = display_to_code.get(d)
         if c and c not in combined_order:
@@ -385,18 +377,14 @@ def question_picker(qdf: pd.DataFrame) -> List[str]:
             label = code_to_display.get(code, code)
             keep = st.checkbox(label, value=True, key=f"sel_{code}")
             if not keep:
-                # Remove from selected list
                 updated = [c for c in updated if c != code]
-                # Uncheck corresponding hit checkbox if present
                 hk = f"kwhit_{code}"
                 if hk in st.session_state:
                     st.session_state[hk] = False
-                # Also update global selection map
                 gmap = dict(st.session_state.get(K_GLOBAL_HITS_SELECTED, {}))
                 if code in gmap:
                     gmap[code] = False
                     st.session_state[K_GLOBAL_HITS_SELECTED] = gmap
-                # Defer multiselect sync
                 disp = code_to_display.get(code)
                 if disp:
                     current_displays = list(st.session_state.get(K_MULTI_QUESTIONS, []))
@@ -426,7 +414,7 @@ def question_picker(qdf: pd.DataFrame) -> List[str]:
         st.session_state[K_SCROLL_TO_STEP2] = False
 
     st.markdown("<div class='pses-h2'>Step 2: Select survey year(s)</div>", unsafe_allow_html=True)
-    # 1em spacer before “All years”
+    # keep 1em spacer before “All years”
     st.markdown("<div style='height: 1em'></div>", unsafe_allow_html=True)
 
     st.session_state.setdefault(K_SELECT_ALL_YEARS, True)
@@ -451,9 +439,7 @@ def question_picker(qdf: pd.DataFrame) -> List[str]:
 
     # ============================ Step 3 (H2) ================================================
     st.markdown("<div class='pses-h2'>Step 3: Select a demographic category (optional)</div>", unsafe_allow_html=True)
-    # Note: The detailed pickers live in demographic_picker(); we don't render a second H2 there.
 
-    # Return selected codes (API unchanged)
     return st.session_state[K_SELECTED_CODES]
 
 # ---- Years (unchanged signature; used by caller) ----------------------------
@@ -477,7 +463,6 @@ def demographic_picker(demo_df: pd.DataFrame):
 
     sub_selection: Optional[str] = None
     if demo_selection != "All respondents":
-        # Subtitle + indented block
         st.markdown("<div class='pses-block'>", unsafe_allow_html=True)
         st.markdown(f"<div class='pses-h3'>Subgroup ({demo_selection}) (optional)</div>", unsafe_allow_html=True)
         sub_items = demo_df.loc[demo_df[DEMO_CAT_COL] == demo_selection, LABEL_COL].dropna().astype(str).unique().tolist()
