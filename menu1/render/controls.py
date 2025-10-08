@@ -147,6 +147,18 @@ def question_picker(qdf: pd.DataFrame) -> List[str]:
     # Indentation via wrapper div (matches your existing structure)
     st.markdown("<div id='menu1_indent' style='margin-left:8%'>", unsafe_allow_html=True)
 
+    # --- Scoped spacing tweak for Step 1 checkboxes (tighten vertical gaps) ---
+    st.markdown(
+        """
+        <style>
+          /* Only affect checkboxes within Step 1 wrapper */
+          #menu1_indent div[data-testid="stCheckbox"] { margin-bottom: 0.25rem; }
+          #menu1_indent div[data-testid="stCheckbox"] label { line-height: 1.15; }
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+
     # ---- Select from the list (no expander) ---------------------------------
     st.markdown("**Select from the list**")
 
@@ -165,8 +177,8 @@ def question_picker(qdf: pd.DataFrame) -> List[str]:
     )
 
     # ---- Keywords/theme Search (no expander) --------------------------------
-    st.markdown("**Keywords/theme Search**")
-    st.markdown("<div class='field-label'>Search questionnaire by keywords or theme</div>", unsafe_allow_html=True)
+    # Removed the old heading: **Keywords/theme Search**
+    st.markdown("<div class='field-label' style='margin-top:0.25rem;'>Search questionnaire by keywords or theme</div>", unsafe_allow_html=True)
     query = st.text_input(
         "Enter keywords (e.g., harassment, recognition, onboarding)",
         key=K_KW_QUERY,
