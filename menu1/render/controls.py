@@ -8,12 +8,13 @@ import streamlit as st
 import streamlit.components.v1 as components  # for a tiny one-time scrollIntoView
 
 # ─────────────────────────────────────────────────────────────────────────────
-#  Compact styles for H2/H3 and indented content block
+#  Compact styles for H2/H3 and tighter vertical rhythm around widgets
 # ─────────────────────────────────────────────────────────────────────────────
 def ensure_pses_styles():
     st.markdown(
         """
         <style>
+          /* Heading scales */
           .pses-h2 {
             font-size: 1.08rem;
             font-weight: 600;
@@ -23,12 +24,30 @@ def ensure_pses_styles():
           .pses-h3 {
             font-size: 1.0rem;
             font-weight: 550;
-            margin: 0.45em 0 0.2em 0;
+            /* tighter top/bottom margins to reduce vertical whitespace */
+            margin: 0.20em 0 0.10em 0;
             color: #333;
           }
           .pses-block {
             margin-left: 8%;
             padding-left: 0.1rem;
+          }
+
+          /* ── Tighter spacing around Streamlit widgets (key to shrinking gaps) ── */
+          /* Multiselect block */
+          div[data-testid="stMultiselect"] {
+            margin-top: 0.15rem !important;
+            margin-bottom: 0.25rem !important; /* reduce gap before "or" */
+          }
+          /* Text input block */
+          div[data-testid="stTextInput"] {
+            margin-top: 0.15rem !important;
+            margin-bottom: 0.25rem !important; /* reduce gap under heading */
+          }
+          /* Buttons row container */
+          div.row-widget.stButton, div[data-testid="stHorizontalBlock"] .stButton {
+            margin-top: 0.25rem !important;
+            margin-bottom: 0.25rem !important;
           }
         </style>
         """,
@@ -114,10 +133,7 @@ def _clear_menu1_state():
     st.session_state[K_LAST_QUERY]      = ""
     st.session_state[K_HITS_PAGE_LEX]   = 0
     st.session_state[K_HITS_PAGE_SEM]   = 0
-    # clear global paginated selections
     st.session_state[K_GLOBAL_HITS_SELECTED] = {}
-
-    # remove dynamic checkboxes
     for k in list(st.session_state.keys()):
         if k.startswith("kwhit_") or k.startswith("sel_"):
             try:
@@ -132,7 +148,6 @@ def _maybe_auto_reset_on_mount():
     if nonce is not None and nonce != seen:
         _clear_menu1_state()
         st.session_state[K_SEEN_NONCE] = nonce
-        # no rerun here
 
 # ---- Main controls ----------------------------------------------------------
 def question_picker(qdf: pd.DataFrame) -> List[str]:
@@ -155,18 +170,14 @@ def question_picker(qdf: pd.DataFrame) -> List[str]:
     st.session_state.setdefault(K_SCROLL_TO_STEP2, False)
     st.session_state.setdefault(K_GLOBAL_HITS_SELECTED, {})
 
-    # 1) Apply deferred CLEAR before any widgets are created
     if st.session_state.get(K_DO_CLEAR, False):
         _clear_menu1_state()
-        st.session_state[K_DO_CLEAR] = False  # consume
-
-    # 2) Auto-reset on mount
+        st.session_state[K_DO_CLEAR] = False
     _maybe_auto_reset_on_mount()
 
-    # 3) Apply deferred MULTISET sync before the multiselect is created
     if st.session_state.get(K_SYNC_MULTI) is not None:
         st.session_state[K_MULTI_QUESTIONS] = list(st.session_state[K_SYNC_MULTI])  # type: ignore
-        st.session_state[K_SYNC_MULTI] = None  # consume
+        st.session_state[K_SYNC_MULTI] = None
 
     code_to_display = dict(zip(qdf["code"], qdf["display"]))
     display_to_code = {v: k for k, v in code_to_display.items()}
@@ -194,17 +205,17 @@ def question_picker(qdf: pd.DataFrame) -> List[str]:
     )
     st.markdown("</div>", unsafe_allow_html=True)
 
-    # ---- “or” (H3; kept tight, no extra spacer) ---------------------------------------------
+    # ---- “or” (H3; *no extra spacer*, kept very tight) --------------------------------------
     st.markdown("<div class='pses-block'>", unsafe_allow_html=True)
-    st.markdown("<div class='pses-h3'>or</div>", unsafe_allow_html=True)
-    # removed the previous <div style='height: 1em'></div> here to avoid a double gap
+    st.markdown("<div class='pses-h3' style='margin-top:0.10em;margin-bottom:0.05em;'>or</div>", unsafe_allow_html=True)
+    # no spacer here on purpose
     st.markdown("</div>", unsafe_allow_html=True)
 
     # ---- Search questionnaire by keywords or theme (H3 + indented block) --------------------
     st.markdown("<div class='pses-block'>", unsafe_allow_html=True)
-    st.markdown("<div class='pses-h3'>Search questionnaire by keywords or theme</div>", unsafe_allow_html=True)
-    # keep 1em spacer before the text input for readability
-    st.markdown("<div style='height: 1em'></div>", unsafe_allow_html=True)
+    st.markdown("<div class='pses-h3' style='margin-top:0.10em;margin-bottom:0.05em;'>Search questionnaire by keywords or theme</div>", unsafe_allow_html=True)
+    # removed the previous 1em spacer to keep this tight
+    # st.markdown("<div style='height: 1em'></div>", unsafe_allow_html=True)
 
     query = st.text_input(
         "Enter keywords (e.g., harassment, recognition, onboarding)",
@@ -228,10 +239,8 @@ def question_picker(qdf: pd.DataFrame) -> List[str]:
             else:
                 t0 = time.time()
                 hits_df = _run_keyword_search(qdf, q, top_k=120)
-
                 st.session_state[K_AI_ENGINE]  = get_embedding_status()
                 st.session_state[K_AI_METRICS] = get_last_search_metrics()
-
                 st.session_state[K_SEARCH_DONE] = True
                 st.session_state[K_LAST_QUERY] = q
                 if isinstance(hits_df, pd.DataFrame) and not hits_df.empty:
@@ -240,7 +249,6 @@ def question_picker(qdf: pd.DataFrame) -> List[str]:
                     st.session_state[K_HITS] = []
                 st.session_state[K_HITS_PAGE_LEX] = 0
                 st.session_state[K_HITS_PAGE_SEM] = 0
-
                 try:
                     from .diagnostics import mark_last_query  # type: ignore
                     metrics = st.session_state[K_AI_METRICS] or {}
@@ -257,7 +265,6 @@ def question_picker(qdf: pd.DataFrame) -> List[str]:
                     mark_last_query(started_ts=t0, finished_ts=time.time(), engine="hybrid_search", extra=extra)
                 except Exception:
                     pass
-
     with bcol2:
         if st.button("Clear search & selections", key="menu1_clear_all"):
             st.session_state[K_DO_CLEAR] = True
@@ -270,7 +277,6 @@ def question_picker(qdf: pd.DataFrame) -> List[str]:
         if hits:
             lex_hits = [r for r in hits if r.get("origin","lex") == "lex"]
             sem_hits = [r for r in hits if r.get("origin","lex") == "sem"]
-
             tabs = st.tabs(["Lexical matches", "Other matches (semantic)"])
 
             # Lexical tab
@@ -350,18 +356,15 @@ def question_picker(qdf: pd.DataFrame) -> List[str]:
 
     # ---------- Merge selections, cap 5 ----------
     combined_order: List[str] = []
-
     gmap_all = st.session_state.get(K_GLOBAL_HITS_SELECTED, {})
     for rec in st.session_state.get(K_HITS, []):
         code = rec["code"]
         if gmap_all.get(code, False) and code not in combined_order:
             combined_order.append(code)
-
     for d in st.session_state.get(K_MULTI_QUESTIONS, []):
         c = display_to_code.get(d)
         if c and c not in combined_order:
             combined_order.append(c)
-
     if len(combined_order) > 5:
         combined_order = combined_order[:5]
         st.warning("Limit is 5 questions; extra selections were ignored.")
@@ -400,7 +403,6 @@ def question_picker(qdf: pd.DataFrame) -> List[str]:
 
     # ============================ Step 2 (H2) ================================================
     st.markdown('<div id="step2_anchor"></div>', unsafe_allow_html=True)
-
     if st.session_state.get(K_SCROLL_TO_STEP2, False):
         components.html(
             """
@@ -414,12 +416,11 @@ def question_picker(qdf: pd.DataFrame) -> List[str]:
         st.session_state[K_SCROLL_TO_STEP2] = False
 
     st.markdown("<div class='pses-h2'>Step 2: Select survey year(s)</div>", unsafe_allow_html=True)
-    # keep 1em spacer before “All years”
+    # keep 1em spacer before “All years” for clarity
     st.markdown("<div style='height: 1em'></div>", unsafe_allow_html=True)
 
     st.session_state.setdefault(K_SELECT_ALL_YEARS, True)
     select_all = st.checkbox("All years", key=K_SELECT_ALL_YEARS)
-
     if select_all:
         for yr in DEFAULT_YEARS:
             st.session_state.setdefault(f"year_{yr}", True)
