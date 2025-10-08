@@ -7,6 +7,34 @@ import pandas as pd
 import streamlit as st
 import streamlit.components.v1 as components  # for a tiny one-time scrollIntoView
 
+# ─────────────────────────────────────────────────────────────────────────────
+#  Compact styles for H2/H3 and indented content block
+# ─────────────────────────────────────────────────────────────────────────────
+def ensure_pses_styles():
+    st.markdown(
+        """
+        <style>
+          .pses-h2 {
+            font-size: 1.08rem;
+            font-weight: 600;
+            margin: 0.6em 0 0.2em 0;
+            color: #222;
+          }
+          .pses-h3 {
+            font-size: 1.0rem;
+            font-weight: 550;
+            margin: 0.45em 0 0.2em 0;
+            color: #333;
+          }
+          .pses-block {
+            margin-left: 8%;
+            padding-left: 0.1rem;
+          }
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+
 try:
     from utils.hybrid_search import hybrid_question_search, get_embedding_status, get_last_search_metrics  # type: ignore
 except Exception:
@@ -108,6 +136,8 @@ def _maybe_auto_reset_on_mount():
 
 # ---- Main controls ----------------------------------------------------------
 def question_picker(qdf: pd.DataFrame) -> List[str]:
+    ensure_pses_styles()
+
     # seed session
     st.session_state.setdefault(K_MULTI_QUESTIONS, [])
     st.session_state.setdefault(K_SELECTED_CODES, [])
@@ -141,15 +171,14 @@ def question_picker(qdf: pd.DataFrame) -> List[str]:
     code_to_display = dict(zip(qdf["code"], qdf["display"]))
     display_to_code = {v: k for k, v in code_to_display.items()}
 
-    # ============================ Step 1 (Title 2 / H2, no indent) ============================
-    st.markdown("## Step 1: Pick up to 5 survey questions")
-
-    # (spacing) ONE standard spacing before "Select from the list"
+    # ============================ Step 1 (H2) ================================================
+    st.markdown("<div class='pses-h2'>Step 1: Pick up to 5 survey questions</div>", unsafe_allow_html=True)
+    # 1em spacer before "Select from the list"
     st.markdown("<div style='height: 1em'></div>", unsafe_allow_html=True)
 
-    # ---- Select from the list (Title 3 / H3, indented with content) --------------------------
-    st.markdown("<div style='margin-left:8%;'>", unsafe_allow_html=True)
-    st.markdown("### Select from the list")
+    # ---- Select from the list (H3 + indented block) -----------------------------------------
+    st.markdown("<div class='pses-block'>", unsafe_allow_html=True)
+    st.markdown("<div class='pses-h3'>Select from the list</div>", unsafe_allow_html=True)
 
     def _on_list_change_scroll_step2():
         # Trigger a smooth scroll to Step 2 on next render
@@ -166,24 +195,24 @@ def question_picker(qdf: pd.DataFrame) -> List[str]:
     )
     st.markdown("</div>", unsafe_allow_html=True)
 
-    # ---- “or” (Title 3 / H3, left-aligned with same indent) ---------------------------------
-    st.markdown("<div style='margin-left:8%;'>", unsafe_allow_html=True)
-    st.markdown("### or")
-    # (spacing) ONE standard spacing after "or"
+    # ---- “or” (H3 + spacer, still indented) -------------------------------------------------
+    st.markdown("<div class='pses-block'>", unsafe_allow_html=True)
+    st.markdown("<div class='pses-h3'>or</div>", unsafe_allow_html=True)
+    # 1em spacer after "or"
     st.markdown("<div style='height: 1em'></div>", unsafe_allow_html=True)
     st.markdown("</div>", unsafe_allow_html=True)
 
-    # ---- Keywords/theme Search (Title 3 / H3, indented with content) ------------------------
-    st.markdown("<div style='margin-left:8%;'>", unsafe_allow_html=True)
-    st.markdown("### Search questionnaire by keywords or theme")
-    # (spacing) ONE standard spacing before the text input
+    # ---- Search questionnaire by keywords or theme (H3 + indented block) --------------------
+    st.markdown("<div class='pses-block'>", unsafe_allow_html=True)
+    st.markdown("<div class='pses-h3'>Search questionnaire by keywords or theme</div>", unsafe_allow_html=True)
+    # 1em spacer before the text input
     st.markdown("<div style='height: 1em'></div>", unsafe_allow_html=True)
 
     query = st.text_input(
         "Enter keywords (e.g., harassment, recognition, onboarding)",
         key=K_KW_QUERY,
         label_visibility="collapsed",
-        placeholder='Type keywords like "career advancement", "harassment", "recognition"...',
+        placeholder='Type keywords like “career advancement”, “harassment”, “recognition”…',
     )
 
     # Buttons row (Search & Clear)
@@ -237,12 +266,11 @@ def question_picker(qdf: pd.DataFrame) -> List[str]:
 
     with bcol2:
         if st.button("Clear search & selections", key="menu1_clear_all"):
-            # Defer the clear to next run to avoid widget mutation error
             st.session_state[K_DO_CLEAR] = True
             st.experimental_rerun()
     st.markdown("</div>", unsafe_allow_html=True)
 
-    # ---- Search results (no expander; indented under Step 1 context already) ----------------
+    # ---- Search results (tabs) ---------------------------------------------------------------
     hits = st.session_state.get(K_HITS, [])
     if st.session_state.get(K_SEARCH_DONE, False):
         if hits:
@@ -300,7 +328,7 @@ def question_picker(qdf: pd.DataFrame) -> List[str]:
                     gmap = dict(st.session_state.get(K_GLOBAL_HITS_SELECTED, {}))
                     for rec in sem_hits[start:end]:
                         code = rec["code"]; text = rec["text"]; score = rec.get("score", 0.0)
-                        label = f"{code} — {text}  (score: {score:.2f})"
+                        label = f"{code} — {text}  _(score: {score:.2f})_"
                         key = f"kwhit_{code}"
                         if key in st.session_state:
                             checked = st.checkbox(label, key=key)
@@ -321,12 +349,12 @@ def question_picker(qdf: pd.DataFrame) -> List[str]:
             last_q = (st.session_state.get(K_LAST_QUERY) or "").strip()
             safe_q = last_q if last_q else "your search"
             st.warning(
-                f'No questions matched "{safe_q}". '
-                "Try broader/different keywords (e.g., synonyms), split phrases, "
-                'or search by a question code like "Q01".'
+                f'No questions matched “{safe_q}”. '
+                'Try broader/different keywords (e.g., synonyms), split phrases, '
+                'or search by a question code like “Q01”.'
             )
 
-    # ---------- Merge selections, cap 5 ---------- (unchanged)
+    # ---------- Merge selections, cap 5 ----------
     combined_order: List[str] = []
 
     # Use the global map (preserves order by walking K_HITS list)
@@ -347,10 +375,10 @@ def question_picker(qdf: pd.DataFrame) -> List[str]:
         st.warning("Limit is 5 questions; extra selections were ignored.")
     st.session_state[K_SELECTED_CODES] = combined_order
 
-    # ---- Selected list (Title 3 / H3, indented with content) -------------------------------
+    # ---- Selected questions (H3 + indented block) -------------------------------------------
     if st.session_state[K_SELECTED_CODES]:
-        st.markdown("<div style='margin-left:8%;'>", unsafe_allow_html=True)
-        st.markdown("### Selected questions")
+        st.markdown("<div class='pses-block'>", unsafe_allow_html=True)
+        st.markdown("<div class='pses-h3'>Selected questions</div>", unsafe_allow_html=True)
         updated = list(st.session_state[K_SELECTED_CODES])
 
         for code in list(updated):
@@ -368,7 +396,7 @@ def question_picker(qdf: pd.DataFrame) -> List[str]:
                 if code in gmap:
                     gmap[code] = False
                     st.session_state[K_GLOBAL_HITS_SELECTED] = gmap
-                # Defer multiselect sync: compute the new display list and apply next run
+                # Defer multiselect sync
                 disp = code_to_display.get(code)
                 if disp:
                     current_displays = list(st.session_state.get(K_MULTI_QUESTIONS, []))
@@ -382,11 +410,9 @@ def question_picker(qdf: pd.DataFrame) -> List[str]:
             st.session_state[K_SELECTED_CODES] = updated
         st.markdown("</div>", unsafe_allow_html=True)
 
-    # ============================ Step 2 (Title 2 / H2, no indent) ============================
-    # anchor for smooth scroll
+    # ============================ Step 2 (H2) ================================================
     st.markdown('<div id="step2_anchor"></div>', unsafe_allow_html=True)
 
-    # One-time scroll if user selected from the list
     if st.session_state.get(K_SCROLL_TO_STEP2, False):
         components.html(
             """
@@ -399,8 +425,8 @@ def question_picker(qdf: pd.DataFrame) -> List[str]:
         )
         st.session_state[K_SCROLL_TO_STEP2] = False
 
-    st.markdown("## Step 2: Select survey year(s)")
-    # (spacing) ONE standard spacing before the "All years" checkbox
+    st.markdown("<div class='pses-h2'>Step 2: Select survey year(s)</div>", unsafe_allow_html=True)
+    # 1em spacer before “All years”
     st.markdown("<div style='height: 1em'></div>", unsafe_allow_html=True)
 
     st.session_state.setdefault(K_SELECT_ALL_YEARS, True)
@@ -411,7 +437,6 @@ def question_picker(qdf: pd.DataFrame) -> List[str]:
             st.session_state.setdefault(f"year_{yr}", True)
             st.session_state[f"year_{yr}"] = True
     else:
-        # Explicitly clear every year checkbox when "All years" is OFF
         for yr in DEFAULT_YEARS:
             st.session_state[f"year_{yr}"] = False
 
@@ -424,17 +449,11 @@ def question_picker(qdf: pd.DataFrame) -> List[str]:
                 selected_years.append(yr)
     years_sorted = sorted(selected_years)
 
-    # ============================ Step 3 (Title 2 / H2, no indent) ============================
-    st.markdown("## Step 3: Select a demographic category (optional)")
-    DEMO_CAT_COL = "DEMCODE Category"
-    LABEL_COL = "DESCRIP_E"
+    # ============================ Step 3 (H2) ================================================
+    st.markdown("<div class='pses-h2'>Step 3: Select a demographic category (optional)</div>", unsafe_allow_html=True)
+    # Note: The detailed pickers live in demographic_picker(); we don't render a second H2 there.
 
-    demo_categories = ["All respondents"] + sorted(pd.Series(qdf.get(DEMO_CAT_COL, pd.Series(dtype=str))).dropna().astype(str).unique().tolist()) \
-        if DEMO_CAT_COL in qdf.columns else ["All respondents"]
-
-    # NOTE: The demographics picker relies on a separate demo_df; this function returns values, not state.
-    # We'll keep the original API below (demographic_picker still exists) for downstream compatibility.
-
+    # Return selected codes (API unchanged)
     return st.session_state[K_SELECTED_CODES]
 
 # ---- Years (unchanged signature; used by caller) ----------------------------
@@ -445,9 +464,9 @@ def year_picker() -> List[int]:
             selected_years.append(yr)
     return sorted(selected_years)
 
-# ---- Demographics (format aligned; behavior unchanged) ----------------------
+# ---- Demographics (no H2 here to avoid duplication) ------------------------
 def demographic_picker(demo_df: pd.DataFrame):
-    st.markdown("## Step 3: Select a demographic category (optional)")
+    ensure_pses_styles()
 
     DEMO_CAT_COL = "DEMCODE Category"
     LABEL_COL = "DESCRIP_E"
@@ -458,9 +477,9 @@ def demographic_picker(demo_df: pd.DataFrame):
 
     sub_selection: Optional[str] = None
     if demo_selection != "All respondents":
-        # Title 3 + content block (indented)
-        st.markdown("<div style='margin-left:8%;'>", unsafe_allow_html=True)
-        st.markdown(f"### Subgroup ({demo_selection}) (optional)")
+        # Subtitle + indented block
+        st.markdown("<div class='pses-block'>", unsafe_allow_html=True)
+        st.markdown(f"<div class='pses-h3'>Subgroup ({demo_selection}) (optional)</div>", unsafe_allow_html=True)
         sub_items = demo_df.loc[demo_df[DEMO_CAT_COL] == demo_selection, LABEL_COL].dropna().astype(str).unique().tolist()
         sub_items = sorted(sub_items)
         sub_key = f"sub_{demo_selection.replace(' ', '_')}"
@@ -496,7 +515,7 @@ def demographic_picker(demo_df: pd.DataFrame):
 
     if code_col and LABEL_COL in df_cat.columns:
         codes = df_cat[code_col].astype(str).tolist()
-        labels = df_cat[LABEL_COL].astype(str).tolist()  # fixed
+        labels = df_cat[LABEL_COL].astype(str).tolist()
         keep = [(c, l) for c, l in zip(codes, labels) if str(c).strip() != ""]
         codes = [c for c, _ in keep]
         disp_map = {c: l for c, _ in keep}
