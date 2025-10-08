@@ -341,7 +341,7 @@ def _render_data_validation_subsection(
 ) -> None:
     """
     Renders a subsection under AI Summary:
-      • Heading: "AI Data Validation"
+      • Title line: bold text (matches “Select from the list” format)
       • One-sentence outcome with ✅ (or ❌ if issues)
       • Dropdown to view per-question details
     """
@@ -376,8 +376,8 @@ def _render_data_validation_subsection(
         except Exception as e:
             details.append(("caption", f"{q}: validation skipped ({type(e).__name__})."))
 
-    # Subsection heading (smaller than AI Summary)
-    st.markdown("### AI Data Validation")
+    # Title line (match "Select from the list" format)
+    st.markdown("**AI Data Validation**")
 
     # One-sentence outcome (green check or red cross)
     if not any_issue:
@@ -438,7 +438,7 @@ def tabs_summary_and_per_q(
     }
     ai_key = "menu1_ai_" + _hash_key(ai_sig)
 
-    # --- Title above the tabulations (same size as AI Summary)
+    # Title above the tabulations (same size as AI Summary)
     st.header("Results")
 
     # Tabs: Summary + per-question + Technical notes (at end)
