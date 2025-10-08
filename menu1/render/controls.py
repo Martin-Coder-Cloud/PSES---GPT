@@ -486,7 +486,8 @@ def demographic_picker(demo_df: pd.DataFrame):
         labels = df_cat[LABEL_COL].astype(str).tolist()  # fixed
         keep = [(c, l) for c, l in zip(codes, labels) if str(c).strip() != ""]
         codes = [c for c, _ in keep]
-        disp_map = {c: l for c, _ in keep}
+        # FIX: use (c, l) from the same unpack to build the map
+        disp_map = {c: l for c, l in keep}
         return demo_selection, sub_selection, codes, disp_map, True
 
     if LABEL_COL in df_cat.columns:
