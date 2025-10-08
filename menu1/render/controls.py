@@ -7,67 +7,6 @@ import pandas as pd
 import streamlit as st
 import streamlit.components.v1 as components  # for a tiny one-time scrollIntoView
 
-# ─────────────────────────────────────────────────────────────────────────────
-#  Typography & indentation: inject on EVERY rerun (no gating)
-#  Ultra-tight spacing (Step2≈one row; no gaps around "or"; Step3 hugs select)
-# ─────────────────────────────────────────────────────────────────────────────
-def ensure_pses_styles():
-    st.markdown(
-        """
-        <style>
-          /* Title 2: Step 1–3 (compact by default) */
-          .pses-h2 {
-            font-size: 1.08rem;
-            font-weight: 600;
-            margin: 0.6em 0 0.2em 0; /* compact default */
-            color: #222;
-          }
-          /* Extra-tight variant for headers that should hug the previous block (Step 2 & 3) */
-          .pses-h2-tight-top {
-            margin-top: 0.10em !important;  /* ~one row feel */
-          }
-
-          /* Title 3: sub-sections (compact) */
-          .pses-h3 {
-            font-size: 1.0rem;
-            font-weight: 550;
-            margin: 0.45em 0 0.2em 0; /* tighter than default */
-            color: #333;
-          }
-
-          /* Indented content block for Title 3 + its contents */
-          .pses-block {
-            margin-left: 2.2cm !important;  /* clear, consistent indent */
-            padding-left: 0.1cm;
-            margin-top: 0;
-            margin-bottom: 0;
-          }
-
-          /* Utilities for ultra-tight spacing */
-          .pses-no-top    { margin-top: 0 !important; }
-          .pses-no-bottom { margin-bottom: 0 !important; }
-          .pses-zero      { margin: 0 !important; padding: 0 !important; line-height: 1 !important; }
-          .pses-nudge-up  { margin-top: -0.15em !important; } /* tiny pull-up for headings */
-
-          .pses-note { font-size: 0.9rem; color: #666; }
-
-          /* ── GLOBAL MICRO-GAP TUNE: make inter-block spacing a bit tighter ── */
-          div[data-testid="stVerticalBlock"] { gap: 0.35rem !important; }
-
-          /* ── WIDGET-SPECIFIC GAP FIXES ───────────────────────────────────── */
-          /* No extra space under the multiselect above "or" */
-          div[data-testid="stMultiSelect"] { margin-bottom: 0 !important; }
-
-          /* No extra space above selectboxes (covers Step 3 + subgroup) */
-          div[data-testid="stSelectbox"] { margin-top: 0 !important; }
-
-          /* Keep text inputs tight as well (search field) */
-          div[data-testid="stTextInput"] { margin-top: 0 !important; }
-        </style>
-        """,
-        unsafe_allow_html=True,
-    )
-
 try:
     from utils.hybrid_search import hybrid_question_search, get_embedding_status, get_last_search_metrics  # type: ignore
 except Exception:
@@ -87,7 +26,7 @@ K_HITS_PAGE_LEX   = "menu1_hits_page_lex"         # pagination per tab
 K_HITS_PAGE_SEM   = "menu1_hits_page_sem"
 K_SEEN_NONCE      = "menu1_seen_nonce"            # remember last mount nonce
 
-# Global persistence for hit selections across pages/tabs
+# NEW: global persistence for hit selections across pages/tabs
 K_GLOBAL_HITS_SELECTED = "menu1_global_hits_selected"  # Dict[str,bool]
 
 # Diagnostics snapshots (optional consumers: Diagnostics tab)
@@ -169,8 +108,6 @@ def _maybe_auto_reset_on_mount():
 
 # ---- Main controls ----------------------------------------------------------
 def question_picker(qdf: pd.DataFrame) -> List[str]:
-    ensure_pses_styles()
-
     # seed session
     st.session_state.setdefault(K_MULTI_QUESTIONS, [])
     st.session_state.setdefault(K_SELECTED_CODES, [])
@@ -186,7 +123,7 @@ def question_picker(qdf: pd.DataFrame) -> List[str]:
     st.session_state.setdefault(K_AI_ENGINE, {})
     st.session_state.setdefault(K_AI_METRICS, {})
     st.session_state.setdefault(K_SCROLL_TO_STEP2, False)
-    st.session_state.setdefault(K_GLOBAL_HITS_SELECTED, {})
+    st.session_state.setdefault(K_GLOBAL_HITS_SELECTED, {})  # NEW
 
     # 1) Apply deferred CLEAR before any widgets are created
     if st.session_state.get(K_DO_CLEAR, False):
@@ -204,16 +141,17 @@ def question_picker(qdf: pd.DataFrame) -> List[str]:
     code_to_display = dict(zip(qdf["code"], qdf["display"]))
     display_to_code = {v: k for k, v in code_to_display.items()}
 
-    # ============================ Step 1 (Title 2 / H2, compact) ==============================
-    st.markdown("<div class='pses-h2'>Step 1: Pick up to 5 survey questions</div>", unsafe_allow_html=True)
+    # ---------- Step 1 ----------
+    st.markdown('<div class="field-label">Step 1: Pick up to 5 survey questions:</div>', unsafe_allow_html=True)
 
-    # ---- Single indented block: Select → or → Search (Title 3s, zero extra spacing) ----------
-    st.markdown("<div class='pses-block'>", unsafe_allow_html=True)
+    # Indentation via wrapper div (matches your existing structure)
+    st.markdown("<div id='menu1_indent' style='margin-left:8%'>", unsafe_allow_html=True)
 
-    # Select from the list (nudge up to reduce space under Step 1 title)
-    st.markdown("<div class='pses-h3 pses-no-top pses-nudge-up'>Select from the list</div>", unsafe_allow_html=True)
+    # ---- Select from the list (no expander) ---------------------------------
+    st.markdown("**Select from the list**")
 
     def _on_list_change_scroll_step2():
+        # Trigger a smooth scroll to Step 2 on next render
         st.session_state[K_SCROLL_TO_STEP2] = True
 
     st.multiselect(
@@ -223,14 +161,12 @@ def question_picker(qdf: pd.DataFrame) -> List[str]:
         label_visibility="collapsed",
         key=K_MULTI_QUESTIONS,
         placeholder="",
-        on_change=_on_list_change_scroll_step2,
+        on_change=_on_list_change_scroll_step2,  # one-time scroll trigger
     )
 
-    # "or" (left-aligned, absolutely no spacing above or below)
-    st.markdown("<div class='pses-h3 pses-zero'>or</div>", unsafe_allow_html=True)
-
-    # Search questionnaire by keywords or theme (flush under "or")
-    st.markdown("<div class='pses-h3 pses-no-top'>Search questionnaire by keywords or theme</div>", unsafe_allow_html=True)
+    # ---- Keywords/theme Search (no expander) --------------------------------
+    st.markdown("**Keywords/theme Search**")
+    st.markdown("<div class='field-label'>Search questionnaire by keywords or theme</div>", unsafe_allow_html=True)
     query = st.text_input(
         "Enter keywords (e.g., harassment, recognition, onboarding)",
         key=K_KW_QUERY,
@@ -244,7 +180,7 @@ def question_picker(qdf: pd.DataFrame) -> List[str]:
         if st.button("Search the questionnaire", key=K_FIND_HITS_BTN):
             q = (query or "").strip()
             # Reset paginated hit selections on a *new* search universe
-            st.session_state[K_GLOBAL_HITS_SELECTED] = {}
+            st.session_state[K_GLOBAL_HITS_SELECTED] = {}  # NEW: don't carry over prior hit picks
             if not q:
                 st.session_state[K_SEARCH_DONE] = True
                 st.session_state[K_LAST_QUERY] = ""
@@ -289,93 +225,15 @@ def question_picker(qdf: pd.DataFrame) -> List[str]:
 
     with bcol2:
         if st.button("Clear search & selections", key="menu1_clear_all"):
+            # Defer the clear to next run to avoid widget mutation error
             st.session_state[K_DO_CLEAR] = True
             st.experimental_rerun()
 
-    # Close the unified indented block
-    st.markdown("</div>", unsafe_allow_html=True)
-
-    # ---- Search results (Title 3 content: EACH TAB CONTENT IS INDENTED) ----------------------
-    hits = st.session_state.get(K_HITS, [])
+    # Info message about number of hits (only if a search occurred)
     if st.session_state.get(K_SEARCH_DONE, False):
-        if hits:
-            lex_hits = [r for r in hits if r.get("origin","lex") == "lex"]
-            sem_hits = [r for r in hits if r.get("origin","lex") == "sem"]
-
-            tabs = st.tabs(["Lexical matches", "Other matches (semantic)"])
-
-            # Lexical tab (indent INSIDE the tab)
-            with tabs[0]:
-                st.markdown("<div class='pses-block'>", unsafe_allow_html=True)
-
-                total = len(lex_hits)
-                page  = int(st.session_state.get(K_HITS_PAGE_LEX, 0)) or 0
-                max_page = max(0, (total - 1) // PAGE_SIZE) if total else 0
-                page = max(0, min(page, max_page))
-                start = page * PAGE_SIZE
-                end   = min(total, start + PAGE_SIZE)
-
-                if total == 0:
-                    st.warning("No lexical matches.")
-                else:
-                    st.info(f"Found {len(hits)} total matches meeting the quality threshold.")
-                    gmap = dict(st.session_state.get(K_GLOBAL_HITS_SELECTED, {}))
-                    for rec in lex_hits[start:end]:
-                        code = rec["code"]; text = rec["text"]
-                        key = f"kwhit_{code}"
-                        label = f"{code} — {text}"
-                        if key in st.session_state:
-                            checked = st.checkbox(label, key=key)
-                        else:
-                            desired = bool(gmap.get(code, False))
-                            checked = st.checkbox(label, key=key, value=desired)
-                        gmap[code] = bool(checked)
-                    st.session_state[K_GLOBAL_HITS_SELECTED] = gmap
-
-                    pcol, ncol = st.columns([0.5, 0.5])
-                    with pcol:
-                        st.button("Prev", disabled=(page <= 0), key="menu1_hits_prev_lex",
-                                  on_click=lambda: st.session_state.update({K_HITS_PAGE_LEX: max(0, page - 1)}))
-                    with ncol:
-                        st.button("Next", disabled=(page >= max_page), key="menu1_hits_next_lex",
-                                  on_click=lambda: st.session_state.update({K_HITS_PAGE_LEX: min(max_page, page + 1)}))
-                st.markdown("</div>", unsafe_allow_html=True)
-
-            # Semantic tab (indent INSIDE the tab)
-            with tabs[1]:
-                st.markdown("<div class='pses-block'>", unsafe_allow_html=True)
-
-                total = len(sem_hits)
-                page  = int(st.session_state.get(K_HITS_PAGE_SEM, 0)) or 0
-                max_page = max(0, (total - 1) // PAGE_SIZE) if total else 0
-                page = max(0, min(page, max_page))
-                start = page * PAGE_SIZE
-                end   = min(total, start + PAGE_SIZE)
-
-                if total == 0:
-                    st.warning("No other (semantic) matches.")
-                else:
-                    gmap = dict(st.session_state.get(K_GLOBAL_HITS_SELECTED, {}))
-                    for rec in sem_hits[start:end]:
-                        code = rec["code"]; text = rec["text"]; score = rec.get("score", 0.0)
-                        label = f"{code} — {text}  _(score: {score:.2f})_"
-                        key = f"kwhit_{code}"
-                        if key in st.session_state:
-                            checked = st.checkbox(label, key=key)
-                        else:
-                            desired = bool(gmap.get(code, False))
-                            checked = st.checkbox(label, key=key, value=desired)
-                        gmap[code] = bool(checked)
-                    st.session_state[K_GLOBAL_HITS_SELECTED] = gmap
-
-                    pcol, ncol = st.columns([0.5, 0.5])
-                    with pcol:
-                        st.button("Prev", disabled=(page <= 0), key="menu1_hits_prev_sem",
-                                  on_click=lambda: st.session_state.update({K_HITS_PAGE_SEM: max(0, page - 1)}))
-                    with ncol:
-                        st.button("Next", disabled=(page >= max_page), key="menu1_hits_next_sem",
-                                  on_click=lambda: st.session_state.update({K_HITS_PAGE_SEM: min(max_page, page + 1)}))
-                st.markdown("</div>", unsafe_allow_html=True)
+        n_total = len(st.session_state.get(K_HITS, []) or [])
+        if n_total > 0:
+            st.info(f"Found {n_total} total matches meeting the quality threshold.")
         else:
             last_q = (st.session_state.get(K_LAST_QUERY) or "").strip()
             safe_q = last_q if last_q else "your search"
@@ -385,10 +243,150 @@ def question_picker(qdf: pd.DataFrame) -> List[str]:
                 'or search by a question code like “Q01”.'
             )
 
-    # ============================ Step 2 (Title 2, pulled closer) ============================
+    # ---- Search results (no expander) ---------------------------------------
+    hits = st.session_state.get(K_HITS, [])
+    if st.session_state.get(K_SEARCH_DONE, False) and hits:
+        lex_hits = [r for r in hits if r.get("origin","lex") == "lex"]
+        sem_hits = [r for r in hits if r.get("origin","lex") == "sem"]
+
+        tabs = st.tabs(["Lexical matches", "Other matches (semantic)"])
+
+        # Lexical tab
+        with tabs[0]:
+            total = len(lex_hits)
+            page  = int(st.session_state.get(K_HITS_PAGE_LEX, 0)) or 0
+            max_page = max(0, (total - 1) // PAGE_SIZE) if total else 0
+            page = max(0, min(page, max_page))
+            start = page * PAGE_SIZE
+            end   = min(total, start + PAGE_SIZE)
+
+            if total == 0:
+                st.warning("No lexical matches.")
+            else:
+                st.write(f"Results {start + 1}–{end} of {total} lexical matches meeting the quality threshold:")
+
+                # Use checkbox return value to update global map (no pre-write)
+                gmap = dict(st.session_state.get(K_GLOBAL_HITS_SELECTED, {}))
+                for rec in lex_hits[start:end]:
+                    code = rec["code"]; text = rec["text"]
+                    key = f"kwhit_{code}"
+                    label = f"{code} — {text}"
+                    if key in st.session_state:
+                        checked = st.checkbox(label, key=key)
+                    else:
+                        desired = bool(gmap.get(code, False))
+                        checked = st.checkbox(label, key=key, value=desired)
+                    gmap[code] = bool(checked)
+                st.session_state[K_GLOBAL_HITS_SELECTED] = gmap
+
+                pcol, ncol = st.columns([0.5, 0.5])
+                with pcol:
+                    st.button("Prev", disabled=(page <= 0), key="menu1_hits_prev_lex",
+                              on_click=lambda: st.session_state.update({K_HITS_PAGE_LEX: max(0, page - 1)}))
+                with ncol:
+                    st.button("Next", disabled=(page >= max_page), key="menu1_hits_next_lex",
+                              on_click=lambda: st.session_state.update({K_HITS_PAGE_LEX: min(max_page, page + 1)}))
+
+        # Semantic tab
+        with tabs[1]:
+            total = len(sem_hits)
+            page  = int(st.session_state.get(K_HITS_PAGE_SEM, 0)) or 0
+            max_page = max(0, (total - 1) // PAGE_SIZE) if total else 0
+            page = max(0, min(page, max_page))
+            start = page * PAGE_SIZE
+            end   = min(total, start + PAGE_SIZE)
+
+            if total == 0:
+                st.warning("No other (semantic) matches.")
+            else:
+                st.write(f"Results {start + 1}–{end} of {total} other (semantic) matches meeting the quality threshold:")
+
+                gmap = dict(st.session_state.get(K_GLOBAL_HITS_SELECTED, {}))
+                for rec in sem_hits[start:end]:
+                    code = rec["code"]; text = rec["text"]; score = rec.get("score", 0.0)
+                    label = f"{code} — {text}  _(score: {score:.2f})_"
+                    key = f"kwhit_{code}"
+                    if key in st.session_state:
+                        checked = st.checkbox(label, key=key)
+                    else:
+                        desired = bool(gmap.get(code, False))
+                        checked = st.checkbox(label, key=key, value=desired)
+                    gmap[code] = bool(checked)
+                st.session_state[K_GLOBAL_HITS_SELECTED] = gmap
+
+                pcol, ncol = st.columns([0.5, 0.5])
+                with pcol:
+                    st.button("Prev", disabled=(page <= 0), key="menu1_hits_prev_sem",
+                              on_click=lambda: st.session_state.update({K_HITS_PAGE_SEM: max(0, page - 1)}))
+                with ncol:
+                    st.button("Next", disabled=(page >= max_page), key="menu1_hits_next_sem",
+                              on_click=lambda: st.session_state.update({K_HITS_PAGE_SEM: min(max_page, page + 1)}))
+
+    # Close indent wrapper
+    st.markdown("</div>", unsafe_allow_html=True)
+
+    # ---------- Merge selections, cap 5 ----------
+    combined_order: List[str] = []
+
+    # Use the global map (preserves order by walking K_HITS list)
+    gmap_all = st.session_state.get(K_GLOBAL_HITS_SELECTED, {})
+    for rec in st.session_state.get(K_HITS, []):
+        code = rec["code"]
+        if gmap_all.get(code, False) and code not in combined_order:
+            combined_order.append(code)
+
+    # Merge in multiselect (official list) picks, preserving order
+    for d in st.session_state.get(K_MULTI_QUESTIONS, []):
+        c = display_to_code.get(d)
+        if c and c not in combined_order:
+            combined_order.append(c)
+
+    if len(combined_order) > 5:
+        combined_order = combined_order[:5]
+        st.warning("Limit is 5 questions; extra selections were ignored.")
+    st.session_state[K_SELECTED_CODES] = combined_order
+
+    # ---------- Selected list ----------
+    if st.session_state[K_SELECTED_CODES]:
+        st.markdown('<div class="field-label">Selected questions:</div>', unsafe_allow_html=True)
+        updated = list(st.session_state[K_SELECTED_CODES])
+
+        for code in list(updated):
+            label = code_to_display.get(code, code)
+            keep = st.checkbox(label, value=True, key=f"sel_{code}")
+            if not keep:
+                # Remove from selected list
+                updated = [c for c in updated if c != code]
+                # Uncheck corresponding hit checkbox if present
+                hk = f"kwhit_{code}"
+                if hk in st.session_state:
+                    st.session_state[hk] = False
+                # Also update global selection map
+                gmap = dict(st.session_state.get(K_GLOBAL_HITS_SELECTED, {}))
+                if code in gmap:
+                    gmap[code] = False
+                    st.session_state[K_GLOBAL_HITS_SELECTED] = gmap
+                # Defer multiselect sync: compute the new display list and apply next run
+                disp = code_to_display.get(code)
+                if disp:
+                    current_displays = list(st.session_state.get(K_MULTI_QUESTIONS, []))
+                    if disp in current_displays:
+                        current_displays = [d for d in current_displays if d != disp]
+                        st.session_state[K_SYNC_MULTI] = current_displays
+                        st.session_state[K_SELECTED_CODES] = updated
+                        st.experimental_rerun()
+
+        if updated != st.session_state[K_SELECTED_CODES]:
+            st.session_state[K_SELECTED_CODES] = updated
+
+    return st.session_state[K_SELECTED_CODES]
+
+# ---- Years ------------------------------------------------------------------
+def year_picker() -> List[int]:
     # anchor for smooth scroll
     st.markdown('<div id="step2_anchor"></div>', unsafe_allow_html=True)
 
+    # One-time scroll if user selected from the list
     if st.session_state.get(K_SCROLL_TO_STEP2, False):
         components.html(
             """
@@ -401,8 +399,7 @@ def question_picker(qdf: pd.DataFrame) -> List[str]:
         )
         st.session_state[K_SCROLL_TO_STEP2] = False
 
-    # Tight top margin variant to reduce the gap between the Step 1 block and Step 2
-    st.markdown("<div class='pses-h2 pses-h2-tight-top'>Step 2: Select survey year(s)</div>", unsafe_allow_html=True)
+    st.markdown('<div class="field-label">Step 2: Select survey year(s):</div>', unsafe_allow_html=True)
     st.session_state.setdefault(K_SELECT_ALL_YEARS, True)
     select_all = st.checkbox("All years", key=K_SELECT_ALL_YEARS)
 
@@ -411,32 +408,22 @@ def question_picker(qdf: pd.DataFrame) -> List[str]:
             st.session_state.setdefault(f"year_{yr}", True)
             st.session_state[f"year_{yr}"] = True
     else:
+        # Explicitly clear every year checkbox when "All years" is OFF
         for yr in DEFAULT_YEARS:
             st.session_state[f"year_{yr}"] = False
 
+    selected_years: List[int] = []
     cols = st.columns(len(DEFAULT_YEARS))
     for i, yr in enumerate(DEFAULT_YEARS):
         with cols[i]:
             st.checkbox(str(yr), key=f"year_{yr}")
-
-    # ============================ Step 3 (Title 2, tight top + no gap before select) =========
-    st.markdown("<div class='pses-h2 pses-h2-tight-top'>Step 3: Select a demographic category (optional)</div>", unsafe_allow_html=True)
-    # Note: demographic sub-UI lives in demographic_picker() — no duplicate Step 3 here.
-
-    return st.session_state[K_SELECTED_CODES]
-
-# ---- Years (unchanged signature; used by caller) ----------------------------
-def year_picker() -> List[int]:
-    selected_years: List[int] = []
-    for yr in DEFAULT_YEARS:
-        if st.session_state.get(f"year_{yr}", False):
-            selected_years.append(yr)
+            if st.session_state.get(f"year_{yr}", False):
+                selected_years.append(yr)
     return sorted(selected_years)
 
-# ---- Demographics (no H2 here to avoid duplicate Step 3; only H3 when needed) --------------
+# ---- Demographics -----------------------------------------------------------
 def demographic_picker(demo_df: pd.DataFrame):
-    ensure_pses_styles()
-
+    st.markdown('<div class="field-label">Step 3: Select a demographic category (optional):</div>', unsafe_allow_html=True)
     DEMO_CAT_COL = "DEMCODE Category"
     LABEL_COL = "DESCRIP_E"
 
@@ -446,16 +433,13 @@ def demographic_picker(demo_df: pd.DataFrame):
 
     sub_selection: Optional[str] = None
     if demo_selection != "All respondents":
-        # Title 3 + content block (indented)
-        st.markdown("<div class='pses-block'>", unsafe_allow_html=True)
-        st.markdown(f"<div class='pses-h3'>Subgroup ({demo_selection}) (optional)</div>", unsafe_allow_html=True)
+        st.markdown(f'<div class="field-label">Subgroup ({demo_selection}) (optional):</div>', unsafe_allow_html=True)
         sub_items = demo_df.loc[demo_df[DEMO_CAT_COL] == demo_selection, LABEL_COL].dropna().astype(str).unique().tolist()
         sub_items = sorted(sub_items)
         sub_key = f"sub_{demo_selection.replace(' ', '_')}"
         sub_selection = st.selectbox("(leave blank to include all subgroups in this category)", [""] + sub_items, key=sub_key, label_visibility="collapsed")
         if sub_selection == "":
             sub_selection = None
-        st.markdown("</div>", unsafe_allow_html=True)
 
     if not demo_selection or demo_selection == "All respondents":
         return demo_selection, sub_selection, [None], {None: "All respondents"}, False
@@ -484,7 +468,7 @@ def demographic_picker(demo_df: pd.DataFrame):
 
     if code_col and LABEL_COL in df_cat.columns:
         codes = df_cat[code_col].astype(str).tolist()
-        labels = df_cat[LABEL_COL].astype(str).tolist()
+        labels = df_cat[LABEL_COL].astype(str).tolist()  # fixed
         keep = [(c, l) for c, l in zip(codes, labels) if str(c).strip() != ""]
         codes = [c for c, _ in keep]
         disp_map = {c: l for c, _ in keep}
@@ -497,5 +481,5 @@ def demographic_picker(demo_df: pd.DataFrame):
     return demo_selection, sub_selection, [None], {None: "All respondents"}, False
 
 # ---- Enable search? ---------------------------------------------------------
-def search_button_enabled(question_codes: List[int], years: List[int]) -> bool:
+def search_button_enabled(question_codes: List[str], years: List[int]) -> bool:
     return bool(question_codes) and bool(years)
