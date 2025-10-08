@@ -9,6 +9,7 @@ import streamlit.components.v1 as components  # for a tiny one-time scrollIntoVi
 
 # ─────────────────────────────────────────────────────────────────────────────
 #  Compact styles for H2/H3 and balanced spacing around "or"
+#  (uses Streamlit's stable widget classes: .stMultiSelect, .stTextInput)
 # ─────────────────────────────────────────────────────────────────────────────
 def ensure_pses_styles():
     st.markdown(
@@ -34,24 +35,24 @@ def ensure_pses_styles():
 
           /* Balanced, standard spacing specifically for the "or" line */
           .pses-or {
-            /* keep H3 font, adjust only the rhythm to feel like normal paragraph spacing */
-            margin-top: 0.45em !important;
+            margin-top: 0.45em !important;   /* standard paragraph-ish gap */
             margin-bottom: 0.45em !important;
             line-height: 1.25 !important;
           }
 
-          /* ── Tidy default widget spacing; keep it balanced near `or` ── */
-          /* Multiselect block (above "or") */
-          div[data-testid="stMultiselect"] {
-            margin-top: 0.20rem !important;
-            margin-bottom: 0.50rem !important;  /* normal gap before "or" */
+          /* ── KEY: tighten/normalize widget spacing (generic, reliable selectors) ── */
+          /* Multiselect block just above "or" */
+          div.stMultiSelect {
+            margin-top: 0.15rem !important;
+            margin-bottom: 0.50rem !important;  /* standard gap before "or" */
           }
-          /* Text input block (below "or") */
-          div[data-testid="stTextInput"] {
-            margin-top: 0.50rem !important;      /* normal gap after "or" */
+          /* Text input block just below "or" */
+          div.stTextInput {
+            margin-top: 0.50rem !important;     /* standard gap after "or" */
             margin-bottom: 0.30rem !important;
           }
-          /* Buttons row container */
+
+          /* Button rows */
           div.row-widget.stButton, div[data-testid="stHorizontalBlock"] .stButton {
             margin-top: 0.30rem !important;
             margin-bottom: 0.30rem !important;
