@@ -8,7 +8,7 @@ import streamlit as st
 import streamlit.components.v1 as components  # for a tiny one-time scrollIntoView
 
 # ─────────────────────────────────────────────────────────────────────────────
-#  Compact styles for H2/H3 and tighter vertical rhythm around widgets
+#  Compact styles for H2/H3 and balanced spacing around "or"
 # ─────────────────────────────────────────────────────────────────────────────
 def ensure_pses_styles():
     st.markdown(
@@ -24,7 +24,6 @@ def ensure_pses_styles():
           .pses-h3 {
             font-size: 1.0rem;
             font-weight: 550;
-            /* tighter top/bottom margins to reduce vertical whitespace */
             margin: 0.20em 0 0.10em 0;
             color: #333;
           }
@@ -33,21 +32,29 @@ def ensure_pses_styles():
             padding-left: 0.1rem;
           }
 
-          /* ── Tighter spacing around Streamlit widgets (key to shrinking gaps) ── */
-          /* Multiselect block */
-          div[data-testid="stMultiselect"] {
-            margin-top: 0.15rem !important;
-            margin-bottom: 0.25rem !important; /* reduce gap before "or" */
+          /* Balanced, standard spacing specifically for the "or" line */
+          .pses-or {
+            /* keep H3 font, adjust only the rhythm to feel like normal paragraph spacing */
+            margin-top: 0.45em !important;
+            margin-bottom: 0.45em !important;
+            line-height: 1.25 !important;
           }
-          /* Text input block */
+
+          /* ── Tidy default widget spacing; keep it balanced near `or` ── */
+          /* Multiselect block (above "or") */
+          div[data-testid="stMultiselect"] {
+            margin-top: 0.20rem !important;
+            margin-bottom: 0.50rem !important;  /* normal gap before "or" */
+          }
+          /* Text input block (below "or") */
           div[data-testid="stTextInput"] {
-            margin-top: 0.15rem !important;
-            margin-bottom: 0.25rem !important; /* reduce gap under heading */
+            margin-top: 0.50rem !important;      /* normal gap after "or" */
+            margin-bottom: 0.30rem !important;
           }
           /* Buttons row container */
           div.row-widget.stButton, div[data-testid="stHorizontalBlock"] .stButton {
-            margin-top: 0.25rem !important;
-            margin-bottom: 0.25rem !important;
+            margin-top: 0.30rem !important;
+            margin-bottom: 0.30rem !important;
           }
         </style>
         """,
@@ -205,17 +212,14 @@ def question_picker(qdf: pd.DataFrame) -> List[str]:
     )
     st.markdown("</div>", unsafe_allow_html=True)
 
-    # ---- “or” (H3; *no extra spacer*, kept very tight) --------------------------------------
+    # ---- “or” (H3 look + standard spacing via .pses-or) -------------------------------------
     st.markdown("<div class='pses-block'>", unsafe_allow_html=True)
-    st.markdown("<div class='pses-h3' style='margin-top:0.10em;margin-bottom:0.05em;'>or</div>", unsafe_allow_html=True)
-    # no spacer here on purpose
+    st.markdown("<div class='pses-h3 pses-or'>or</div>", unsafe_allow_html=True)
     st.markdown("</div>", unsafe_allow_html=True)
 
     # ---- Search questionnaire by keywords or theme (H3 + indented block) --------------------
     st.markdown("<div class='pses-block'>", unsafe_allow_html=True)
-    st.markdown("<div class='pses-h3' style='margin-top:0.10em;margin-bottom:0.05em;'>Search questionnaire by keywords or theme</div>", unsafe_allow_html=True)
-    # removed the previous 1em spacer to keep this tight
-    # st.markdown("<div style='height: 1em'></div>", unsafe_allow_html=True)
+    st.markdown("<div class='pses-h3'>Search questionnaire by keywords or theme</div>", unsafe_allow_html=True)
 
     query = st.text_input(
         "Enter keywords (e.g., harassment, recognition, onboarding)",
@@ -416,7 +420,7 @@ def question_picker(qdf: pd.DataFrame) -> List[str]:
         st.session_state[K_SCROLL_TO_STEP2] = False
 
     st.markdown("<div class='pses-h2'>Step 2: Select survey year(s)</div>", unsafe_allow_html=True)
-    # keep 1em spacer before “All years” for clarity
+    # standard 1em spacer before “All years”
     st.markdown("<div style='height: 1em'></div>", unsafe_allow_html=True)
 
     st.session_state.setdefault(K_SELECT_ALL_YEARS, True)
