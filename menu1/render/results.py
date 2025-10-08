@@ -330,15 +330,21 @@ def _compute_ai_narratives(
 
     return per_q_narratives, overall_narrative
 
-# ----- AI Fact Check (expander with dynamic title) ---------------------------
+# ----- AI Data Validation (subsection renderer) -------------------------------
 
-def _render_factcheck_advisory(
+def _render_data_validation_subsection(
     *,
     tab_labels: List[str],
     per_q_disp: Dict[str, pd.DataFrame],
     per_q_metric_col: Dict[str, str],
     per_q_narratives: Dict[str, str],
 ) -> None:
+    """
+    Renders a subsection under AI Summary:
+      • Heading: "AI Data Validation"
+      • One-sentence outcome with ✅ (or ❌ if issues)
+      • Dropdown to view per-question details
+    """
     any_issue = False
     details: List[Tuple[str, str]] = []  # (level, message)
 
@@ -346,13 +352,12 @@ def _render_factcheck_advisory(
         try:
             df_disp = per_q_disp.get(q)
             if not isinstance(df_disp, pd.DataFrame) or df_disp.empty:
-                # No table to validate against; non-blocking.
-                details.append(("caption", f"{q}: fact-check skipped (no table)."))
+                details.append(("caption", f"{q}: validation skipped (no table available)."))
                 continue
 
             metric_col = per_q_metric_col.get(q) or _pick_display_metric(df_disp)
             if not metric_col:
-                details.append(("caption", f"{q}: fact-check skipped (no metric column)."))
+                details.append(("caption", f"{q}: validation skipped (no metric column)."))
                 continue
 
             allowed, years = _allowed_numbers_from_disp(df_disp.copy(deep=True), metric_col)
@@ -369,18 +374,19 @@ def _render_factcheck_advisory(
             else:
                 details.append(("caption", f"{q}: no numeric inconsistencies detected."))
         except Exception as e:
-            # Advisory path should never hard-fail the UI
-            details.append(("caption", f"{q}: fact-check skipped ({type(e).__name__})."))
+            details.append(("caption", f"{q}: validation skipped ({type(e).__name__})."))
 
-    title = "AI Fact Check — data validated ✅" if not any_issue else "AI Fact Check — issues detected ❌"
+    # Subsection heading
+    st.markdown("### AI Data Validation")
 
-    with st.expander(title, expanded=False):
-        if not any_issue:
-            st.success("The data points in the summaries were validated and correspond to the data provided.")
-        else:
-            st.error("Some AI statements may not match the tables. Review details below.")
+    # One-sentence outcome (green check or red cross)
+    if not any_issue:
+        st.markdown("✅ The data points in the summaries have been validated and correspond to the data provided.")
+    else:
+        st.markdown("❌ Some AI statements may not match the tables. Review the details below.")
 
-        # Per-question details
+    # Dropdown for per-question details
+    with st.expander("View per-question validation details", expanded=False):
         for level, msg in details:
             if level == "warning":
                 st.warning(msg)
@@ -461,7 +467,7 @@ def tabs_summary_and_per_q(
         st.dataframe(pivot.reset_index(), use_container_width=True)
         _source_link_line(source_title, source_url)
 
-        # (AI rendering removed from here — now always visible below tabs)
+        # (AI rendering removed from here — AI appears below tabs)
 
     # ---------------------- Per-question tabs ----------------------
     for idx, qcode in enumerate(tab_labels, start=1):
@@ -567,16 +573,16 @@ def tabs_summary_and_per_q(
             st.session_state["menu1_ai_narr_per_q"] = per_q_narratives
             st.session_state["menu1_ai_narr_overall"] = overall_narrative
 
-        # AI Fact Check (now just below AI Summary, always visible)
+        # --- New: AI Data Validation subsection (under AI Summary) ---
         try:
-            _render_factcheck_advisory(
+            _render_data_validation_subsection(
                 tab_labels=tab_labels,
                 per_q_disp=per_q_disp,
                 per_q_metric_col=per_q_metric_col,
                 per_q_narratives=per_q_narratives,
             )
         except Exception:
-            st.caption("AI Fact Check unavailable for this run.")
+            st.caption("AI Data Validation is unavailable for this run.")
 
     # ---------------------- Persistent footer (all tabs) ----------------------
     st.markdown("---")
