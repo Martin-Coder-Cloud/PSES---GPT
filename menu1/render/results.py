@@ -376,8 +376,24 @@ def _render_data_validation_subsection(
         except Exception as e:
             details.append(("caption", f"{q}: validation skipped ({type(e).__name__})."))
 
-    # Title line (match "Select from the list" format)
-    st.markdown("**AI Data Validation**")
+    # --- Scoped style to enforce "bold body text" (not a header) --------------
+    st.markdown(
+        """
+        <style>
+          /* Scope to this subsection only */
+          #ai_data_validation_title {
+            font-size: 1rem;          /* body size to match "Select from the list" */
+            line-height: 1.25;
+            font-weight: 600;         /* bold */
+            margin: 0.25rem 0 0.25rem 0;
+          }
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    # Title line (match "Select from the list" simple bold)
+    st.markdown("<div id='ai_data_validation_title'>AI Data Validation</div>", unsafe_allow_html=True)
 
     # One-sentence outcome (green check or red cross)
     if not any_issue:
