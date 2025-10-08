@@ -65,7 +65,9 @@ def _is_year_label(col) -> bool:
         return False
 
 def _to_int(v: Any) -> Optional[int]:
-    """Original safe integer caster used elsewhere in this file."""
+    """
+    Original safe integer caster used elsewhere in this file.
+    """
     try:
         if v is None:
             return None
@@ -88,7 +90,7 @@ def _to_int(v: Any) -> Optional[int]:
     except Exception:
         return None
 
-# ---- NA-tolerant int for the fact-check path only ---------------------------
+# ---- NEW: stricter NA-tolerant int for the fact-check path only --------------
 def _safe_int(x: Any) -> Optional[int]:
     """
     Return a plain int when possible; otherwise None.
@@ -101,14 +103,17 @@ def _safe_int(x: Any) -> Optional[int]:
             s = x.strip().lower()
             if s in ("", "na", "n/a", "none", "nan", "null"):
                 return None
+        # treat sentinel 9999 as missing (per your display rules)
         if x == 9999:
             return None
+        # numeric or numeric-like string
         v = pd.to_numeric(x, errors="coerce")
         if pd.isna(v):
             return None
         return int(round(float(v)))
     except Exception:
         return None
+# -----------------------------------------------------------------------------
 
 def _pick_display_metric(df: pd.DataFrame, prefer: Optional[str] = None) -> Optional[str]:
     if prefer and prefer in df.columns:
@@ -121,13 +126,16 @@ def _pick_display_metric(df: pd.DataFrame, prefer: Optional[str] = None) -> Opti
 def _allowed_numbers_from_disp(df: pd.DataFrame, metric_col: str) -> Tuple[Set[int], Set[int]]:
     """
     Build the allowed set of integers from a per-question display dataframe.
-    Returns (allowed_numbers, visible_years). Non-coercible tokens are skipped.
+    Returns (allowed_numbers, visible_years).
+
+    Hardened to never raise on mixed/odd values. Any non-coercible token is skipped.
     """
     if df is None or df.empty:
         return set(), set()
 
     metric_col_work = metric_col
     if "Year" not in df.columns or metric_col not in df.columns:
+        # Identify year-like columns
         ycols = [c for c in df.columns if _is_year_label(c)]
         if ycols:
             id_cols = [c for c in df.columns if c not in ycols]
@@ -139,6 +147,7 @@ def _allowed_numbers_from_disp(df: pd.DataFrame, metric_col: str) -> Tuple[Set[i
     else:
         work = df.copy()
 
+    # Normalize types (robustly)
     work["__Year__"] = pd.to_numeric(work.get("Year"), errors="coerce").astype("Int64")
     if "Demographic" not in work.columns:
         work["Demographic"] = "All respondents"
@@ -146,8 +155,10 @@ def _allowed_numbers_from_disp(df: pd.DataFrame, metric_col: str) -> Tuple[Set[i
     if metric_col_work not in work.columns:
         return set(), set()
 
+    # Safe metric integerization (NA/9999/etc → None)
     work["__Val__"] = work[metric_col_work].apply(_safe_int)
 
+    # Visible years set (ints only)
     years_list = []
     for y in work["__Year__"].tolist():
         yi = _safe_int(y)
@@ -155,20 +166,23 @@ def _allowed_numbers_from_disp(df: pd.DataFrame, metric_col: str) -> Tuple[Set[i
             years_list.append(yi)
     years: Set[int] = set(years_list)
 
+    # Base allowed values (ints only)
     allowed: Set[int] = set()
     for v in work["__Val__"].tolist():
         vi = _safe_int(v)
         if vi is not None:
             allowed.add(vi)
 
+    # Prepare a cleaned working frame for diffs/gaps
     gdf_work = work.dropna(subset=["__Year__"]).copy()
     gdf_work["__YearI__"] = gdf_work["__Year__"].apply(_safe_int)
     gdf_work["__ValI__"] = gdf_work["__Val__"].apply(_safe_int)
     gdf_work = gdf_work[gdf_work["__YearI__"].notna() & gdf_work["__ValI__"].notna()]
 
-    # YoY diffs within each group
+    # YoY diffs (within each group label)
     for _, gdf in gdf_work.groupby("Demographic", dropna=False):
         seq = [int(v) for v in gdf.sort_values("__YearI__")["__ValI__"].tolist()]
+        # all absolute pairwise diffs
         n = len(seq)
         for i in range(n):
             for j in range(i + 1, n):
@@ -177,6 +191,7 @@ def _allowed_numbers_from_disp(df: pd.DataFrame, metric_col: str) -> Tuple[Set[i
     # Latest-year gaps and gap-over-time
     if years:
         latest = max(years)
+
         ydf = gdf_work[gdf_work["__YearI__"] == latest]
         vals = list(ydf[["Demographic", "__ValI__"]].itertuples(index=False, name=None))
         for i in range(len(vals)):
@@ -184,6 +199,7 @@ def _allowed_numbers_from_disp(df: pd.DataFrame, metric_col: str) -> Tuple[Set[i
                 vi = int(vals[i][1]); vj = int(vals[j][1])
                 allowed.add(abs(vi - vj))
 
+        # Build year->val maps per group
         groups = sorted(gdf_work["Demographic"].astype(str).unique().tolist())
         maps: Dict[str, Dict[int, int]] = {}
         for g in groups:
@@ -196,6 +212,7 @@ def _allowed_numbers_from_disp(df: pd.DataFrame, metric_col: str) -> Tuple[Set[i
             if gmap:
                 maps[g] = gmap
 
+        # Gap-over-time deltas
         for i in range(len(groups)):
             for j in range(i + 1, len(groups)):
                 g1, g2 = groups[i], groups[j]
@@ -313,32 +330,29 @@ def _compute_ai_narratives(
 
     return per_q_narratives, overall_narrative
 
-# ==================== Compute AI Fact Check results ===========================
+# ----- AI Fact Check (expander with dynamic title) ---------------------------
 
-def _compute_factcheck_results(
+def _render_factcheck_advisory(
     *,
     tab_labels: List[str],
     per_q_disp: Dict[str, pd.DataFrame],
     per_q_metric_col: Dict[str, str],
     per_q_narratives: Dict[str, str],
-) -> Tuple[bool, List[Tuple[str, str]]]:
-    """
-    Returns (any_issue, details), where details is a list of (level, message)
-    with level in {"warning", "caption"}.
-    """
+) -> None:
     any_issue = False
-    details: List[Tuple[str, str]] = []
+    details: List[Tuple[str, str]] = []  # (level, message)
 
     for q in tab_labels:
         try:
             df_disp = per_q_disp.get(q)
             if not isinstance(df_disp, pd.DataFrame) or df_disp.empty:
-                details.append(("caption", f"{q}: fact check skipped (no table)."))
+                # No table to validate against; non-blocking.
+                details.append(("caption", f"{q}: fact-check skipped (no table)."))
                 continue
 
             metric_col = per_q_metric_col.get(q) or _pick_display_metric(df_disp)
             if not metric_col:
-                details.append(("caption", f"{q}: fact check skipped (no metric column)."))
+                details.append(("caption", f"{q}: fact-check skipped (no metric column)."))
                 continue
 
             allowed, years = _allowed_numbers_from_disp(df_disp.copy(deep=True), metric_col)
@@ -355,9 +369,23 @@ def _compute_factcheck_results(
             else:
                 details.append(("caption", f"{q}: no numeric inconsistencies detected."))
         except Exception as e:
-            details.append(("caption", f"{q}: fact check skipped ({type(e).__name__})."))
+            # Advisory path should never hard-fail the UI
+            details.append(("caption", f"{q}: fact-check skipped ({type(e).__name__})."))
 
-    return any_issue, details
+    title = "AI Fact Check — data validated ✅" if not any_issue else "AI Fact Check — issues detected ❌"
+
+    with st.expander(title, expanded=False):
+        if not any_issue:
+            st.success("The data points in the summaries were validated and correspond to the data provided.")
+        else:
+            st.error("Some AI statements may not match the tables. Review details below.")
+
+        # Per-question details
+        for level, msg in details:
+            if level == "warning":
+                st.warning(msg)
+            else:
+                st.caption(msg)
 
 # ----- main renderer ----------------------------------------------------------
 
@@ -404,24 +432,133 @@ def tabs_summary_and_per_q(
     }
     ai_key = "menu1_ai_" + _hash_key(ai_sig)
 
-    # ====================== Results (Subtitle 1 / H2) ======================
-    st.markdown("## Results")
-
-    # Tabs: Summary + per-question + Technical notes (inside use Subtitle 3 / H3)
+    # Tabs: Summary + per-question + Technical notes (at end)
     tab_titles = ["Summary table"] + tab_labels + ["Technical notes"]
     tabs = st.tabs(tab_titles)
 
-    # ------------------------- Summary table tab -------------------------
+    # Cached AI outputs for export and reuse
+    per_q_narratives: Dict[str, str] = st.session_state.get("menu1_ai_narr_per_q", {})
+    overall_narrative: Optional[str] = st.session_state.get("menu1_ai_narr_overall", None)
+
+    # ------------------------- Summary tab -------------------------
     with tabs[0]:
         st.markdown("### Summary table")
+
+        if tab_labels:
+            st.markdown("<div style='font-size:0.9rem; color:#444; margin-bottom:4px;'>"
+                        "Questions & metrics included:</div>", unsafe_allow_html=True)
+            for q in tab_labels:
+                qtext = code_to_text.get(q, "")
+                mlabel = per_q_metric_label.get(q, "% positive")
+                st.markdown(
+                    f"<div style='font-size:0.85rem; color:#555;'>"
+                    f"<strong>{q}</strong>: {qtext} "
+                    f"<span style='opacity:.85;'>[{mlabel}]</span>"
+                    f"</div>",
+                    unsafe_allow_html=True
+                )
+
         st.dataframe(pivot.reset_index(), use_container_width=True)
         _source_link_line(source_title, source_url)
+
+        # ----- AI Summary area -----
+        if ai_on:
+            st.markdown("---")
+            st.markdown("### AI Summary")
+
+            cached = _ai_cache_get(ai_key)
+            if cached:
+                per_q_narratives = cached.get("per_q", {}) or {}
+                overall_narrative = cached.get("overall")
+                # Render immediately from cache
+                for q in tab_labels:
+                    txt = per_q_narratives.get(q, "")
+                    if txt:
+                        st.markdown(f"**{q} — {code_to_text.get(q, '')}**")
+                        st.write(txt)
+                if overall_narrative and len(tab_labels) > 1:
+                    st.markdown("**Overall**")
+                    st.write(overall_narrative)
+            else:
+                # Compute progressively: display each Q as soon as it's done
+                per_q_narratives = {}
+                for q in tab_labels:
+                    dfq = per_q_disp.get(q)
+                    metric_col = per_q_metric_col.get(q)
+                    metric_label = per_q_metric_label.get(q)
+                    qtext = code_to_text.get(q, "")
+
+                    with st.spinner(f"AI — analyzing {q}…"):
+                        try:
+                            content, _hint = call_openai_json(
+                                system=AI_SYSTEM_PROMPT,
+                                user=build_per_q_prompt(
+                                    question_code=q,
+                                    question_text=qtext,
+                                    df_disp=(dfq.copy(deep=True) if isinstance(dfq, pd.DataFrame) else dfq),
+                                    metric_col=metric_col,
+                                    metric_label=metric_label,
+                                    category_in_play=(demo_selection != "All respondents")
+                                )
+                            )
+                            j = json.loads(content) if content else {}
+                            txt = (j.get("narrative") or "").strip()
+                        except Exception as e:
+                            txt = ""
+                            st.warning(f"AI skipped for {q} due to an internal error ({type(e).__name__}).")
+                    per_q_narratives[q] = txt
+                    if txt:
+                        st.markdown(f"**{q} — {qtext}**")
+                        st.write(txt)
+
+                # Overall last
+                overall_narrative = None
+                if len(tab_labels) > 1:
+                    with st.spinner("AI — synthesizing overall pattern…"):
+                        try:
+                            content, _hint = call_openai_json(
+                                system=AI_SYSTEM_PROMPT,
+                                user=build_overall_prompt(
+                                    tab_labels=tab_labels,
+                                    pivot_df=pivot.copy(deep=True),
+                                    q_to_metric={q: per_q_metric_label[q] for q in tab_labels},
+                                    code_to_text=code_to_text,
+                                )
+                            )
+                        except Exception as e:
+                            content = None
+                            st.warning(f"AI skipped for Overall due to an internal error ({type(e).__name__}).")
+                        try:
+                            j = json.loads(content) if content else {}
+                            overall_narrative = (j.get("narrative") or "").strip()
+                        except Exception:
+                            overall_narrative = None
+
+                    if overall_narrative:
+                        st.markdown("**Overall**")
+                        st.write(overall_narrative)
+
+                # Cache/save for export and navigation
+                _ai_cache_put(ai_key, {"per_q": per_q_narratives, "overall": overall_narrative})
+                st.session_state["menu1_ai_narr_per_q"] = per_q_narratives
+                st.session_state["menu1_ai_narr_overall"] = overall_narrative
+
+            # AI Fact Check (now in expander with dynamic title)
+            try:
+                _render_factcheck_advisory(
+                    tab_labels=tab_labels,
+                    per_q_disp=per_q_disp,
+                    per_q_metric_col=per_q_metric_col,
+                    per_q_narratives=per_q_narratives,
+                )
+            except Exception:
+                st.caption("AI Fact Check unavailable for this run.")
 
     # ---------------------- Per-question tabs ----------------------
     for idx, qcode in enumerate(tab_labels, start=1):
         with tabs[idx]:
             qtext = code_to_text.get(qcode, "")
-            st.markdown(f"### {qcode} — {qtext}")
+            st.subheader(f"{qcode} — {qtext}")
             st.dataframe(per_q_disp[qcode], use_container_width=True)
             _source_link_line(source_title, source_url)
 
@@ -438,122 +575,12 @@ def tabs_summary_and_per_q(
             """
         )
 
-    # ====================== AI Summary (Subtitle 1 / H2) ======================
-    if ai_on:
-        st.markdown("## AI Summary")
-
-        # Cached AI outputs for export and reuse
-        per_q_narratives: Dict[str, str] = st.session_state.get("menu1_ai_narr_per_q", {})
-        overall_narrative: Optional[str] = st.session_state.get("menu1_ai_narr_overall", None)
-
-        cached = _ai_cache_get(ai_key)
-        if cached and not per_q_narratives:
-            per_q_narratives = cached.get("per_q", {}) or {}
-            overall_narrative = cached.get("overall")
-
-        if not per_q_narratives:
-            # Compute progressively: display each Q as soon as it's done
-            per_q_narratives = {}
-            for q in tab_labels:
-                dfq = per_q_disp.get(q)
-                metric_col = per_q_metric_col.get(q)
-                metric_label = per_q_metric_label.get(q)
-                qtext = code_to_text.get(q, "")
-                with st.spinner(f"AI — analyzing {q}…"):
-                    try:
-                        content, _hint = call_openai_json(
-                            system=AI_SYSTEM_PROMPT,
-                            user=build_per_q_prompt(
-                                question_code=q,
-                                question_text=qtext,
-                                df_disp=(dfq.copy(deep=True) if isinstance(dfq, pd.DataFrame) else dfq),
-                                metric_col=metric_col,
-                                metric_label=metric_label,
-                                category_in_play=(demo_selection != "All respondents")
-                            )
-                        )
-                        j = json.loads(content) if content else {}
-                        txt = (j.get("narrative") or "").strip()
-                    except Exception:
-                        txt = ""
-                        st.warning(f"AI skipped for {q} due to an internal error.")
-                if txt:
-                    st.markdown(f"**{q} — {qtext}**")
-                    st.write(txt)
-                per_q_narratives[q] = txt
-
-            overall_narrative = None
-            if len(tab_labels) > 1:
-                with st.spinner("AI — synthesizing overall pattern…"):
-                    try:
-                        content, _hint = call_openai_json(
-                            system=AI_SYSTEM_PROMPT,
-                            user=build_overall_prompt(
-                                tab_labels=tab_labels,
-                                pivot_df=pivot.copy(deep=True),
-                                q_to_metric={q: per_q_metric_label[q] for q in tab_labels},
-                                code_to_text=code_to_text,
-                            )
-                        )
-                    except Exception:
-                        content = None
-                        st.warning("AI skipped for Overall due to an internal error.")
-                    try:
-                        j = json.loads(content) if content else {}
-                        overall_narrative = (j.get("narrative") or "").strip()
-                    except Exception:
-                        overall_narrative = None
-
-            # Cache/save for export and navigation
-            _ai_cache_put(ai_key, {"per_q": per_q_narratives, "overall": overall_narrative})
-            st.session_state["menu1_ai_narr_per_q"] = per_q_narratives
-            st.session_state["menu1_ai_narr_overall"] = overall_narrative
-        else:
-            # Render from cache/state
-            for q in tab_labels:
-                txt = per_q_narratives.get(q, "")
-                if txt:
-                    st.markdown(f"**{q} — {code_to_text.get(q, '')}**")
-                    st.write(txt)
-            if overall_narrative and len(tab_labels) > 1:
-                st.markdown("**Overall**")
-                st.write(overall_narrative)
-
-        # =================== AI Fact Check (Subtitle 3 / H3, indented) ===================
-        # Compute results first
-        any_issue, details = _compute_factcheck_results(
-            tab_labels=tab_labels,
-            per_q_disp=per_q_disp,
-            per_q_metric_col=per_q_metric_col,
-            per_q_narratives=per_q_narratives,
-        )
-
-        # Indented wrapper for Subtitle 3 section + its content
-        st.markdown("<div style='margin-left:8%;'>", unsafe_allow_html=True)
-        st.markdown("### AI Fact Check")
-
-        # Status line under the heading (outside expander)
-        if not any_issue:
-            st.markdown("✅ **The data points in the summaries were validated and correspond to the data provided.**")
-        else:
-            st.markdown("❌ **Issues detected in one or more statements. Review details below.**")
-
-        # Details expander
-        with st.expander("Details", expanded=False):
-            for level, msg in details:
-                if level == "warning":
-                    st.warning(msg)
-                else:
-                    st.caption(msg)
-        st.markdown("</div>", unsafe_allow_html=True)
-
-    # ======================= Persistent footer (all tabs) =======================
+    # ---------------------- Persistent footer (all tabs) ----------------------
     st.markdown("---")
     st.markdown("<div style='margin-top:6px;'></div>", unsafe_allow_html=True)
     col_dl, col_new = st.columns([1, 1])
 
     with col_dl:
-        # Ensure export has AI content if AI is on
         export_per_q = st.session_state.get("menu1_ai_narr_per_q")
         export_overall = st.session_state.get("menu1_ai_narr_overall")
 
@@ -613,7 +640,7 @@ def tabs_summary_and_per_q(
             for k in list(st.session_state.keys()):
                 if k.startswith("kwhit_") or k.startswith("sel_"):
                     st.session_state.pop(k, None)
-            # Ensure global paginated selections are cleared too
+            # ensure global paginated selections are cleared too
             st.session_state.pop("menu1_global_hits_selected", None)
             st.session_state.pop("menu1_ai_cache", None)
             st.session_state.pop("menu1_ai_narr_per_q", None)
