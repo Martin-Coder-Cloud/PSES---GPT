@@ -178,7 +178,8 @@ def question_picker(qdf: pd.DataFrame) -> List[str]:
 
     # ---- Keywords/theme Search (no expander) --------------------------------
     # Removed the old heading: **Keywords/theme Search**
-    st.markdown("<div class='field-label' style='margin-top:0.25rem;'>Search questionnaire by keywords or theme</div>", unsafe_allow_html=True)
+    # Render the sibling subtitle as H3 to match "Select from the list"
+    st.markdown("<h3 style='margin:0.25rem 0;'>Search questionnaire by keywords or theme</h3>", unsafe_allow_html=True)
     query = st.text_input(
         "Enter keywords (e.g., harassment, recognition, onboarding)",
         key=K_KW_QUERY,
