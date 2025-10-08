@@ -438,8 +438,8 @@ def tabs_summary_and_per_q(
     }
     ai_key = "menu1_ai_" + _hash_key(ai_sig)
 
-    # --- NEW: Title above the tabulations (same size as AI Summary)
-    st.markdown("## Results")
+    # --- Title above the tabulations (same size as AI Summary)
+    st.header("Results")
 
     # Tabs: Summary + per-question + Technical notes (at end)
     tab_titles = ["Summary table"] + tab_labels + ["Technical notes"]
