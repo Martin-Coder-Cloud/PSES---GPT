@@ -1,6 +1,6 @@
 # menu1/render/results.py
 # ---------------------------------------------------------------------
-# Menu 1 – Results: AI Summary + AI Data Validation (metadata-driven).
+# Menu 1 – Results: Tables + AI Summary + Validation (metadata-driven).
 #
 # Back-compat shims:
 # - Exports tabs_summary_and_per_q(...) for legacy callers.
@@ -11,6 +11,13 @@
 #   OR:
 #     tabs_summary_and_per_q(payload={ ... })  # payload may use varied key names; we normalize.
 #
+# What this renders (in order):
+#   1) The per-question tables in tabs (minimal spacing), with optional source links under each table
+#      if present in the payload (e.g., sources_by_q / source_links / links).
+#   2) "AI Summary" section (per-question summaries, then Overall).
+#   3) "AI Data Validation" line + details expander.
+#   4) "Start a new search" button that clears AI caches but preserves the AI toggle state.
+#
 # Implements:
 # - No math in reporting (only narrates pre-aggregated values).
 # - POLARITY -> reporting field with fallbacks:
@@ -18,12 +25,12 @@
 #       NEG -> NEGATIVE -> AGREE -> ANSWER1
 #       NEU -> AGREE    -> ANSWER1
 # - NEUTRAL kept in metadata, not used for reporting.
-# - Meaning indices from Survey Questions.xlsx -> labels from Survey Scales.xlsx.
+# - Meaning indices from Survey Questions.xlsx -> labels from Survey Scales.xlsx
+#   (supports code column named 'code', 'question', or 'questions').
 # - Per-question AI summaries (spinners) + Overall synthesis (when ≥2 comparable questions).
 # - All-years trend classification via ai.py addendum; gap math only.
 # - D57_2 exception: list ALL options (latest year) exactly as provided; excluded from Overall.
 # - Validation line ✅/❌ and “Start a new search” (clears AI caches; keeps toggle).
-# - Survey Scales code column may be 'code', 'question', or 'questions'.
 # ---------------------------------------------------------------------
 
 from __future__ import annotations
@@ -204,7 +211,6 @@ def _choose_reporting(df: pd.DataFrame, qcode: str, qmeta: pd.Series) -> Tuple[s
     col_agree    = _find_col(df, ["AGREE", "Agree"])
     col_answer1  = _find_col(df, ["Answer1", "ANSWER1", "Answer 1"])
 
-    # FIXED: use .strip() (previous typo was 'str ip()')
     pol = (qmeta.get("polarity") or "POS")
     pol = str(pol).upper().strip()
 
@@ -400,7 +406,39 @@ def _build_distribution_payload_for_d57_2(qcode: str, qtext: str, df_disp: pd.Da
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Public entry points
+# TABLES: render tabs with per-question tables (and optional source links)
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _render_tabs_with_tables(tables_by_q: Dict[str, pd.DataFrame],
+                             qtext_by_q: Dict[str, str],
+                             sources_by_q: Optional[Dict[str, str]] = None) -> None:
+    """Renders the per-question tables in tabs with minimal spacing and optional source links."""
+    if not tables_by_q:
+        st.info("No questions selected.")
+        return
+
+    # Stable tab order by question code
+    ordered_codes = [k for k in sorted(tables_by_q.keys()) if isinstance(tables_by_q.get(k), pd.DataFrame)]
+    if not ordered_codes:
+        st.info("No questions selected.")
+        return
+
+    tabs = st.tabs(ordered_codes)
+    for i, qcode in enumerate(ordered_codes):
+        with tabs[i]:
+            title = qtext_by_q.get(qcode, qcode)
+            # Minimal caption above to keep spacing uniform
+            st.caption(f"**{qcode}** — {title}")
+            st.dataframe(tables_by_q[qcode], use_container_width=True)
+            # Optional source links directly under each table
+            if sources_by_q:
+                src = sources_by_q.get(qcode)
+                if isinstance(src, str) and src.strip():
+                    st.caption(src)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# AI SUMMARY: public entry point
 # ─────────────────────────────────────────────────────────────────────────────
 
 def render_ai_summary_section(
@@ -553,8 +591,10 @@ def _pick_best_df_dict(d: Dict[str, Any]) -> Optional[Dict[str, pd.DataFrame]]:
     for k, v in d.items():
         if isinstance(v, dict) and v:
             df_count = sum(1 for _k, _v in v.items() if isinstance(_v, pd.DataFrame))
-            if df_count:
-                candidates.append((k, v, df_count))
+        else:
+            df_count = 0
+        if df_count:
+            candidates.append((k, v, df_count))
     if not candidates:
         return None
     candidates.sort(key=lambda t: t[2], reverse=True)
@@ -596,6 +636,15 @@ def _extract_tables_and_texts_from_payload(p: Dict[str, Any]) -> Tuple[Dict[str,
 
     return tables_by_q, qtext_by_q
 
+def _extract_sources_from_payload(p: Dict[str, Any]) -> Optional[Dict[str, str]]:
+    # Accept several common names for per-question source link text
+    for key in ("sources_by_q", "source_links_by_q", "source_links", "links_by_q", "links"):
+        v = p.get(key)
+        if isinstance(v, dict) and v:
+            # Cast to str->str
+            return {str(k): str(vv) for k, vv in v.items() if isinstance(vv, (str, int, float))}
+    return None
+
 
 # Back-compat: existing callers expect this symbol in menu1.render.results
 def tabs_summary_and_per_q(*args, **kwargs) -> None:
@@ -605,13 +654,19 @@ def tabs_summary_and_per_q(*args, **kwargs) -> None:
     Supports:
       1) tabs_summary_and_per_q(tables_by_q, qtext_by_q, category_in_play, ai_enabled, selection_key)
       2) tabs_summary_and_per_q(payload={ ... }) where payload keys may vary.
+         If a payload is provided, this will render the TABULATED TABLES first,
+         then the AI Summary section below.
     """
     # Style 2: payload kwarg
     if "payload" in kwargs and isinstance(kwargs["payload"], dict):
         p = dict(kwargs["payload"])  # shallow copy
         tables_by_q, qtext_by_q = _extract_tables_and_texts_from_payload(p)
+        sources_by_q = _extract_sources_from_payload(p)
 
-        # Other flags
+        # Render the TABULATIONS in tabs (this restores your missing tables)
+        _render_tabs_with_tables(tables_by_q, qtext_by_q, sources_by_q)
+
+        # Other flags for AI Summary
         category_in_play = _coerce_bool(
             p.get("category_in_play", p.get("demographic_active", p.get("has_subgroup", False))), False
         )
@@ -633,6 +688,7 @@ def tabs_summary_and_per_q(*args, **kwargs) -> None:
             except Exception:
                 selection_key = "menu1_legacy_selection"
 
+        # Then AI Summary below the tabs
         return render_ai_summary_section(
             tables_by_q=tables_by_q or {},
             qtext_by_q=qtext_by_q or {},
@@ -641,11 +697,12 @@ def tabs_summary_and_per_q(*args, **kwargs) -> None:
             selection_key=selection_key,
         )
 
-    # Style 1: positional or explicit kwargs
+    # Style 1: positional or explicit kwargs (assume tables already rendered upstream)
     if args and len(args) >= 5:
         tables_by_q, qtext_by_q, category_in_play, ai_enabled, selection_key = args[:5]
         return render_ai_summary_section(tables_by_q, qtext_by_q, category_in_play, ai_enabled, selection_key)
 
+    # Mixed kwargs
     return render_ai_summary_section(
         tables_by_q=kwargs.get("tables_by_q", args[0] if args else {}),
         qtext_by_q=kwargs.get("qtext_by_q", {}),
