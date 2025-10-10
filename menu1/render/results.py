@@ -2,34 +2,24 @@
 # ---------------------------------------------------------------------
 # Menu 1 – Results: AI Summary + AI Data Validation (metadata-driven).
 #
-# This module assumes:
-# - You already rendered the per-question tables (with source links) in tabs.
-# - You call render_ai_summary_section(...) *below* those tabs.
-#
-# Key rules implemented:
-# - No math in reporting: app forwards pre-aggregated values only.
-# - POLARITY in Survey Questions.xlsx selects which field to report:
+# Implements:
+# - No math in reporting: we only forward pre-aggregated values.
+# - POLARITY in Survey Questions.xlsx selects the reporting field:
 #       POS -> POSITIVE
 #       NEG -> NEGATIVE
 #       NEU -> AGREE
-# - Fallbacks when missing/9999:
+# - Fallbacks when the chosen field is missing or sentinel (9999):
 #       POS/NEG -> AGREE -> ANSWER1
 #       NEU     -> AGREE -> ANSWER1
-# - NEUTRAL is never used for reporting (metadata may include for completeness).
+# - NEUTRAL exists in metadata for completeness (not used in reporting).
 # - Meaning indices for POSITIVE/NEGATIVE/AGREE are read from metadata (e.g., "1,2")
-#   and mapped to labels using Survey Scales.xlsx, then passed to AI.
-# - AI payload contains: reporting_field, meaning_indices, meaning_labels, and
-#   all years you want trend classification on; AI prompt (in ai.py) handles
-#   gaps and all-years trend classification only; no other computations.
-#
-# Layout:
-# - "AI Summary" H3, per-question spinners, then "Overall" when >1 question,
-#   then "AI Data Validation" ✅/❌ with expander, then a compact "Start a new search".
-# - Technical Notes tab and source links under tables remain unchanged.
-#
-# Caching:
-# - Summaries cached by a stable selection_key + per-question signature.
-# - "Start a new search" clears AI caches only and preserves the AI toggle state.
+#   and mapped to labels via Survey Scales.xlsx; both are passed to the AI.
+# - Per-question AI summaries render progressively with spinners.
+# - Overall synthesis appears when >1 question is selected.
+# - Caching reuses summaries on identical selections (no duplicate calls when toggling AI).
+# - "AI Data Validation" shows ✅ or ❌ with a details expander (advisory only).
+# - "Start a new search" preserves AI toggle state and clears AI caches/selections only.
+# - Technical Notes and source links under tables remain unchanged.
 # ---------------------------------------------------------------------
 
 from __future__ import annotations
@@ -40,11 +30,11 @@ import json
 import pandas as pd
 import streamlit as st
 
-# Try both import paths in case of project structure differences.
+# Import your AI helpers (supports addendum + all-years trend classification)
 try:
-    from menu1 import ai  # your updated ai.py
+    from menu1 import ai
 except Exception:
-    import ai  # fallback if module path differs
+    import ai  # fallback if your module path differs
 
 SENTINEL = 9999
 
@@ -55,9 +45,9 @@ SENTINEL = 9999
 @st.cache_data(show_spinner=False)
 def _load_survey_questions() -> pd.DataFrame:
     """
-    Expected columns (case-insensitive; we normalize names to lower):
+    Expected columns (case-insensitive; normalized to lower-case):
       - code (question code, e.g., Q44a)
-      - text/english (optional; used when available)
+      - text or english (optional; used when available)
       - polarity in {POS, NEG, NEU}
       - positive (metadata string like "1,2")
       - negative (metadata string like "4,5")
@@ -73,16 +63,14 @@ def _load_survey_questions() -> pd.DataFrame:
     if "english" in df.columns and "text" not in df.columns:
         df = df.rename(columns={"english": "text"})
 
-    # Default values and cleanup
+    # Standardize essentials
     df["code"] = df["code"].astype(str).str.strip()
     df["text"] = df.get("text", pd.Series([None]*len(df))).astype(str)
-
-    # Polarity defaults to POS if missing/invalid
     pol = df.get("polarity", pd.Series(["POS"]*len(df))).astype(str).str.upper().str.strip()
     pol = pol.where(pol.isin(["POS", "NEG", "NEU"]), "POS")
     df["polarity"] = pol
 
-    # Keep metadata strings for indices (e.g., "1,2"), even if NaN
+    # Keep raw strings for indices mapping
     for col in ["positive", "negative", "agree", "neutral"]:
         if col not in df.columns:
             df[col] = None
@@ -94,17 +82,14 @@ def _load_survey_questions() -> pd.DataFrame:
 @st.cache_data(show_spinner=False)
 def _load_scales() -> pd.DataFrame:
     """
-    Loads Survey Scales.xlsx. We support both 'wide' and 'long' shapes.
-
-    Wide example (preferred):
-      code | answer1 | answer2 | answer3 | ... (labels as strings)
-
+    Loads Survey Scales.xlsx (wide or long).
+    Wide example:
+      code | answer1 | answer2 | answer3 | ...
     Long example:
-      code | index | label (and/or english)
+      code | index | label (or english)
     """
     df = pd.read_excel("metadata/Survey Scales.xlsx")
-    df = df.rename(columns={c: c.strip().lower() for c in df.columns})
-    return df
+    return df.rename(columns={c: c.strip().lower() for c in df.columns})
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -118,7 +103,7 @@ def _parse_indices(meta_val: Any) -> Optional[List[int]]:
     s = str(meta_val).strip()
     if not s:
         return None
-    # Accept forms like '1,2' or '1;2' or '1 | 2'
+    # Accept separators: comma, semicolon, pipe
     tokens = [t.strip() for t in s.replace(";", ",").replace("|", ",").split(",") if t.strip()]
     out: List[int] = []
     for t in tokens:
@@ -130,17 +115,17 @@ def _parse_indices(meta_val: Any) -> Optional[List[int]]:
 
 
 def _labels_for_indices(scales_df: pd.DataFrame, code: str, indices: Optional[List[int]]) -> Optional[List[str]]:
-    """Return labels for the given indices from Survey Scales."""
+    """Return labels for the given indices from Survey Scales; supports wide and long formats."""
     if not indices:
         return None
     code_u = str(code).strip().upper()
     df = scales_df
 
-    # Try WIDE format first: row for code; columns answer1..answer7
-    wide_cols = [c for c in df.columns if c.startswith("answer") and c[6:].isdigit()]
-    if wide_cols and "code" in df.columns:
+    # Try wide format
+    if "code" in df.columns:
         row = df[df["code"].astype(str).str.upper() == code_u]
-        if not row.empty:
+        wide_cols = [c for c in df.columns if c.startswith("answer") and c[6:].isdigit()]
+        if not row.empty and wide_cols:
             labels: List[str] = []
             r0 = row.iloc[0]
             for i in indices:
@@ -149,9 +134,10 @@ def _labels_for_indices(scales_df: pd.DataFrame, code: str, indices: Optional[Li
                     val = str(r0[col]).strip()
                     if val and val.lower() != "nan":
                         labels.append(val)
-            return labels or None
+            if labels:
+                return labels
 
-    # Try LONG format: expect columns ('code', 'index', 'label' or 'english')
+    # Try long format
     long_ok = {"code", "index"} <= set(df.columns) and ("label" in df.columns or "english" in df.columns)
     if long_ok:
         labcol = "label" if "label" in df.columns else "english"
@@ -164,7 +150,8 @@ def _labels_for_indices(scales_df: pd.DataFrame, code: str, indices: Optional[Li
                     lab = str(hit.iloc[0][labcol]).strip()
                     if lab and lab.lower() != "nan":
                         labels.append(lab)
-            return labels or None
+            if labels:
+                return labels
 
     return None
 
@@ -174,7 +161,7 @@ def _labels_for_indices(scales_df: pd.DataFrame, code: str, indices: Optional[Li
 # ─────────────────────────────────────────────────────────────────────────────
 
 def _find_col(df: pd.DataFrame, candidates: List[str]) -> Optional[str]:
-    """Find first column name present (case-insensitive) among candidates."""
+    """Find first column present (case-insensitive) among candidates, return original name."""
     lower_map = {c.lower(): c for c in df.columns}
     for cand in candidates:
         c = lower_map.get(cand.lower())
@@ -184,93 +171,73 @@ def _find_col(df: pd.DataFrame, candidates: List[str]) -> Optional[str]:
 
 
 def _has_valid_values(series: pd.Series) -> bool:
-    """True if there is at least one non-sentinel, non-NA value."""
-    if series is None:
+    """True if at least one non-sentinel, non-NA value exists."""
+    if series is None or series.empty:
         return False
-    s = pd.to_numeric(series, errors="coerce")
-    if s.empty:
-        return False
-    s = s.replace({SENTINEL: pd.NA})
+    s = pd.to_numeric(series, errors="coerce").replace({SENTINEL: pd.NA})
     return s.notna().any()
 
 
 def _choose_reporting(df: pd.DataFrame, qcode: str, qmeta: pd.Series) -> Tuple[str, str, str, Optional[List[int]]]:
     """
     Decide (metric_col, reporting_field, metric_label, meaning_indices) for this question.
-    - metric_col: exact column name in df (case-preserving).
-    - reporting_field: 'POSITIVE' | 'NEGATIVE' | 'AGREE' | 'ANSWER1'
-    - metric_label: human-friendly label for the AI (kept for compatibility).
-    - meaning_indices: list like [1,2] based on the chosen field (from metadata),
-                       or [1] for ANSWER1; may be None.
+      metric_col: exact column name in df (case-preserving).
+      reporting_field: 'POSITIVE' | 'NEGATIVE' | 'AGREE' | 'ANSWER1'
+      metric_label: human label for AI (compat).
+      meaning_indices: [1,2], [4,5], etc. Based on metadata for the chosen field,
+                       or [1] for ANSWER1; can be None.
 
     NEUTRAL is intentionally not used for reporting.
     """
-    # Find common columns, case-insensitive
+    # Common column name candidates
     col_positive = _find_col(df, ["Positive", "POSITIVE"])
     col_negative = _find_col(df, ["Negative", "NEGATIVE"])
     col_agree    = _find_col(df, ["AGREE", "Agree"])
-    col_answer1  = _find_col(df, ["Answer1", "ANSWER1"])
+    col_answer1  = _find_col(df, ["Answer1", "ANSWER1", "Answer 1"])
 
     pol = (qmeta.get("polarity") or "POS").upper().strip()
 
-    # Helper to test availability (not sentinel)
-    def is_available(colname: Optional[str]) -> bool:
+    def available(colname: Optional[str]) -> bool:
         return bool(colname) and _has_valid_values(df[colname])  # type: ignore[index]
 
-    # Pick initial target based on POLARITY
+    # Selection by polarity + fallback chain
     target = None
     metric_label = ""
-    meta_field = None  # which metadata column to read indices from
+    meta_field = None  # which metadata column we read indices from
     if pol == "POS":
-        if is_available(col_positive):
-            target = col_positive
-            meta_field = "positive"
-            metric_label = "% favourable"
-        elif is_available(col_agree):
-            target = col_agree
-            meta_field = "agree"
-            metric_label = "% selected (AGREE)"
-        elif is_available(col_answer1):
-            target = col_answer1
-            meta_field = None
-            metric_label = "% selected (Answer1)"
+        if available(col_positive):
+            target, meta_field, metric_label = col_positive, "positive", "% favourable"
+        elif available(col_agree):
+            target, meta_field, metric_label = col_agree, "agree", "% selected (AGREE)"
+        elif available(col_answer1):
+            target, meta_field, metric_label = col_answer1, None, "% selected (Answer1)"
     elif pol == "NEG":
-        if is_available(col_negative):
-            target = col_negative
-            meta_field = "negative"
-            metric_label = "% problem"
-        elif is_available(col_agree):
-            target = col_agree
-            meta_field = "agree"
-            metric_label = "% selected (AGREE)"
-        elif is_available(col_answer1):
-            target = col_answer1
-            meta_field = None
-            metric_label = "% selected (Answer1)"
+        if available(col_negative):
+            target, meta_field, metric_label = col_negative, "negative", "% problem"
+        elif available(col_agree):
+            target, meta_field, metric_label = col_agree, "agree", "% selected (AGREE)"
+        elif available(col_answer1):
+            target, meta_field, metric_label = col_answer1, None, "% selected (Answer1)"
     else:  # NEU
-        if is_available(col_agree):
-            target = col_agree
-            meta_field = "agree"
-            metric_label = "% selected (AGREE)"
-        elif is_available(col_answer1):
-            target = col_answer1
-            meta_field = None
-            metric_label = "% selected (Answer1)"
+        if available(col_agree):
+            target, meta_field, metric_label = col_agree, "agree", "% selected (AGREE)"
+        elif available(col_answer1):
+            target, meta_field, metric_label = col_answer1, None, "% selected (Answer1)"
 
+    # As a last resort, try any present in a sensible order
     if not target:
-        # As a last resort, try any present column in preferred order
         for col, label, mfield in [
             (col_positive, "% favourable", "positive"),
             (col_negative, "% problem", "negative"),
             (col_agree, "% selected (AGREE)", "agree"),
             (col_answer1, "% selected (Answer1)", None),
         ]:
-            if is_available(col):
+            if available(col):
                 target, metric_label, meta_field = col, label, mfield
                 break
 
     if not target:
-        # No usable column found
+        # No usable column under current filters
         return "", "", "", None
 
     # reporting_field string for the AI
@@ -309,14 +276,13 @@ def _validate_frame(df: pd.DataFrame) -> Tuple[bool, List[str]]:
     Advisory checks across displayed rows (year × demographic):
       (a) If Positive and Negative exist: |(100 - Positive) - Negative| <= 1.0
       (b) If Positive+Neutral+Negative exist: sum ≈ 100 (+/- 1.0)
-      (c) For AGREE/ANSWER1, optionally check Answer1..K sum ≈ 100 if present.
     """
     issues: List[str] = []
     cols = set(df.columns)
 
-    has_pos = _find_col(df, ["Positive", "POSITIVE"]) is not None
-    has_neu = _find_col(df, ["Neutral", "NEUTRAL"]) is not None
-    has_neg = _find_col(df, ["Negative", "NEGATIVE"]) is not None
+    pos_col = _find_col(df, ["Positive", "POSITIVE"])
+    neg_col = _find_col(df, ["Negative", "NEGATIVE"])
+    neu_col = _find_col(df, ["Neutral", "NEUTRAL"])
 
     all_ok = True
     for _, row in df.iterrows():
@@ -324,19 +290,19 @@ def _validate_frame(df: pd.DataFrame) -> Tuple[bool, List[str]]:
         demo = row.get("Demographic", row.get("group", None))
         who = f"Year {yr}" + (f", {demo}" if isinstance(demo, str) and demo else "")
 
-        if has_pos and has_neg:
-            p = _safe_float(row[_find_col(df, ["Positive", "POSITIVE"])])  # type: ignore[index]
-            n = _safe_float(row[_find_col(df, ["Negative", "NEGATIVE"])])  # type: ignore[index]
+        if pos_col and neg_col:
+            p = _safe_float(row[pos_col])  # type: ignore[index]
+            n = _safe_float(row[neg_col])  # type: ignore[index]
             if p is not None and n is not None:
                 delta = abs((100.0 - p) - n)
                 if delta > 1.0:
                     all_ok = False
                     issues.append(f"{who}: (100 − Positive) vs Negative differs by {delta:.1f} pts.")
 
-        if has_pos and has_neu and has_neg:
-            p = _safe_float(row[_find_col(df, ["Positive", "POSITIVE"])])  # type: ignore[index]
-            u = _safe_float(row[_find_col(df, ["Neutral", "NEUTRAL"])])   # type: ignore[index]
-            n = _safe_float(row[_find_col(df, ["Negative", "NEGATIVE"])]) # type: ignore[index]
+        if pos_col and neu_col and neg_col:
+            p = _safe_float(row[pos_col])   # type: ignore[index]
+            u = _safe_float(row[neu_col])   # type: ignore[index]
+            n = _safe_float(row[neg_col])   # type: ignore[index]
             if None not in (p, u, n):
                 s = p + u + n  # type: ignore[operator]
                 if abs(s - 100.0) > 1.0:
@@ -359,7 +325,7 @@ def _cached_ai_summary(
 ) -> Tuple[str, Optional[str]]:
     """
     Cache the AI response for a specific (selection_key, qcode, payload).
-    We cache the raw JSON text and error hint from ai.call_openai_json.
+    Returns raw JSON text and error hint from ai.call_openai_json.
     """
     json_text, err = ai.call_openai_json(system_prompt, payload_str)
     return json_text or "", err
@@ -370,7 +336,7 @@ def _clear_ai_caches():
         _cached_ai_summary.clear()  # type: ignore[attr-defined]
     except Exception:
         pass
-    # also clear Streamlit session scratch keys used by this module
+    # Also clear any local session scratch keys used by this module
     for k in list(st.session_state.keys()):
         if str(k).startswith("menu1_ai_cache_"):
             del st.session_state[k]
@@ -388,21 +354,21 @@ def render_ai_summary_section(
     selection_key: str,
 ) -> None:
     """
-    Render the AI Summary and the AI Data Validation line below the tabs.
+    Render the AI Summary and the AI Data Validation line directly below the tabs.
 
     Parameters
     ----------
     tables_by_q : Dict[qcode, DataFrame]
-        Per-question display tables already shown in tabs, with columns like:
-        Year, optional Demographic/group, Positive, Neutral, Negative, AGREE (optional), Answer1..7 (optional), n.
+        Display tables already shown in tabs; columns may include:
+        Year, optional Demographic/group, Positive, Neutral, Negative, AGREE, Answer1..7, n.
     qtext_by_q : Dict[qcode, text]
-        Human-readable question text.
+        Question text for each code.
     category_in_play : bool
-        True if a demographic subgroup is active; used for phrasing inside the AI (already covered by addendum).
+        True if a demographic subgroup is active; used for phrasing by the AI.
     ai_enabled : bool
-        Current AI toggle state. When False, we render a compact note + validation line.
+        Current AI toggle state. When False, we skip calls but still show validation.
     selection_key : str
-        Stable identifier for the current selection (questions, years, demographic). Used by caching.
+        Stable identifier for the current selection (questions + years + demo), used for caching.
     """
     st.markdown("---")
     st.markdown("### AI Summary")
@@ -415,7 +381,6 @@ def render_ai_summary_section(
     qmeta_df = _load_survey_questions()
     scales_df = _load_scales()
 
-    # 1) Per-question AI outputs (progressive)
     narratives: Dict[str, str] = {}
     overall_rows: List[Dict[str, Any]] = []
     q_to_metric: Dict[str, str] = {}
@@ -425,26 +390,25 @@ def render_ai_summary_section(
     code_to_midx: Dict[str, List[int]] = {}
     code_to_mlbl: Dict[str, List[str]] = {}
 
+    # 1) Per-question summaries (progressive)
     for qcode, df in tables_by_q.items():
         qtext = qtext_by_q.get(qcode, qcode)
         code_to_text[qcode] = qtext
 
-        # Attach metadata row (fallback if missing)
+        # Attach metadata row (fallback defaults if missing)
         row = qmeta_df[qmeta_df["code"].str.upper() == str(qcode).upper()]
         if row.empty:
             qmeta = pd.Series({"polarity": "POS", "positive": None, "negative": None, "agree": None})
         else:
             qmeta = row.iloc[0]
 
-        # Choose reporting field/column
+        # Choose reporting field + column by POLARITY with fallbacks
         metric_col, reporting_field, metric_label, meaning_idx = _choose_reporting(df, qcode, qmeta)
-
-        # If no usable column, skip gracefully
         if not metric_col:
             st.caption(f"⚠️ No data to summarize for {qcode} under current filters.")
             continue
 
-        # Resolve labels for meaning indices
+        # Resolve labels (optional)
         meaning_lbls = _labels_for_indices(scales_df, qcode, meaning_idx) if meaning_idx else None
 
         # Save for overall payload
@@ -456,7 +420,7 @@ def render_ai_summary_section(
         if meaning_lbls:
             code_to_mlbl[qcode] = meaning_lbls
 
-        # Build per-question payload (include ALL years for trend classification)
+        # Build per-question payload (include ALL years so AI can classify trend across all years)
         payload_str = ai.build_per_q_prompt(
             question_code=qcode,
             question_text=qtext,
@@ -470,22 +434,19 @@ def render_ai_summary_section(
             meaning_labels=meaning_lbls,
         )
 
-        # Progressive rendering
-        if not ai_enabled:
-            # AI off — we still gather data for validation, but skip calling the model
-            narratives[qcode] = ""
-        else:
+        # Progressive rendering (spinner only when AI is enabled)
+        narrative = ""
+        if ai_enabled:
             with st.spinner(f"Generating summary for {qcode}…"):
                 json_text, err = _cached_ai_summary(selection_key, qcode, payload_str, ai.AI_SYSTEM_PROMPT)
             narrative = ai.extract_narrative(json_text) or ""
-            narratives[qcode] = narrative
+        narratives[qcode] = narrative
 
-        # Show per-question narrative (maintain minimal spacing)
-        if narratives[qcode]:
-            st.write(f"**{qcode} — {qtext}**  \n{narratives[qcode]}")
+        # Render per-question block (minimal spacing)
+        if narrative:
+            st.write(f"**{qcode} — {qtext}**  \n{narrative}")
 
-        # For building the overall multi-question payload:
-        # Create compact rows (question_code, year, value)
+        # For overall payload: collect compact rows for chosen metric
         ycol = "Year" if "Year" in df.columns else ("year" if "year" in df.columns else None)
         if ycol is not None:
             tmp = df[[ycol, metric_col]].copy()
@@ -496,14 +457,12 @@ def render_ai_summary_section(
             for _, r in tmp.iterrows():
                 overall_rows.append({"q": qcode, "y": int(r["Year"]), "v": int(r["Value"])})
 
-    # 2) Overall synthesis (if >1 question)
+    # 2) Overall synthesis (appears when >1 question)
     if len(overall_rows) >= 2:
-        # Build a small pivot: rows=question, cols=years, vals=value
         ov = pd.DataFrame(overall_rows)
         if not ov.empty:
             pivot = ov.pivot_table(index="q", columns="y", values="v", aggfunc="first").reset_index()
             pivot = pivot.rename(columns={"q": "question_code"})
-            # Reuse ai.build_overall_prompt so the model applies its cross-question logic
             user_msg = ai.build_overall_prompt(
                 tab_labels=list(tables_by_q.keys()),
                 pivot_df=pivot,
@@ -522,7 +481,7 @@ def render_ai_summary_section(
                     st.markdown("#### Overall")
                     st.write(overall_narr)
 
-    # 3) AI Data Validation line
+    # 3) AI Data Validation line (advisory only)
     _render_validation_line(tables_by_q)
 
     # 4) Start a new search (preserve AI toggle; clear AI caches only)
@@ -556,7 +515,6 @@ def _render_validation_line(tables_by_q: Dict[str, pd.DataFrame]) -> None:
 # ─────────────────────────────────────────────────────────────────────────────
 
 def _render_start_new_search() -> None:
-    # Tight spacing
     c1, c2, _ = st.columns([1.6, 6, 2.4])
     with c1:
         if st.button("🔁 Start a new search", key="menu1_ai_new_search"):
