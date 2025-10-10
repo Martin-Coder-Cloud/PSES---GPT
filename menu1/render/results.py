@@ -1,6 +1,6 @@
 # menu1/render/results.py
 # ---------------------------------------------------------------------
-# Menu 1 – Results: Tables + AI Summary + Validation (metadata-driven).
+# Menu 1 – Results: Tables (tabs) + Export + Start New + AI Summary + Validation.
 #
 # Back-compat shims:
 # - Exports tabs_summary_and_per_q(...) for legacy callers.
@@ -11,26 +11,24 @@
 #   OR:
 #     tabs_summary_and_per_q(payload={ ... })  # payload may use varied key names; we normalize.
 #
-# What this renders (in order):
-#   1) The per-question tables in tabs (minimal spacing), with optional source links under each table
-#      if present in the payload (e.g., sources_by_q / source_links / links).
-#   2) "AI Summary" section (per-question summaries, then Overall).
-#   3) "AI Data Validation" line + details expander.
-#   4) "Start a new search" button that clears AI caches but preserves the AI toggle state.
+# Restores finalized UX:
+#   • Tabs first (with a leading “Summary” tab), AI Summary below.
+#   • “Export to Excel” + “Start a new search” aligned on one row.
+#   • Titles above tables; minimal spacing preserved.
+#   • Source links under each table.
 #
-# Implements:
-# - No math in reporting (only narrates pre-aggregated values).
-# - POLARITY -> reporting field with fallbacks:
+# Implements data rules:
+#   • No math in reporting; narrate pre-aggregated values.
+#   • POLARITY -> reporting field with fallbacks:
 #       POS -> POSITIVE -> AGREE -> ANSWER1
 #       NEG -> NEGATIVE -> AGREE -> ANSWER1
 #       NEU -> AGREE    -> ANSWER1
-# - NEUTRAL kept in metadata, not used for reporting.
-# - Meaning indices from Survey Questions.xlsx -> labels from Survey Scales.xlsx
-#   (supports code column named 'code', 'question', or 'questions').
-# - Per-question AI summaries (spinners) + Overall synthesis (when ≥2 comparable questions).
-# - All-years trend classification via ai.py addendum; gap math only.
-# - D57_2 exception: list ALL options (latest year) exactly as provided; excluded from Overall.
-# - Validation line ✅/❌ and “Start a new search” (clears AI caches; keeps toggle).
+#   • Meaning indices from Survey Questions.xlsx -> labels from Survey Scales.xlsx
+#     (supports code column named 'code', 'question', or 'questions').
+#   • Per-question AI summaries (spinners) + Overall synthesis (when ≥2 comparable questions).
+#   • All-years trend classification (AI payload covers ALL years; only gap math is ever done).
+#   • D57_2 exception: list ALL options (latest year) exactly as provided; excluded from Overall.
+#   • Validation line ✅/❌ and “Start a new search” (clears AI caches; keeps AI toggle).
 # ---------------------------------------------------------------------
 
 from __future__ import annotations
@@ -39,6 +37,7 @@ from typing import Dict, List, Tuple, Optional, Any
 import math
 import json
 import hashlib
+import io
 import pandas as pd
 import streamlit as st
 
@@ -81,6 +80,7 @@ def _load_survey_questions() -> pd.DataFrame:
     pol = pol.where(pol.isin(["POS", "NEG", "NEU"]), "POS")
     df["polarity"] = pol
 
+    # These hold the meaning indices for each reporting field (e.g., "1,2")
     for col in ["positive", "negative", "agree", "neutral"]:
         if col not in df.columns:
             df[col] = None
@@ -165,6 +165,14 @@ def _label_for_single(scales_df: pd.DataFrame, code: str, idx: int) -> Optional[
     labs = _labels_for_indices(scales_df, code, [idx])
     return labs[0] if labs else None
 
+def _compose_metric_label(base_label: str, meaning_lbls: Optional[List[str]]) -> str:
+    """
+    Make metric label descriptive for the AI (e.g., "% selecting Strongly agree / Agree").
+    """
+    if meaning_lbls:
+        return f"% selecting {' / '.join(meaning_lbls)}"
+    return base_label or "% of respondents"
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Column detection & availability
@@ -206,6 +214,10 @@ def _detect_group_col(df: pd.DataFrame) -> Optional[str]:
 # ─────────────────────────────────────────────────────────────────────────────
 
 def _choose_reporting(df: pd.DataFrame, qcode: str, qmeta: pd.Series) -> Tuple[str, str, str, Optional[List[int]]]:
+    """
+    Returns (metric_col, reporting_field, metric_label, meaning_indices).
+    reporting_field in {'POSITIVE','NEGATIVE','AGREE','ANSWER1'}.
+    """
     col_positive = _find_col(df, ["Positive", "POSITIVE"])
     col_negative = _find_col(df, ["Negative", "NEGATIVE"])
     col_agree    = _find_col(df, ["AGREE", "Agree"])
@@ -358,9 +370,10 @@ def _build_distribution_payload_for_d57_2(qcode: str, qtext: str, df_disp: pd.Da
     latest_year = int(df["_year_"].max())
 
     latest_rows = df[df["_year_"] == latest_year]
-    chosen_row = None
-    if gcol and not latest_rows.empty:
-        mask_all = latest_rows[gcol].astype(str).str.lower().str.contains("all respondents")
+    if latest_rows.empty:
+        return None
+    if gcol:
+        mask_all = latest_rows[gcol].astype(str).str.lower().str.contains("all respondents", na=False)
         chosen_row = latest_rows[mask_all].iloc[0] if mask_all.any() else latest_rows.iloc[0]
     else:
         chosen_row = latest_rows.iloc[0]
@@ -406,35 +419,163 @@ def _build_distribution_payload_for_d57_2(qcode: str, qtext: str, df_disp: pd.Da
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# TABLES: render tabs with per-question tables (and optional source links)
+# TABLES + TOOLBAR (Export + Start New)
 # ─────────────────────────────────────────────────────────────────────────────
 
-def _render_tabs_with_tables(tables_by_q: Dict[str, pd.DataFrame],
+def _render_toolbar_and_tabs(tables_by_q: Dict[str, pd.DataFrame],
                              qtext_by_q: Dict[str, str],
-                             sources_by_q: Optional[Dict[str, str]] = None) -> None:
-    """Renders the per-question tables in tabs with minimal spacing and optional source links."""
+                             sources_by_q: Optional[Dict[str, str]],
+                             category_in_play: bool) -> None:
+    """
+    Renders:
+      • Toolbar row: Export to Excel (left) + Start a new search (right), aligned
+      • Tabs: Summary (computed) + one tab per question
+    """
+    # Toolbar row
+    c_left, c_spacer, c_right = st.columns([2, 6, 2], gap="small")
+    with c_left:
+        _render_export_button(tables_by_q)
+    with c_right:
+        if st.button("🔁 Start a new search", key="menu1_ai_new_search_top"):
+            _clear_ai_caches()
+            st.toast("AI selections cleared. Adjust filters above and run again.", icon="✅")
+
+    # Tabs
     if not tables_by_q:
         st.info("No questions selected.")
         return
 
-    # Stable tab order by question code
     ordered_codes = [k for k in sorted(tables_by_q.keys()) if isinstance(tables_by_q.get(k), pd.DataFrame)]
     if not ordered_codes:
         st.info("No questions selected.")
         return
 
-    tabs = st.tabs(ordered_codes)
-    for i, qcode in enumerate(ordered_codes):
+    # Build a computed "Summary" table (latest year + prev year + YoY + multi-year trend)
+    summary_df = _build_overall_summary_table(tables_by_q, qtext_by_q, category_in_play)
+
+    tab_labels = ["Summary"] + ordered_codes
+    tabs = st.tabs(tab_labels)
+
+    # Summary tab first
+    with tabs[0]:
+        st.markdown("##### Overall summary")
+        st.dataframe(summary_df, use_container_width=True)
+
+    # Then per-question tabs
+    for i, qcode in enumerate(ordered_codes, start=1):
         with tabs[i]:
             title = qtext_by_q.get(qcode, qcode)
-            # Minimal caption above to keep spacing uniform
-            st.caption(f"**{qcode}** — {title}")
+            st.markdown(f"##### {qcode} — {title}")
             st.dataframe(tables_by_q[qcode], use_container_width=True)
-            # Optional source links directly under each table
             if sources_by_q:
                 src = sources_by_q.get(qcode)
                 if isinstance(src, str) and src.strip():
                     st.caption(src)
+
+
+def _render_export_button(tables_by_q: Dict[str, pd.DataFrame]) -> None:
+    if not tables_by_q:
+        st.button("⬇️ Export to Excel", disabled=True, help="No tables to export.")
+        return
+
+    # Build one workbook, one sheet per question (safe sheet names)
+    buffer = io.BytesIO()
+    with pd.ExcelWriter(buffer, engine="xlsxwriter") as writer:
+        for qcode, df in tables_by_q.items():
+            if not isinstance(df, pd.DataFrame) or df.empty:
+                continue
+            sheet_name = str(qcode)[:31] if str(qcode).strip() else "Sheet"
+            df.to_excel(writer, index=False, sheet_name=sheet_name)
+        writer.close()
+    buffer.seek(0)
+
+    st.download_button(
+        label="⬇️ Export to Excel",
+        data=buffer,
+        file_name="PSES_Explorer_Results.xlsx",
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        key="menu1_export_excel",
+        help="Download selected tabulations as an Excel workbook (one sheet per question).",
+    )
+
+
+def _build_overall_summary_table(tables_by_q: Dict[str, pd.DataFrame],
+                                 qtext_by_q: Dict[str, str],
+                                 category_in_play: bool) -> pd.DataFrame:
+    """
+    Builds a compact table summarizing the selected metric per question:
+      Question, Title, Latest Year, Value, Prev Year, YoY Δ, Trend (All Years)
+    NOTE: The "selected metric" for each question is chosen by POLARITY+fallbacks, same as AI.
+    """
+    qmeta_df = _load_survey_questions()
+    rows: List[Dict[str, Any]] = []
+
+    for qcode, df in tables_by_q.items():
+        if qcode in EXCLUDE_FROM_OVERALL:
+            continue
+        if not isinstance(df, pd.DataFrame) or df.empty:
+            continue
+
+        # Polarity + metric selection
+        rowm = qmeta_df[qmeta_df["code"].str.upper() == str(qcode).upper()]
+        qmeta = rowm.iloc[0] if not rowm.empty else pd.Series({"polarity": "POS", "positive": None, "negative": None, "agree": None})
+        metric_col, reporting_field, _, _ = _choose_reporting(df, qcode, qmeta)
+        if not metric_col:
+            continue
+
+        ycol = _detect_year_col(df)
+        if not ycol:
+            continue
+
+        # Only the Year + metric are relevant for this summary
+        tmp = df[[ycol, metric_col]].copy()
+        tmp[ycol] = pd.to_numeric(tmp[ycol], errors="coerce")
+        tmp[metric_col] = pd.to_numeric(tmp[metric_col], errors="coerce").replace({SENTINEL: pd.NA})
+        tmp = tmp.dropna(subset=[ycol, metric_col]).sort_values(ycol)
+        if tmp.empty:
+            continue
+
+        years = tmp[ycol].astype(int).tolist()
+        vals = tmp[metric_col].astype(float).tolist()
+        latest_y = int(years[-1])
+        latest_v = vals[-1]
+
+        prev_y, prev_v, yoy = None, None, None
+        if len(vals) >= 2:
+            prev_y = int(years[-2])
+            prev_v = vals[-2]
+            yoy = None if (prev_v is None or pd.isna(prev_v)) else round(latest_v - prev_v, 1)
+
+        trend = _classify_trend(vals)
+
+        rows.append({
+            "Question": qcode,
+            "Title": qtext_by_q.get(qcode, qcode),
+            "Latest year": latest_y,
+            "Value": round(latest_v, 1) if latest_v is not None and not pd.isna(latest_v) else None,
+            "Prev year": prev_y,
+            "YoY Δ (pts)": yoy,
+            "Trend (all years)": trend,
+        })
+
+    if not rows:
+        return pd.DataFrame({"Message": ["No data available for summary under current filters."]})
+
+    out = pd.DataFrame(rows)
+    # Keep a stable, readable order
+    return out[["Question", "Title", "Latest year", "Value", "Prev year", "YoY Δ (pts)", "Trend (all years)"]]
+
+
+def _classify_trend(series_vals: List[float]) -> str:
+    """Very light-touch multi-year trend: increase/decrease/stable/insufficient."""
+    vals = [v for v in series_vals if v is not None and not pd.isna(v)]
+    if len(vals) < 2:
+        return "insufficient"
+    first, last = vals[0], vals[-1]
+    net = last - first
+    if abs(net) <= 1.0:
+        return "stable"
+    return "increase" if net > 0 else "decrease"
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -477,11 +618,13 @@ def render_ai_summary_section(
             if ai_enabled:
                 special_payload = _build_distribution_payload_for_d57_2(qcode, qtext, df, scales_df)
                 if special_payload is not None:
-                    with st.spinner(f"Generating summary for {qcode}…"):
+                    with st.spinner(f"Generating summary…"):
                         json_text, err = _cached_ai_summary(selection_key, qcode, special_payload, ai.AI_SYSTEM_PROMPT)
                     narrative = ai.extract_narrative(json_text) or ""
             if narrative:
-                st.write(f"**{qcode} — {qtext}**  \n{narrative}")
+                # Show only the question TEXT (avoid code duplication)
+                st.markdown(f"**{qtext}**")
+                st.write(narrative)
             # Exclude from overall
             continue
 
@@ -496,8 +639,9 @@ def render_ai_summary_section(
             continue
 
         meaning_lbls = _labels_for_indices(scales_df, qcode, meaning_idx) if meaning_idx else None
+        metric_label_verbose = _compose_metric_label(metric_label, meaning_lbls)
 
-        q_to_metric[qcode] = metric_label or "% of respondents"
+        q_to_metric[qcode] = metric_label_verbose
         code_to_polhint[qcode] = (qmeta.get("polarity") or "POS").upper()
         code_to_rfield[qcode] = reporting_field
         if meaning_idx:
@@ -505,13 +649,23 @@ def render_ai_summary_section(
         if meaning_lbls:
             code_to_mlbl[qcode] = meaning_lbls
 
-        # Build per-q payload (include ALL years; AI handles all-years trend)
+        # Build per-q payload (include ALL years; trim to Year+metric when no subgroup to avoid bogus "gaps")
+        ycol = _detect_year_col(df)
+        if not ycol:
+            st.caption(f"⚠️ No year column detected for {qcode}.")
+            continue
+        if category_in_play:
+            df_for_ai = df
+        else:
+            # Only the Year + selected metric to prevent gap claims on All Respondents
+            df_for_ai = df[[ycol, metric_col]].copy()
+
         payload_str = ai.build_per_q_prompt(
             question_code=qcode,
             question_text=qtext,
-            df_disp=df,
+            df_disp=df_for_ai,
             metric_col=metric_col,
-            metric_label=metric_label,
+            metric_label=metric_label_verbose,
             category_in_play=bool(category_in_play),
             polarity_hint=code_to_polhint[qcode],
             reporting_field=reporting_field,
@@ -521,22 +675,22 @@ def render_ai_summary_section(
 
         narrative = ""
         if ai_enabled:
-            with st.spinner(f"Generating summary for {qcode}…"):
+            with st.spinner(f"Generating summary…"):
                 json_text, err = _cached_ai_summary(selection_key, qcode, payload_str, ai.AI_SYSTEM_PROMPT)
             narrative = ai.extract_narrative(json_text) or ""
         if narrative:
-            st.write(f"**{qcode} — {qtext}**  \n{narrative}")
+            # Show only the question TEXT (avoid code duplication)
+            st.markdown(f"**{qtext}**")
+            st.write(narrative)
 
-        # Collect rows for Overall
-        ycol = _detect_year_col(df)
-        if ycol is not None:
-            tmp = df[[ycol, metric_col]].copy()
-            tmp = tmp.rename(columns={ycol: "Year", metric_col: "Value"})
-            tmp["Year"] = pd.to_numeric(tmp["Year"], errors="coerce").astype("Int64")
-            tmp["Value"] = pd.to_numeric(tmp["Value"], errors="coerce").astype("Int64").replace({SENTINEL: pd.NA})
-            tmp = tmp.dropna(subset=["Year", "Value"])
-            for _, r in tmp.iterrows():
-                overall_rows.append({"q": qcode, "y": int(r["Year"]), "v": int(r["Value"])})
+        # Collect rows for Overall (for synthesis context, not shown as a table here)
+        tmp = df[[ycol, metric_col]].copy()
+        tmp = tmp.rename(columns={ycol: "Year", metric_col: "Value"})
+        tmp["Year"] = pd.to_numeric(tmp["Year"], errors="coerce").astype("Int64")
+        tmp["Value"] = pd.to_numeric(tmp["Value"], errors="coerce").astype("Int64").replace({SENTINEL: pd.NA})
+        tmp = tmp.dropna(subset=["Year", "Value"])
+        for _, r in tmp.iterrows():
+            overall_rows.append({"q": qcode, "y": int(r["Year"]), "v": int(r["Value"])})
 
     # Overall synthesis (exclude multi-response items)
     usable_rows = [r for r in overall_rows if r["q"] not in EXCLUDE_FROM_OVERALL]
@@ -563,9 +717,14 @@ def render_ai_summary_section(
                     st.markdown("#### Overall")
                     st.write(overall_narr)
 
-    # Validation line + start-new-search
+    # Validation line + (a second) Start New (kept below per your spec)
     _render_validation_line(tables_by_q)
-    _render_start_new_search()
+
+    c_left, _, c_right = st.columns([2, 6, 2], gap="small")
+    with c_right:
+        if st.button("🔁 Start a new search", key="menu1_ai_new_search_bottom"):
+            _clear_ai_caches()
+            st.toast("AI selections cleared. Adjust filters above and run again.", icon="✅")
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -641,7 +800,6 @@ def _extract_sources_from_payload(p: Dict[str, Any]) -> Optional[Dict[str, str]]
     for key in ("sources_by_q", "source_links_by_q", "source_links", "links_by_q", "links"):
         v = p.get(key)
         if isinstance(v, dict) and v:
-            # Cast to str->str
             return {str(k): str(vv) for k, vv in v.items() if isinstance(vv, (str, int, float))}
     return None
 
@@ -654,8 +812,10 @@ def tabs_summary_and_per_q(*args, **kwargs) -> None:
     Supports:
       1) tabs_summary_and_per_q(tables_by_q, qtext_by_q, category_in_play, ai_enabled, selection_key)
       2) tabs_summary_and_per_q(payload={ ... }) where payload keys may vary.
-         If a payload is provided, this will render the TABULATED TABLES first,
-         then the AI Summary section below.
+         If a payload is provided, this will render:
+           - Toolbar (Export + Start New),
+           - TABULATED TABLES (including a computed 'Summary' tab),
+           - then the AI Summary section below.
     """
     # Style 2: payload kwarg
     if "payload" in kwargs and isinstance(kwargs["payload"], dict):
@@ -663,18 +823,16 @@ def tabs_summary_and_per_q(*args, **kwargs) -> None:
         tables_by_q, qtext_by_q = _extract_tables_and_texts_from_payload(p)
         sources_by_q = _extract_sources_from_payload(p)
 
-        # Render the TABULATIONS in tabs (this restores your missing tables)
-        _render_tabs_with_tables(tables_by_q, qtext_by_q, sources_by_q)
-
-        # Other flags for AI Summary
+        # Toolbar + Tabs (restores table UX)
         category_in_play = _coerce_bool(
             p.get("category_in_play", p.get("demographic_active", p.get("has_subgroup", False))), False
         )
+        _render_toolbar_and_tabs(tables_by_q, qtext_by_q, sources_by_q, category_in_play)
+
+        # AI flags
         ai_enabled = _coerce_bool(p.get("ai_enabled", p.get("ai", p.get("use_ai", True))), True)
         selection_key = p.get("selection_key")
-
         if not selection_key:
-            # Derive a stable selection key from question codes + years + demo flag
             try:
                 years_seen = set()
                 for q, df in (tables_by_q or {}).items():
@@ -688,7 +846,7 @@ def tabs_summary_and_per_q(*args, **kwargs) -> None:
             except Exception:
                 selection_key = "menu1_legacy_selection"
 
-        # Then AI Summary below the tabs
+        # AI Summary below the tabs
         return render_ai_summary_section(
             tables_by_q=tables_by_q or {},
             qtext_by_q=qtext_by_q or {},
@@ -697,23 +855,29 @@ def tabs_summary_and_per_q(*args, **kwargs) -> None:
             selection_key=selection_key,
         )
 
-    # Style 1: positional or explicit kwargs (assume tables already rendered upstream)
+    # Style 1: positional/kwargs (assume tables are rendered upstream)
     if args and len(args) >= 5:
         tables_by_q, qtext_by_q, category_in_play, ai_enabled, selection_key = args[:5]
+        # Render toolbar + tabs so UX remains consistent even in direct calls
+        _render_toolbar_and_tabs(tables_by_q, qtext_by_q, None, bool(category_in_play))
         return render_ai_summary_section(tables_by_q, qtext_by_q, category_in_play, ai_enabled, selection_key)
 
     # Mixed kwargs
+    tables_by_q = kwargs.get("tables_by_q", args[0] if args else {})
+    qtext_by_q = kwargs.get("qtext_by_q", {})
+    category_in_play = _coerce_bool(kwargs.get("category_in_play", False), False)
+    _render_toolbar_and_tabs(tables_by_q, qtext_by_q, None, category_in_play)
     return render_ai_summary_section(
-        tables_by_q=kwargs.get("tables_by_q", args[0] if args else {}),
-        qtext_by_q=kwargs.get("qtext_by_q", {}),
-        category_in_play=_coerce_bool(kwargs.get("category_in_play", False), False),
+        tables_by_q=tables_by_q,
+        qtext_by_q=qtext_by_q,
+        category_in_play=category_in_play,
         ai_enabled=_coerce_bool(kwargs.get("ai_enabled", True), True),
         selection_key=kwargs.get("selection_key", "menu1_default_selection"),
     )
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Validation line UI + Clear caches control
+# Validation line UI
 # ─────────────────────────────────────────────────────────────────────────────
 
 def _render_validation_line(tables_by_q: Dict[str, pd.DataFrame]) -> None:
@@ -732,10 +896,3 @@ def _render_validation_line(tables_by_q: Dict[str, pd.DataFrame]) -> None:
         with st.expander("Details"):
             for msg in problems:
                 st.write("• " + msg)
-
-def _render_start_new_search() -> None:
-    c1, c2, _ = st.columns([1.6, 6, 2.4])
-    with c1:
-        if st.button("🔁 Start a new search", key="menu1_ai_new_search"):
-            _clear_ai_caches()
-            st.toast("AI selections cleared. Adjust filters above and run again.", icon="✅")
