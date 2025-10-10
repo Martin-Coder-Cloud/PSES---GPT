@@ -204,9 +204,9 @@ def _choose_reporting(df: pd.DataFrame, qcode: str, qmeta: pd.Series) -> Tuple[s
     col_agree    = _find_col(df, ["AGREE", "Agree"])
     col_answer1  = _find_col(df, ["Answer1", "ANSWER1", "Answer 1"])
 
-    pol = (qmeta.get("polarity") or "POS").upper().str ip()
-    # fix accidental whitespace in case metadata had it
-    pol = pol.strip()
+    # FIXED: use .strip() (previous typo was 'str ip()')
+    pol = (qmeta.get("polarity") or "POS")
+    pol = str(pol).upper().strip()
 
     def available(colname: Optional[str]) -> bool:
         return bool(colname) and _has_valid_values(df[colname])  # type: ignore[index]
@@ -557,7 +557,6 @@ def _pick_best_df_dict(d: Dict[str, Any]) -> Optional[Dict[str, pd.DataFrame]]:
                 candidates.append((k, v, df_count))
     if not candidates:
         return None
-    # Pick the dict with most DataFrame values
     candidates.sort(key=lambda t: t[2], reverse=True)
     return candidates[0][1]
 
