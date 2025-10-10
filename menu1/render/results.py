@@ -2,18 +2,23 @@
 # ---------------------------------------------------------------------
 # Menu 1 – Results: AI Summary + AI Data Validation (metadata-driven).
 #
-# Back-compat shim:
-# - Exports tabs_summary_and_per_q(...) so existing callers keep working.
-# - tabs_summary_and_per_q(...) simply delegates to render_ai_summary_section(...).
+# Back-compat shims:
+# - Exports tabs_summary_and_per_q(...) to match legacy callers.
+# - Accepts either:
+#     tabs_summary_and_per_q(
+#         tables_by_q=..., qtext_by_q=..., category_in_play=..., ai_enabled=..., selection_key=...
+#       )
+#   OR:
+#     tabs_summary_and_per_q(payload={ ... })  # where payload bundles those keys.
 #
 # Implements:
-# - No math in reporting (only pre-aggregated values are narrated).
+# - No math in reporting (only narrates pre-aggregated values).
 # - POLARITY selects reporting field with fallbacks:
 #       POS -> POSITIVE -> AGREE -> ANSWER1
 #       NEG -> NEGATIVE -> AGREE -> ANSWER1
 #       NEU -> AGREE    -> ANSWER1
-# - NEUTRAL in metadata is ignored for reporting (kept for completeness).
-# - Meaning indices from Survey Questions.xlsx are mapped to labels via Survey Scales.xlsx.
+# - NEUTRAL exists in metadata for completeness (not used for reporting).
+# - Meaning indices from Survey Questions.xlsx -> labels from Survey Scales.xlsx.
 # - Per-question AI summaries (spinners) + Overall synthesis (when ≥2 questions).
 # - All-years trend classification via ai.py addendum; gap math only.
 # - D57_2 exception: list ALL options for latest year (no aggregation); excluded from Overall.
@@ -26,6 +31,7 @@ from __future__ import annotations
 from typing import Dict, List, Tuple, Optional, Any
 import math
 import json
+import hashlib
 import pandas as pd
 import streamlit as st
 
@@ -427,7 +433,8 @@ def render_ai_summary_section(
     scales_df = _load_scales()
 
     narratives: Dict[str, str] = {}
-    overall_rows: List[Dict[str, Any]] = []
+    overall_rows: List[Dict[str, Any]] = {}
+    overall_rows = []
     q_to_metric: Dict[str, str] = {}
     code_to_text: Dict[str, str] = {}
     code_to_polhint: Dict[str, str] = {}
@@ -538,23 +545,63 @@ def render_ai_summary_section(
 
 
 # Back-compat: existing callers expect this symbol in menu1.render.results
-def tabs_summary_and_per_q(
-    tables_by_q: Dict[str, pd.DataFrame],
-    qtext_by_q: Dict[str, str],
-    category_in_play: bool,
-    ai_enabled: bool,
-    selection_key: str,
-) -> None:
+def tabs_summary_and_per_q(*args, **kwargs) -> None:
     """
-    Backward-compatible entry point expected by the app.
-    Simply delegates to render_ai_summary_section(...).
+    Backward-compatible entry point expected by some app code.
+
+    Supports two calling styles:
+      1) tabs_summary_and_per_q(tables_by_q, qtext_by_q, category_in_play, ai_enabled, selection_key)
+      2) tabs_summary_and_per_q(payload={ ... }) where payload keys include:
+         - tables_by_q: Dict[str, DataFrame]
+         - qtext_by_q: Dict[str, str]
+         - category_in_play: bool
+         - ai_enabled: bool
+         - selection_key: str  (optional; we will derive if missing)
     """
-    render_ai_summary_section(
-        tables_by_q=tables_by_q,
-        qtext_by_q=qtext_by_q,
-        category_in_play=category_in_play,
-        ai_enabled=ai_enabled,
-        selection_key=selection_key,
+    # Style 2: payload kwarg (preferred in legacy code)
+    if "payload" in kwargs and isinstance(kwargs["payload"], dict):
+        p = kwargs["payload"]
+        tables_by_q = p.get("tables_by_q") or kwargs.get("tables_by_q") or (args[0] if args else {})
+        qtext_by_q = p.get("qtext_by_q") or kwargs.get("qtext_by_q") or {}
+        category_in_play = bool(p.get("category_in_play", kwargs.get("category_in_play", False)))
+        ai_enabled = bool(p.get("ai_enabled", kwargs.get("ai_enabled", True)))
+        selection_key = p.get("selection_key") or kwargs.get("selection_key")
+
+        # Derive a stable selection_key if not provided
+        if not selection_key:
+            try:
+                # Use question codes + any visible year values to create a deterministic hash
+                qs = sorted(list(tables_by_q.keys()))
+                years_seen = set()
+                for q, df in (tables_by_q or {}).items():
+                    ycol = _detect_year_col(df) if isinstance(df, pd.DataFrame) else None
+                    if ycol and isinstance(df, pd.DataFrame):
+                        years_seen.update(pd.to_numeric(df[ycol], errors="coerce").dropna().astype(int).tolist())
+                sig = {"qs": qs, "years": sorted(list(years_seen)), "demo": "ON" if category_in_play else "ALL"}
+                selection_key = hashlib.md5(json.dumps(sig, sort_keys=True).encode()).hexdigest()
+            except Exception:
+                selection_key = "menu1_legacy_selection"
+
+        return render_ai_summary_section(
+            tables_by_q=tables_by_q or {},
+            qtext_by_q=qtext_by_q or {},
+            category_in_play=category_in_play,
+            ai_enabled=ai_enabled,
+            selection_key=selection_key,
+        )
+
+    # Style 1: positional or explicit kwargs
+    if args and len(args) >= 5:
+        tables_by_q, qtext_by_q, category_in_play, ai_enabled, selection_key = args[:5]
+        return render_ai_summary_section(tables_by_q, qtext_by_q, category_in_play, ai_enabled, selection_key)
+
+    # Mixed kwargs
+    return render_ai_summary_section(
+        tables_by_q=kwargs.get("tables_by_q", args[0] if args else {}),
+        qtext_by_q=kwargs.get("qtext_by_q", {}),
+        category_in_play=bool(kwargs.get("category_in_play", False)),
+        ai_enabled=bool(kwargs.get("ai_enabled", True)),
+        selection_key=kwargs.get("selection_key", "menu1_default_selection"),
     )
 
 
