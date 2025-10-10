@@ -11,15 +11,18 @@
 # - Fallbacks when the chosen field is missing or sentinel (9999):
 #       POS/NEG -> AGREE -> ANSWER1
 #       NEU     -> AGREE -> ANSWER1
-# - NEUTRAL exists in metadata for completeness (not used in reporting).
+# - NEUTRAL may exist in metadata for completeness (not used in reporting).
 # - Meaning indices for POSITIVE/NEGATIVE/AGREE are read from metadata (e.g., "1,2")
 #   and mapped to labels via Survey Scales.xlsx; both are passed to the AI.
 # - Per-question AI summaries render progressively with spinners.
-# - Overall synthesis appears when >1 question is selected.
+# - Overall synthesis appears when >1 question is selected (apples-to-apples families).
 # - Caching reuses summaries on identical selections (no duplicate calls when toggling AI).
 # - "AI Data Validation" shows ✅ or ❌ with a details expander (advisory only).
 # - "Start a new search" preserves AI toggle state and clears AI caches/selections only.
-# - Technical Notes and source links under tables remain unchanged.
+#
+# NEW (per user request):
+# - Hard-coded exception for D57_2 (multi-response reasons): report ALL options.
+# - Survey Scales.xlsx code column can be 'code', 'question', or 'questions'.
 # ---------------------------------------------------------------------
 
 from __future__ import annotations
@@ -37,6 +40,12 @@ except Exception:
     import ai  # fallback if your module path differs
 
 SENTINEL = 9999
+
+# Multi-response items that must be narrated as a full distribution (no aggregation)
+EXCEPT_MULTI_DISTRIBUTION = {"D57_2"}
+
+# Items excluded from the OVERALL synthesis (because they have no single comparable metric)
+EXCLUDE_FROM_OVERALL = set(EXCEPT_MULTI_DISTRIBUTION)
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Metadata loaders (cached)
@@ -84,9 +93,10 @@ def _load_scales() -> pd.DataFrame:
     """
     Loads Survey Scales.xlsx (wide or long).
     Wide example:
-      code | answer1 | answer2 | answer3 | ...
+      code|question|questions | answer1 | answer2 | ...
     Long example:
-      code | index | label (or english)
+      code|question|questions | index | label (or english)
+    We support 'code', 'question', or 'questions' as the code column (case-insensitive).
     """
     df = pd.read_excel("metadata/Survey Scales.xlsx")
     return df.rename(columns={c: c.strip().lower() for c in df.columns})
@@ -114,45 +124,62 @@ def _parse_indices(meta_val: Any) -> Optional[List[int]]:
     return out or None
 
 
+def _scales_code_col(scales_df: pd.DataFrame) -> Optional[str]:
+    """Return the column name that holds the question code in Survey Scales."""
+    for name in ("code", "question", "questions"):
+        if name in scales_df.columns:
+            return name
+    return None
+
+
 def _labels_for_indices(scales_df: pd.DataFrame, code: str, indices: Optional[List[int]]) -> Optional[List[str]]:
-    """Return labels for the given indices from Survey Scales; supports wide and long formats."""
+    """Return labels for the given indices from Survey Scales; supports wide and long formats and multiple code column names."""
     if not indices:
         return None
-    code_u = str(code).strip().upper()
     df = scales_df
+    code_col = _scales_code_col(df)
+    if code_col is None:
+        return None
 
-    # Try wide format
-    if "code" in df.columns:
-        row = df[df["code"].astype(str).str.upper() == code_u]
-        wide_cols = [c for c in df.columns if c.startswith("answer") and c[6:].isdigit()]
-        if not row.empty and wide_cols:
-            labels: List[str] = []
-            r0 = row.iloc[0]
-            for i in indices:
-                col = f"answer{i}".lower()
-                if col in row.columns:
-                    val = str(r0[col]).strip()
-                    if val and val.lower() != "nan":
-                        labels.append(val)
-            if labels:
-                return labels
+    code_u = str(code).strip().upper()
+    sub = df[df[code_col].astype(str).str.upper() == code_u]
 
-    # Try long format
-    long_ok = {"code", "index"} <= set(df.columns) and ("label" in df.columns or "english" in df.columns)
-    if long_ok:
+    # Try wide format first: answer1..answer7 columns
+    wide_cols = [c for c in df.columns if c.startswith("answer") and c[6:].isdigit()]
+    if not sub.empty and wide_cols:
+        r0 = sub.iloc[0]
+        labels: List[str] = []
+        for i in indices:
+            col = f"answer{i}".lower()
+            if col in df.columns:
+                val = str(r0[col]).strip()
+                if val and val.lower() != "nan":
+                    labels.append(val)
+        if labels:
+            return labels
+
+    # Try long format: expect ('code|question|questions', 'index', and 'label' or 'english')
+    long_ok = ("index" in df.columns) and (("label" in df.columns) or ("english" in df.columns))
+    if long_ok and not sub.empty:
         labcol = "label" if "label" in df.columns else "english"
-        sub = df[df["code"].astype(str).str.upper() == code_u]
-        if not sub.empty:
-            labels = []
-            for i in indices:
-                hit = sub[pd.to_numeric(sub["index"], errors="coerce") == i]
-                if not hit.empty:
-                    lab = str(hit.iloc[0][labcol]).strip()
-                    if lab and lab.lower() != "nan":
-                        labels.append(lab)
-            if labels:
-                return labels
+        labels: List[str] = []
+        for i in indices:
+            hit = sub[pd.to_numeric(sub["index"], errors="coerce") == i]
+            if not hit.empty:
+                lab = str(hit.iloc[0][labcol]).strip()
+                if lab and lab.lower() != "nan":
+                    labels.append(lab)
+        if labels:
+            return labels
 
+    return None
+
+
+def _label_for_single(scales_df: pd.DataFrame, code: str, idx: int) -> Optional[str]:
+    """Convenience: fetch a single answer label by index; returns None if not found."""
+    labs = _labels_for_indices(scales_df, code, [idx])
+    if labs and len(labs) >= 1:
+        return labs[0]
     return None
 
 
@@ -278,7 +305,6 @@ def _validate_frame(df: pd.DataFrame) -> Tuple[bool, List[str]]:
       (b) If Positive+Neutral+Negative exist: sum ≈ 100 (+/- 1.0)
     """
     issues: List[str] = []
-    cols = set(df.columns)
 
     pos_col = _find_col(df, ["Positive", "POSITIVE"])
     neg_col = _find_col(df, ["Negative", "NEGATIVE"])
@@ -313,6 +339,27 @@ def _validate_frame(df: pd.DataFrame) -> Tuple[bool, List[str]]:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# Small helpers: detect columns
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _detect_year_col(df: pd.DataFrame) -> Optional[str]:
+    for c in ("Year", "year", "SURVEYR", "survey_year"):
+        if c in df.columns:
+            return c
+    for c in df.columns:
+        s = str(c)
+        if len(s) == 4 and s.isdigit() and 1900 <= int(s) <= 2100:
+            return c
+    return None
+
+def _detect_group_col(df: pd.DataFrame) -> Optional[str]:
+    for c in ("Demographic", "group", "Group", "DEMOLBL", "demographic"):
+        if c in df.columns:
+            return c
+    return None
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # Caching
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -340,6 +387,103 @@ def _clear_ai_caches():
     for k in list(st.session_state.keys()):
         if str(k).startswith("menu1_ai_cache_"):
             del st.session_state[k]
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Special payload for multi-response distribution items (e.g., D57_2)
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _build_distribution_payload_for_d57_2(
+    qcode: str,
+    qtext: str,
+    df_disp: pd.DataFrame,
+    scales_df: pd.DataFrame,
+) -> Optional[str]:
+    """
+    Build a special, explicit payload instructing the AI to list ALL options with
+    their latest-year integer percentages exactly as provided. No aggregation.
+    If a demographic is active, the payload uses the first available group row;
+    if an 'All respondents' group is present, prefer that.
+    """
+    if df_disp is None or df_disp.empty:
+        return None
+
+    ycol = _detect_year_col(df_disp)
+    if not ycol:
+        return None
+
+    gcol = _detect_group_col(df_disp)  # may be None
+    df = df_disp.copy()
+
+    # Normalize year as int for ordering
+    years = pd.to_numeric(df[ycol], errors="coerce")
+    df["_year_"] = years
+    df = df[~df["_year_"].isna()]
+    if df.empty:
+        return None
+    latest_year = int(df["_year_"].max())
+
+    # Prefer All respondents row if present; else take the first row for the latest year
+    latest_rows = df[df["_year_"] == latest_year]
+    chosen_row = None
+    if gcol and not latest_rows.empty:
+        # try to pick All respondents (case-insensitive contains 'all' and 'respondents')
+        mask_all = latest_rows[gcol].astype(str).str.lower().str.contains("all respondents")
+        if mask_all.any():
+            chosen_row = latest_rows[mask_all].iloc[0]
+        else:
+            chosen_row = latest_rows.iloc[0]
+    else:
+        chosen_row = latest_rows.iloc[0]
+
+    # Gather AnswerN columns present
+    answer_cols = [(c, int(c.lower().replace("answer", "").strip())) for c in df_disp.columns
+                   if c.lower().startswith("answer") and c.lower().replace("answer", "").strip().isdigit()]
+    if not answer_cols:
+        return None
+
+    # Build options list (label + value) for latest year / chosen group
+    options: List[Dict[str, Any]] = []
+    for col, idx in sorted(answer_cols, key=lambda x: x[1]):
+        raw = chosen_row[col]
+        try:
+            val = int(round(float(raw)))
+        except Exception:
+            continue
+        if val == SENTINEL or pd.isna(val):
+            continue
+        label = _label_for_single(scales_df, qcode, idx) or f"Answer {idx}"
+        options.append({"index": idx, "label": label, "value": val})
+
+    if not options:
+        return None
+
+    group_name = str(chosen_row[gcol]) if gcol else "All respondents"
+
+    payload = {
+        # A brief natural-language nudge so the model knows this is an exception
+        "instruction": (
+            "This is a multi-response item. Report ALL listed options for the latest year as provided; "
+            "do not aggregate across options; do not compute complements or totals."
+        ),
+        "question": {
+            "code": qcode,
+            "text": qtext or qcode,
+            "polarity_hint": "NEU",
+            "reporting_field": "DISTRIBUTION"  # explicit: not one of POS/NEG/AGREE/ANSWERi
+        },
+        "distribution": {
+            "year": latest_year,
+            "group": group_name,
+            "options": options
+        }
+    }
+    # Wrap as the 'user' message; model still receives strict JSON after a leading note.
+    user_msg = (
+        "Multi-response item: list each option and its integer percent exactly as provided. "
+        "Do not aggregate or infer missing values.\n\n" + json.dumps(payload, ensure_ascii=False)
+    )
+    return user_msg
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -395,6 +539,21 @@ def render_ai_summary_section(
         qtext = qtext_by_q.get(qcode, qcode)
         code_to_text[qcode] = qtext
 
+        # Special exception: D57_2 -> narrate full distribution of options for latest year
+        if qcode in EXCEPT_MULTI_DISTRIBUTION:
+            narrative = ""
+            if ai_enabled:
+                special_payload = _build_distribution_payload_for_d57_2(qcode, qtext, df, scales_df)
+                if special_payload is not None:
+                    with st.spinner(f"Generating summary for {qcode}…"):
+                        json_text, err = _cached_ai_summary(selection_key, qcode, special_payload, ai.AI_SYSTEM_PROMPT)
+                    narrative = ai.extract_narrative(json_text) or ""
+            narratives[qcode] = narrative
+            if narrative:
+                st.write(f"**{qcode} — {qtext}**  \n{narrative}")
+            # Do NOT include D57_2 in overall synthesis (no single comparable metric)
+            continue
+
         # Attach metadata row (fallback defaults if missing)
         row = qmeta_df[qmeta_df["code"].str.upper() == str(qcode).upper()]
         if row.empty:
@@ -447,7 +606,7 @@ def render_ai_summary_section(
             st.write(f"**{qcode} — {qtext}**  \n{narrative}")
 
         # For overall payload: collect compact rows for chosen metric
-        ycol = "Year" if "Year" in df.columns else ("year" if "year" in df.columns else None)
+        ycol = _detect_year_col(df)
         if ycol is not None:
             tmp = df[[ycol, metric_col]].copy()
             tmp = tmp.rename(columns={ycol: "Year", metric_col: "Value"})
@@ -457,14 +616,15 @@ def render_ai_summary_section(
             for _, r in tmp.iterrows():
                 overall_rows.append({"q": qcode, "y": int(r["Year"]), "v": int(r["Value"])})
 
-    # 2) Overall synthesis (appears when >1 question)
-    if len(overall_rows) >= 2:
-        ov = pd.DataFrame(overall_rows)
+    # 2) Overall synthesis (appears when >1 question with comparable metrics)
+    usable_rows = [r for r in overall_rows if r["q"] not in EXCLUDE_FROM_OVERALL]
+    if len(usable_rows) >= 2:
+        ov = pd.DataFrame(usable_rows)
         if not ov.empty:
             pivot = ov.pivot_table(index="q", columns="y", values="v", aggfunc="first").reset_index()
             pivot = pivot.rename(columns={"q": "question_code"})
             user_msg = ai.build_overall_prompt(
-                tab_labels=list(tables_by_q.keys()),
+                tab_labels=[q for q in tables_by_q.keys() if q not in EXCLUDE_FROM_OVERALL],
                 pivot_df=pivot,
                 q_to_metric=q_to_metric,
                 code_to_text=code_to_text,
