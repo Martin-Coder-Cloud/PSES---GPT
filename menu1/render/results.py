@@ -3,27 +3,27 @@
 # Menu 1 – Results: AI Summary + AI Data Validation (metadata-driven).
 #
 # Back-compat shims:
-# - Exports tabs_summary_and_per_q(...) to match legacy callers.
+# - Exports tabs_summary_and_per_q(...) for legacy callers.
 # - Accepts either:
 #     tabs_summary_and_per_q(
 #         tables_by_q=..., qtext_by_q=..., category_in_play=..., ai_enabled=..., selection_key=...
 #       )
 #   OR:
-#     tabs_summary_and_per_q(payload={ ... })  # where payload bundles those keys.
+#     tabs_summary_and_per_q(payload={ ... })  # payload may use varied key names; we normalize.
 #
 # Implements:
 # - No math in reporting (only narrates pre-aggregated values).
-# - POLARITY selects reporting field with fallbacks:
+# - POLARITY -> reporting field with fallbacks:
 #       POS -> POSITIVE -> AGREE -> ANSWER1
 #       NEG -> NEGATIVE -> AGREE -> ANSWER1
 #       NEU -> AGREE    -> ANSWER1
-# - NEUTRAL exists in metadata for completeness (not used for reporting).
+# - NEUTRAL kept in metadata, not used for reporting.
 # - Meaning indices from Survey Questions.xlsx -> labels from Survey Scales.xlsx.
-# - Per-question AI summaries (spinners) + Overall synthesis (when ≥2 questions).
+# - Per-question AI summaries (spinners) + Overall synthesis (when ≥2 comparable questions).
 # - All-years trend classification via ai.py addendum; gap math only.
-# - D57_2 exception: list ALL options for latest year (no aggregation); excluded from Overall.
+# - D57_2 exception: list ALL options (latest year) exactly as provided; excluded from Overall.
 # - Validation line ✅/❌ and “Start a new search” (clears AI caches; keeps toggle).
-# - Scales code column can be 'code', 'question', or 'questions'.
+# - Survey Scales code column may be 'code', 'question', or 'questions'.
 # ---------------------------------------------------------------------
 
 from __future__ import annotations
@@ -59,13 +59,6 @@ EXCLUDE_FROM_OVERALL = set(EXCEPT_MULTI_DISTRIBUTION)
 
 @st.cache_data(show_spinner=False)
 def _load_survey_questions() -> pd.DataFrame:
-    """
-    Survey Questions.xlsx (case-insensitive headers). Expected/handled columns:
-      - code (or 'question')
-      - text (or 'english')
-      - polarity in {POS, NEG, NEU}
-      - positive / negative / agree / neutral (strings like "1,2")
-    """
     df = pd.read_excel("metadata/Survey Questions.xlsx")
     df = df.rename(columns={c: c.strip().lower() for c in df.columns})
 
@@ -91,9 +84,6 @@ def _load_survey_questions() -> pd.DataFrame:
 
 @st.cache_data(show_spinner=False)
 def _load_scales() -> pd.DataFrame:
-    """
-    Survey Scales.xlsx (wide or long; accepts code column named 'code', 'question', or 'questions').
-    """
     df = pd.read_excel("metadata/Survey Scales.xlsx")
     return df.rename(columns={c: c.strip().lower() for c in df.columns})
 
@@ -209,16 +199,14 @@ def _detect_group_col(df: pd.DataFrame) -> Optional[str]:
 # ─────────────────────────────────────────────────────────────────────────────
 
 def _choose_reporting(df: pd.DataFrame, qcode: str, qmeta: pd.Series) -> Tuple[str, str, str, Optional[List[int]]]:
-    """
-    Returns (metric_col, reporting_field, metric_label, meaning_indices).
-    reporting_field in {'POSITIVE','NEGATIVE','AGREE','ANSWER1'}.
-    """
     col_positive = _find_col(df, ["Positive", "POSITIVE"])
     col_negative = _find_col(df, ["Negative", "NEGATIVE"])
     col_agree    = _find_col(df, ["AGREE", "Agree"])
     col_answer1  = _find_col(df, ["Answer1", "ANSWER1", "Answer 1"])
 
-    pol = (qmeta.get("polarity") or "POS").upper().strip()
+    pol = (qmeta.get("polarity") or "POS").upper().str ip()
+    # fix accidental whitespace in case metadata had it
+    pol = pol.strip()
 
     def available(colname: Optional[str]) -> bool:
         return bool(colname) and _has_valid_values(df[colname])  # type: ignore[index]
@@ -432,9 +420,7 @@ def render_ai_summary_section(
     qmeta_df = _load_survey_questions()
     scales_df = _load_scales()
 
-    narratives: Dict[str, str] = {}
-    overall_rows: List[Dict[str, Any]] = {}
-    overall_rows = []
+    overall_rows: List[Dict[str, Any]] = []
     q_to_metric: Dict[str, str] = {}
     code_to_text: Dict[str, str] = {}
     code_to_polhint: Dict[str, str] = {}
@@ -544,40 +530,106 @@ def render_ai_summary_section(
     _render_start_new_search()
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+# Payload normalizer and back-compat entry
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _coerce_bool(x: Any, default: bool) -> bool:
+    if isinstance(x, bool):
+        return x
+    if isinstance(x, (int, float)):
+        return bool(int(x))
+    if isinstance(x, str):
+        s = x.strip().lower()
+        if s in ("true", "1", "yes", "y", "on"):
+            return True
+        if s in ("false", "0", "no", "n", "off"):
+            return False
+    return default
+
+def _pick_best_df_dict(d: Dict[str, Any]) -> Optional[Dict[str, pd.DataFrame]]:
+    """From a dict of arbitrary values, pick the sub-dict that looks like {code: DataFrame} with max DF count."""
+    candidates: List[Tuple[str, Dict[str, pd.DataFrame], int]] = []
+    for k, v in d.items():
+        if isinstance(v, dict) and v:
+            df_count = sum(1 for _k, _v in v.items() if isinstance(_v, pd.DataFrame))
+            if df_count:
+                candidates.append((k, v, df_count))
+    if not candidates:
+        return None
+    # Pick the dict with most DataFrame values
+    candidates.sort(key=lambda t: t[2], reverse=True)
+    return candidates[0][1]
+
+def _extract_tables_and_texts_from_payload(p: Dict[str, Any]) -> Tuple[Dict[str, pd.DataFrame], Dict[str, str]]:
+    # Direct names first
+    tables_by_q = p.get("tables_by_q") or p.get("tables") or p.get("results_by_q") or p.get("dfs_by_q") or {}
+    if not isinstance(tables_by_q, dict) or not any(isinstance(v, pd.DataFrame) for v in tables_by_q.values()):
+        # Try to auto-detect the best dict of DataFrames
+        guess = _pick_best_df_dict(p)
+        tables_by_q = guess or {}
+
+    # Texts
+    qtext_by_q = p.get("qtext_by_q") or p.get("question_texts") or p.get("labels_by_q") or {}
+    if not isinstance(qtext_by_q, dict) or not qtext_by_q:
+        # Try list-shaped payloads: tabs/panes/items/questions etc.
+        for list_key in ("tabs", "panes", "items", "questions", "rows", "entries"):
+            lst = p.get(list_key)
+            if isinstance(lst, list) and lst:
+                acc: Dict[str, str] = {}
+                for it in lst:
+                    if isinstance(it, dict):
+                        code = it.get("code") or it.get("question") or it.get("id") or it.get("name")
+                        text = it.get("text") or it.get("label") or it.get("title")
+                        if code:
+                            acc[str(code)] = str(text or code)
+                if acc:
+                    qtext_by_q = acc
+                    break
+
+    # Fallback: derive texts from tables_by_q keys
+    if (not isinstance(qtext_by_q, dict)) or (not qtext_by_q):
+        qtext_by_q = {str(k): str(k) for k in tables_by_q.keys()}
+
+    # Ensure keys line up as strings
+    tables_by_q = {str(k): v for k, v in tables_by_q.items() if isinstance(v, pd.DataFrame)}
+    qtext_by_q = {str(k): str(v) for k, v in qtext_by_q.items()}
+
+    return tables_by_q, qtext_by_q
+
+
 # Back-compat: existing callers expect this symbol in menu1.render.results
 def tabs_summary_and_per_q(*args, **kwargs) -> None:
     """
     Backward-compatible entry point expected by some app code.
 
-    Supports two calling styles:
+    Supports:
       1) tabs_summary_and_per_q(tables_by_q, qtext_by_q, category_in_play, ai_enabled, selection_key)
-      2) tabs_summary_and_per_q(payload={ ... }) where payload keys include:
-         - tables_by_q: Dict[str, DataFrame]
-         - qtext_by_q: Dict[str, str]
-         - category_in_play: bool
-         - ai_enabled: bool
-         - selection_key: str  (optional; we will derive if missing)
+      2) tabs_summary_and_per_q(payload={ ... }) where payload keys may vary.
     """
-    # Style 2: payload kwarg (preferred in legacy code)
+    # Style 2: payload kwarg
     if "payload" in kwargs and isinstance(kwargs["payload"], dict):
-        p = kwargs["payload"]
-        tables_by_q = p.get("tables_by_q") or kwargs.get("tables_by_q") or (args[0] if args else {})
-        qtext_by_q = p.get("qtext_by_q") or kwargs.get("qtext_by_q") or {}
-        category_in_play = bool(p.get("category_in_play", kwargs.get("category_in_play", False)))
-        ai_enabled = bool(p.get("ai_enabled", kwargs.get("ai_enabled", True)))
-        selection_key = p.get("selection_key") or kwargs.get("selection_key")
+        p = dict(kwargs["payload"])  # shallow copy
+        tables_by_q, qtext_by_q = _extract_tables_and_texts_from_payload(p)
 
-        # Derive a stable selection_key if not provided
+        # Other flags
+        category_in_play = _coerce_bool(
+            p.get("category_in_play", p.get("demographic_active", p.get("has_subgroup", False))), False
+        )
+        ai_enabled = _coerce_bool(p.get("ai_enabled", p.get("ai", p.get("use_ai", True))), True)
+        selection_key = p.get("selection_key")
+
         if not selection_key:
+            # Derive a stable selection key from question codes + years + demo flag
             try:
-                # Use question codes + any visible year values to create a deterministic hash
-                qs = sorted(list(tables_by_q.keys()))
                 years_seen = set()
                 for q, df in (tables_by_q or {}).items():
                     ycol = _detect_year_col(df) if isinstance(df, pd.DataFrame) else None
                     if ycol and isinstance(df, pd.DataFrame):
                         years_seen.update(pd.to_numeric(df[ycol], errors="coerce").dropna().astype(int).tolist())
-                sig = {"qs": qs, "years": sorted(list(years_seen)), "demo": "ON" if category_in_play else "ALL"}
+                sig = {"qs": sorted(list(tables_by_q.keys())),
+                       "years": sorted(list(years_seen)),
+                       "demo": "ON" if category_in_play else "ALL"}
                 selection_key = hashlib.md5(json.dumps(sig, sort_keys=True).encode()).hexdigest()
             except Exception:
                 selection_key = "menu1_legacy_selection"
@@ -595,12 +647,11 @@ def tabs_summary_and_per_q(*args, **kwargs) -> None:
         tables_by_q, qtext_by_q, category_in_play, ai_enabled, selection_key = args[:5]
         return render_ai_summary_section(tables_by_q, qtext_by_q, category_in_play, ai_enabled, selection_key)
 
-    # Mixed kwargs
     return render_ai_summary_section(
         tables_by_q=kwargs.get("tables_by_q", args[0] if args else {}),
         qtext_by_q=kwargs.get("qtext_by_q", {}),
-        category_in_play=bool(kwargs.get("category_in_play", False)),
-        ai_enabled=bool(kwargs.get("ai_enabled", True)),
+        category_in_play=_coerce_bool(kwargs.get("category_in_play", False), False),
+        ai_enabled=_coerce_bool(kwargs.get("ai_enabled", True), True),
         selection_key=kwargs.get("selection_key", "menu1_default_selection"),
     )
 
