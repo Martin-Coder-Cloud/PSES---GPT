@@ -40,6 +40,8 @@ def _source_link_line(source_title: str, source_url: str) -> None:
     )
 
 def _find_col(df: pd.DataFrame, names: List[str]) -> Optional[str]:
+    if not isinstance(df, pd.DataFrame) or df is None or df.empty:
+        return None
     m = {c.lower(): c for c in df.columns}
     for n in names:
         c = m.get(n.lower())
@@ -48,12 +50,16 @@ def _find_col(df: pd.DataFrame, names: List[str]) -> Optional[str]:
     return None
 
 def _has_data(df: pd.DataFrame, col: Optional[str]) -> bool:
+    if not isinstance(df, pd.DataFrame) or df is None or df.empty:
+        return False
     if not col or col not in df.columns:
         return False
     s = pd.to_numeric(df[col], errors="coerce")
     return s.notna().any()
 
 def _safe_year_col(df: pd.DataFrame) -> Optional[str]:
+    if not isinstance(df, pd.DataFrame) or df.empty:
+        return None
     for c in ("Year", "year", "SURVEYR", "survey_year"):
         if c in df.columns:
             return c
@@ -67,6 +73,10 @@ def _safe_year_col(df: pd.DataFrame) -> Optional[str]:
 
 @st.cache_data(show_spinner=False)
 def _load_survey_questions_meta() -> pd.DataFrame:
+    """
+    Expect metadata/Survey Questions.xlsx with columns: code, polarity (POS/NEG/NEU).
+    Falls back to POS if missing.
+    """
     try:
         df = pd.read_excel("metadata/Survey Questions.xlsx")
         df = df.rename(columns={c: c.strip().lower() for c in df.columns})
@@ -84,6 +94,11 @@ def _load_survey_questions_meta() -> pd.DataFrame:
 # ---------------------- Summary pivot (polarity-aware) ----------------------
 
 def _pick_metric_for_summary(dfq: pd.DataFrame, qcode: str, meta: pd.DataFrame) -> Tuple[Optional[str], str]:
+    """
+    Choose the correct reporting metric column + a generic label
+    based on POLARITY with your fallback rules: POS→Positive→Agree→Answer1→Negative;
+    NEG→Negative→Agree→Answer1→Positive; NEU→Agree→Answer1→Positive→Negative.
+    """
     pol = None
     if not meta.empty:
         row = meta[meta["code"] == str(qcode).strip().upper()]
@@ -114,6 +129,11 @@ def _build_summary_pivot_from_disp(
     tab_labels: List[str],
     meta: pd.DataFrame
 ) -> Tuple[pd.DataFrame, Dict[str, str]]:
+    """
+    If a per-question display table includes a 'Demographic' column with >1 unique values,
+    we emit one row *per (Question, Demographic)* so the Summary tab shows subgroup breakdowns.
+    Otherwise we emit one row per Question.
+    """
     rows: List[Dict[str, Any]] = []
     labels_used: Dict[str, str] = {}
 
@@ -121,6 +141,7 @@ def _build_summary_pivot_from_disp(
         dfq = per_q_disp.get(q)
         if not isinstance(dfq, pd.DataFrame) or dfq.empty:
             continue
+
         ycol = _safe_year_col(dfq)
         if not ycol:
             continue
@@ -129,13 +150,32 @@ def _build_summary_pivot_from_disp(
         if not metric_col:
             continue
 
-        tmp = dfq[[ycol, metric_col]].copy()
+        # Demographic-aware: if multiple subgroups exist, include them
+        has_demo = "Demographic" in dfq.columns and dfq["Demographic"].astype(str).nunique(dropna=True) > 1
+        group_cols = [ycol, metric_col] + (["Demographic"] if has_demo else [])
+        tmp = dfq[group_cols].copy()
+
         tmp[ycol] = pd.to_numeric(tmp[ycol], errors="coerce")
         tmp[metric_col] = pd.to_numeric(tmp[metric_col], errors="coerce")
         tmp = tmp.dropna(subset=[ycol, metric_col])
 
-        for _, r in tmp.iterrows():
-            rows.append({"Question": q, "Year": int(r[ycol]), "Value": float(r[metric_col])})
+        if has_demo:
+            tmp["Demographic"] = tmp["Demographic"].astype(str)
+            for _, r in tmp.iterrows():
+                rows.append({
+                    "Question": q,
+                    "Demographic": r["Demographic"],
+                    "Year": int(r[ycol]),
+                    "Value": float(r[metric_col]),
+                })
+        else:
+            for _, r in tmp.iterrows():
+                rows.append({
+                    "Question": q,
+                    "Demographic": "",  # empty marker for non-subgroup cases
+                    "Year": int(r[ycol]),
+                    "Value": float(r[metric_col]),
+                })
 
         labels_used[q] = metric_label or "% value"
 
@@ -143,7 +183,12 @@ def _build_summary_pivot_from_disp(
         return pd.DataFrame(), labels_used
 
     df = pd.DataFrame(rows)
-    pivot = df.pivot_table(index="Question", columns="Year", values="Value", aggfunc="first").sort_index()
+
+    # If any demographic breakdowns exist, index by (Question, Demographic); else by Question only.
+    has_any_demo = df["Demographic"].astype(str).str.len().gt(0).any()
+    index_cols = ["Question", "Demographic"] if has_any_demo else ["Question"]
+
+    pivot = df.pivot_table(index=index_cols, columns="Year", values="Value", aggfunc="first").sort_index()
     pivot = pivot.applymap(lambda v: round(v, 1) if pd.notna(v) else v)
     return pivot, labels_used
 
@@ -202,7 +247,7 @@ def _allowed_numbers_from_disp(df: pd.DataFrame, metric_col: str) -> Tuple[Set[i
     years = set([int(y) for y in work["__Y__"].dropna().unique().tolist() if _is_year_like(int(y))])
     allowed: Set[int] = set([int(v) for v in work["__V__"].dropna().unique().tolist()])
 
-    # within-series deltas by year
+    # within-series deltas by year (and by subgroup if present)
     if "Demographic" in work.columns:
         groups = list(work["Demographic"].astype(str).unique())
         for g in groups:
@@ -217,10 +262,13 @@ def _allowed_numbers_from_disp(df: pd.DataFrame, metric_col: str) -> Tuple[Set[i
         for i in range(len(vals)):
             for j in range(i + 1, len(vals)):
                 allowed.add(abs(vals[j] - vals[i]))
+
     # latest-year between-groups gaps
     if years:
         latest = max(years)
         latest_rows = work[work["__Y__"] == latest]
+        if "Demographic" in latest_rows.columns:
+            latest_rows = latest_rows.sort_values("Demographic")
         for i in range(len(latest_rows)):
             for j in range(i + 1, len(latest_rows)):
                 try:
@@ -272,7 +320,7 @@ def _validate_narrative(narrative: str, allowed: Set[int], years: Set[int]) -> d
             problems.append(f"{n} — {sentence}")
     return {"ok": len(bad) == 0, "bad_numbers": bad, "problems": problems[:5]}
 
-# ------------------- NEW: overall validator against summary_pivot -------------
+# ------------------- overall validator against summary_pivot ------------------
 
 def _allowed_numbers_from_summary_pivot(pivot: pd.DataFrame) -> Tuple[Set[int], Set[int]]:
     if pivot is None or pivot.empty:
@@ -288,14 +336,14 @@ def _allowed_numbers_from_summary_pivot(pivot: pd.DataFrame) -> Tuple[Set[int], 
     for v in work.values.flatten():
         if pd.notna(v):
             allowed.add(int(round(float(v))))
-    # within-question deltas
+    # within-question(-demographic) deltas
     for _, row in work.iterrows():
         vals = [row.get(y) for y in years]
         vals = [int(round(float(v))) for v in vals if pd.notna(v)]
         for i in range(len(vals)):
             for j in range(i + 1, len(vals)):
                 allowed.add(abs(vals[j] - vals[i]))
-    # same-year cross-question gaps + change vs prior
+    # same-year cross-row gaps + change vs prior
     for y in years:
         col = work[y]
         pairs = []
@@ -319,7 +367,7 @@ def _allowed_numbers_from_summary_pivot(pivot: pd.DataFrame) -> Tuple[Set[int], 
                 allowed.add(abs(gap_latest - gap_prev))
     return allowed, years_set
 
-# ==================== AI narrative computation (unchanged) ====================
+# ==================== AI narrative computation (unchanged core) ====================
 
 def _compute_ai_narratives(
     *,
@@ -350,7 +398,7 @@ def _compute_ai_narratives(
                 df_disp=df_disp,
                 metric_col=metric_col,
                 metric_label=metric_label,
-                category_in_play=(demo_selection != "All respondents")
+                category_in_play=("Demographic" in df_disp.columns and df_disp["Demographic"].astype(str).nunique(dropna=True) > 1)
             )
         )
         try:
@@ -456,7 +504,7 @@ def tabs_summary_and_per_q(
     sub_selection                      = payload["sub_selection"]
     code_to_text                       = payload["code_to_text"]
 
-    # Build polarity-aware summary pivot (this is what users see)
+    # Build polarity-aware (and demographic-aware) Summary pivot
     meta = _load_survey_questions_meta()
     summary_pivot, labels_used = _build_summary_pivot_from_disp(
         per_q_disp=per_q_disp,
@@ -464,7 +512,7 @@ def tabs_summary_and_per_q(
         meta=meta
     )
 
-    # cache key (stable)
+    # cache key (stable; include summary signature so subgroup changes re-compute AI)
     ai_sig = {
         "tab_labels": tab_labels,
         "years": years,
@@ -482,7 +530,7 @@ def tabs_summary_and_per_q(
     tab_titles = ["Summary table"] + tab_labels + ["Technical notes"]
     tabs = st.tabs(tab_titles)
 
-    # Summary tab (shows polarity-aware pivot)
+    # Summary tab (shows polarity + demographic aware pivot)
     with tabs[0]:
         st.markdown("### Summary table")
         if tab_labels:
@@ -543,7 +591,7 @@ def tabs_summary_and_per_q(
                 st.markdown("**Overall**")
                 st.write(overall_narrative)
         else:
-            # ---------- per-question (NOW aligned with polarity-aware choice) ----------
+            # ---------- per-question AI (aligned with polarity + demo presence) ----------
             per_q_narratives: Dict[str, str] = {}
             for q in tab_labels:
                 dfq = per_q_disp.get(q)
@@ -559,6 +607,9 @@ def tabs_summary_and_per_q(
                     # prefer the exact label shown next to question in Summary tab
                     metric_label_ai = (metric_label_ai or labels_used.get(q) or per_q_metric_label.get(q, "% value"))
 
+                # detect subgroup presence from the ACTUAL table
+                category_in_play = ("Demographic" in dfq.columns and dfq["Demographic"].astype(str).nunique(dropna=True) > 1)
+
                 with st.spinner(f"AI — analyzing {q}…"):
                     try:
                         content, _hint = call_openai_json(
@@ -569,7 +620,7 @@ def tabs_summary_and_per_q(
                                 df_disp=(dfq.copy(deep=True) if isinstance(dfq, pd.DataFrame) else dfq),
                                 metric_col=metric_col_ai,
                                 metric_label=metric_label_ai,
-                                category_in_play=(demo_selection != "All respondents")
+                                category_in_play=category_in_play
                             )
                         )
                         j = json.loads(content) if content else {}
@@ -582,7 +633,7 @@ def tabs_summary_and_per_q(
                     st.markdown(f"**{q} — {qtext}**")
                     st.write(txt)
 
-            # ---------- OVERALL: use polarity-aware summary_pivot ----------
+            # ---------- OVERALL: use polarity + demo aware summary_pivot ----------
             overall_narrative = None
             if len(tab_labels) > 1 and summary_pivot is not None and not summary_pivot.empty:
                 with st.spinner("AI — synthesizing overall pattern…"):
@@ -615,18 +666,17 @@ def tabs_summary_and_per_q(
 
         # ---------- AI Data Validation ----------
         try:
-            # Per-question (as before)
+            # Per-question validator: ensure it validates the SAME column used for AI
             _render_data_validation_subsection(
                 tab_labels=tab_labels,
                 per_q_disp=per_q_disp,
                 per_q_metric_col={
-                    # ensure validator reads the same column used for AI
                     q: (_pick_metric_for_summary(per_q_disp[q], q, meta)[0] or per_q_metric_col.get(q))
                     for q in tab_labels
                 },
                 per_q_narratives=st.session_state.get("menu1_ai_narr_per_q", {}) or {},
             )
-            # Overall narrative validation against summary_pivot
+            # Overall narrative validation against summary_pivot (demo-aware)
             if len(tab_labels) > 1 and summary_pivot is not None and not summary_pivot.empty:
                 overall_txt = st.session_state.get("menu1_ai_narr_overall", "")
                 if overall_txt:
@@ -682,7 +732,7 @@ def tabs_summary_and_per_q(
                     export_per_q, export_overall = {}, None
 
         _render_excel_download(
-            summary_pivot=summary_pivot,  # corrected summary pivot
+            summary_pivot=summary_pivot,  # corrected summary pivot (demo-aware)
             per_q_disp=per_q_disp,
             tab_labels=tab_labels,
             per_q_narratives=(export_per_q or {}),
