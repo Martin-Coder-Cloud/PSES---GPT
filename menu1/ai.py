@@ -3,16 +3,11 @@ from __future__ import annotations
 from typing import Any, Dict, List, Optional, Tuple
 import json
 import os
+import time
 
 # --------------------------------------------------------------------------------------
-# SYSTEM PROMPT
+# SYSTEM PROMPT (base unchanged; addendum appended)
 # --------------------------------------------------------------------------------------
-# Your original base prompt stays untouched. We only append an addendum with:
-# - Domain Context (public service employee survey + HR relevance)
-# - Polarity/scale usage rules
-# - All-years trend guidance
-# - Latest-year subgroup gap + how gap changed guidance
-# - Output contract
 
 BASE_SYSTEM_PROMPT = os.environ.get(
     "AI_BASE_SYSTEM_PROMPT",
@@ -240,28 +235,58 @@ def build_overall_prompt(
     return json.dumps(payload, ensure_ascii=False)
 
 # --------------------------------------------------------------------------------------
-# LLM CALLER (replace body with your actual client)
+# LLM CALLER — IMPLEMENTED
 # --------------------------------------------------------------------------------------
 
 def call_openai_json(*, system: str, user: str) -> Tuple[Optional[str], Optional[str]]:
     """
-    Thin wrapper around your LLM client. Returns (content, debug_hint).
-    Replace the body with your existing client call (OpenAI, Azure, etc.).
+    Calls OpenAI with JSON response mode.
+    Requires OPENAI_API_KEY. Optional: AI_MODEL (default 'gpt-4o-mini').
+    Returns (content_json_text, debug_hint_or_none).
     """
-    # --- BEGIN: placeholder (safe no-op) ---
+    api_key = os.environ.get("OPENAI_API_KEY", "").strip()
+    if not api_key:
+        # Friendly message that surfaces in the UI if desired
+        fallback = json.dumps({"narrative": "AI is not configured (missing OPENAI_API_KEY)."}, ensure_ascii=False)
+        return fallback, "OPENAI_API_KEY missing"
+
+    model = os.environ.get("AI_MODEL", "gpt-4o-mini").strip()
+
+    # lazy import to avoid hard dependency if AI is off
     try:
-        # Example (replace with your own):
-        # from openai import OpenAI
-        # client = OpenAI()
-        # rsp = client.chat.completions.create(
-        #     model="gpt-4o-mini",
-        #     messages=[{"role":"system","content":system},
-        #               {"role":"user","content":user}],
-        #     response_format={"type":"json_object"},
-        #     temperature=0.1,
-        # )
-        # content = rsp.choices[0].message.content
-        # return content, None
-        return None, "LLM client not wired in ai.py"
+        from openai import OpenAI
     except Exception as e:
-        return None, f"ERROR: {type(e).__name__}"
+        fallback = json.dumps({"narrative": "AI client missing. Please install openai>=1.0.0."}, ensure_ascii=False)
+        return fallback, f"OpenAI import error: {type(e).__name__}"
+
+    client = OpenAI(api_key=api_key)
+
+    # small retry for transient issues
+    last_err = None
+    for attempt in range(2):
+        try:
+            rsp = client.chat.completions.create(
+                model=model,
+                messages=[
+                    {"role": "system", "content": system},
+                    {"role": "user", "content": user},
+                ],
+                response_format={"type": "json_object"},
+                temperature=0.1,
+                max_tokens=600,
+            )
+            content = rsp.choices[0].message.content
+            # Basic sanity: must be JSON with "narrative"
+            try:
+                _ = json.loads(content or "{}")
+            except Exception:
+                # wrap into expected envelope
+                content = json.dumps({"narrative": (content or "").strip()})
+            return content, None
+        except Exception as e:
+            last_err = e
+            time.sleep(0.4)
+
+    # Final fallback if both attempts failed
+    fb = json.dumps({"narrative": "The AI service is temporarily unavailable."}, ensure_ascii=False)
+    return fb, f"LLM error: {type(last_err).__name__}"
