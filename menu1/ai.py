@@ -53,17 +53,25 @@ STRICT RULES
    • NEG: phrase as "reporting <meaning>" (e.g., “reported that X adversely affected …”).
    • POS: phrase as "selecting <meaning>" (e.g., “reported they have the tools …”).
    • NEU: base interpretation on scale labels in meaning_labels (e.g., Excellent/Very good/Good vs Fair/Poor).
-3) Trend over years: when multiple years are present, characterize the direction across ALL years
+3) **Parenthetical definition after every percentage (MANDATORY):**
+   Immediately after each percentage you state, append the aggregated scale/definition in parentheses, using the
+   metric and meaning labels from the payload. Examples:
+     - 54% (Strongly agree/Agree)
+     - 46% (reporting “Discrimination”)
+     - 32% (Excellent/Very good)
+   Apply consistently to single values and subgroup listings. For differences (e.g., “gap 5 p.p.”) you do not add a parenthesis to the delta itself.
+4) Trend over years: when multiple years are present, characterize the direction across ALL years
    (improving/declining/stable/no clear trend). Cite years and values you actually see.
-4) Demographic gaps (ONLY if category_in_play = true):
+5) Demographic gaps (ONLY if category_in_play = true):
    • Identify the most recent year present (e.g., 2024) and the subgroups available for that year.
-   • Quantify the largest absolute gap between any two subgroups for that year in percentage points.
-     Example: “In 2024, the largest subgroup gap was X p.p. between Group A and Group B (A=__, B=__).”
+   • First list each subgroup’s latest-year value with its parenthetical definition (e.g., “2024: English 52% (Strongly agree/Agree), French 47% (Strongly agree/Agree)”).
+   • Then quantify the largest absolute gap between any two subgroups for that year in percentage points.
+     Example: “largest subgroup gap was 5 p.p. between English and French.”
    • Describe how that gap changed vs prior years (widened/narrowed/stable) using only provided values.
    • If subgroup data is incomplete for some years, acknowledge briefly (e.g., “no subgroup data for 2022”).
    • Do NOT discuss gaps if category_in_play is false.
-5) All numbers you mention must be present in 'data' (or be simple differences of those numbers).
-6) Be concise, verifiable, and avoid speculative language.
+6) All numbers you mention must be present in 'data' (or be simple differences of those numbers).
+7) Be concise, verifiable, and avoid speculative language.
 
 OUTPUT FORMAT
 Return a single JSON object with one key:
@@ -177,6 +185,7 @@ def build_per_q_prompt(
             "use_only_reporting_metric": True,
             "trend_over_all_years": True,
             "analyze_demographic_gaps": bool(category_in_play),
+            "append_parenthetical_after_percent": True,  # explicit hint for new rule
         },
     }
     if meaning_indices:
@@ -229,7 +238,8 @@ def build_overall_prompt(
         "instructions": {
             "compare_across_questions": True,
             "trend_over_all_years": True,
-            "no_new_calculations": True
+            "no_new_calculations": True,
+            "append_parenthetical_after_percent": True,  # require parentheses in overall too
         },
     }
     return json.dumps(payload, ensure_ascii=False)
@@ -246,13 +256,11 @@ def call_openai_json(*, system: str, user: str) -> Tuple[Optional[str], Optional
     """
     api_key = os.environ.get("OPENAI_API_KEY", "").strip()
     if not api_key:
-        # Friendly message that surfaces in the UI if desired
         fallback = json.dumps({"narrative": "AI is not configured (missing OPENAI_API_KEY)."}, ensure_ascii=False)
         return fallback, "OPENAI_API_KEY missing"
 
     model = os.environ.get("AI_MODEL", "gpt-4o-mini").strip()
 
-    # lazy import to avoid hard dependency if AI is off
     try:
         from openai import OpenAI
     except Exception as e:
@@ -261,7 +269,6 @@ def call_openai_json(*, system: str, user: str) -> Tuple[Optional[str], Optional
 
     client = OpenAI(api_key=api_key)
 
-    # small retry for transient issues
     last_err = None
     for attempt in range(2):
         try:
@@ -273,20 +280,17 @@ def call_openai_json(*, system: str, user: str) -> Tuple[Optional[str], Optional
                 ],
                 response_format={"type": "json_object"},
                 temperature=0.1,
-                max_tokens=600,
+                max_tokens=700,
             )
             content = rsp.choices[0].message.content
-            # Basic sanity: must be JSON with "narrative"
             try:
                 _ = json.loads(content or "{}")
             except Exception:
-                # wrap into expected envelope
                 content = json.dumps({"narrative": (content or "").strip()})
             return content, None
         except Exception as e:
             last_err = e
             time.sleep(0.4)
 
-    # Final fallback if both attempts failed
     fb = json.dumps({"narrative": "The AI service is temporarily unavailable."}, ensure_ascii=False)
     return fb, f"LLM error: {type(last_err).__name__}"
