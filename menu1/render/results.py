@@ -275,28 +275,19 @@ def _validate_narrative(narrative: str, allowed: Set[int], years: Set[int]) -> d
 # ------------------- NEW: overall validator against summary_pivot -------------
 
 def _allowed_numbers_from_summary_pivot(pivot: pd.DataFrame) -> Tuple[Set[int], Set[int]]:
-    """
-    Build an allowed-number set from the polarity-aware summary_pivot:
-      • all values in the table (rounded)
-      • within-question year-to-year differences
-      • pairwise gaps between questions within the same year
-      • change in those gaps vs prior years
-    """
     if pivot is None or pivot.empty:
         return set(), set()
     work = pivot.copy()
-    # coerce numeric
     for c in work.columns:
         work[c] = pd.to_numeric(work[c], errors="coerce")
     years = [int(c) for c in work.columns if str(c).isdigit() and len(str(c)) == 4]
     years_set = set(years)
     allowed: Set[int] = set()
 
-    # all values
+    # values
     for v in work.values.flatten():
         if pd.notna(v):
             allowed.add(int(round(float(v))))
-
     # within-question deltas
     for _, row in work.iterrows():
         vals = [row.get(y) for y in years]
@@ -304,8 +295,7 @@ def _allowed_numbers_from_summary_pivot(pivot: pd.DataFrame) -> Tuple[Set[int], 
         for i in range(len(vals)):
             for j in range(i + 1, len(vals)):
                 allowed.add(abs(vals[j] - vals[i]))
-
-    # same-year cross-question gaps + gap change vs prior years
+    # same-year cross-question gaps + change vs prior
     for y in years:
         col = work[y]
         pairs = []
@@ -316,19 +306,17 @@ def _allowed_numbers_from_summary_pivot(pivot: pd.DataFrame) -> Tuple[Set[int], 
                     gap = abs(int(round(float(vi))) - int(round(float(vj))))
                     allowed.add(gap)
                     pairs.append(((i, j), gap))
-        # compare with previous years if available
-        y_prev = [yy for yy in years if yy < y]
-        if not y_prev:
+        prev = [yy for yy in years if yy < y]
+        if not prev:
             continue
-        prev_y = max(y_prev)
-        col_prev = work[prev_y]
+        py = max(prev)
+        col_prev = work[py]
         for (i, j), gap_latest in pairs:
             vi = col_prev.iat[i] if i < len(col_prev) else None
             vj = col_prev.iat[j] if j < len(col_prev) else None
             if pd.notna(vi) and pd.notna(vj):
                 gap_prev = abs(int(round(float(vi))) - int(round(float(vj))))
                 allowed.add(abs(gap_latest - gap_prev))
-
     return allowed, years_set
 
 # ==================== AI narrative computation (unchanged) ====================
@@ -459,9 +447,9 @@ def tabs_summary_and_per_q(
     source_title: str,
 ) -> None:
     per_q_disp: Dict[str, pd.DataFrame] = payload["per_q_disp"]
-    per_q_metric_col: Dict[str, str]   = payload["per_q_metric_col"]   # for per-question AI & validation
-    per_q_metric_label: Dict[str, str] = payload["per_q_metric_label"] # default labels from caller
-    pivot_from_payload: pd.DataFrame   = payload["pivot"]               # kept for cache signature
+    per_q_metric_col: Dict[str, str]   = payload["per_q_metric_col"]   # used as fallback
+    per_q_metric_label: Dict[str, str] = payload["per_q_metric_label"] # used as fallback
+    pivot_from_payload: pd.DataFrame   = payload["pivot"]
     tab_labels                         = payload["tab_labels"]
     years                              = payload["years"]
     demo_selection                     = payload["demo_selection"]
@@ -483,8 +471,8 @@ def tabs_summary_and_per_q(
         "demo_selection": demo_selection,
         "sub_selection": sub_selection,
         "metric_labels": {q: per_q_metric_label[q] for q in tab_labels},
-        "pivot_sig": _hash_key(pivot_from_payload),  # keep signature stable
-        "summary_sig": _hash_key(summary_pivot),     # add summary pivot to cache scope
+        "pivot_sig": _hash_key(pivot_from_payload),
+        "summary_sig": _hash_key(summary_pivot),
     }
     ai_key = "menu1_ai_" + _hash_key(ai_sig)
 
@@ -555,13 +543,22 @@ def tabs_summary_and_per_q(
                 st.markdown("**Overall**")
                 st.write(overall_narrative)
         else:
-            # ---------- per-question (unchanged) ----------
+            # ---------- per-question (NOW aligned with polarity-aware choice) ----------
             per_q_narratives: Dict[str, str] = {}
             for q in tab_labels:
                 dfq = per_q_disp.get(q)
-                metric_col = per_q_metric_col.get(q)
-                metric_label = per_q_metric_label.get(q)
                 qtext = code_to_text.get(q, "")
+
+                # choose the same metric the Summary logic picked
+                metric_col_ai, metric_label_ai = _pick_metric_for_summary(dfq, q, meta)
+                if not metric_col_ai:
+                    # fallback to caller-provided
+                    metric_col_ai = per_q_metric_col.get(q)
+                    metric_label_ai = per_q_metric_label.get(q, "% value")
+                else:
+                    # prefer the exact label shown next to question in Summary tab
+                    metric_label_ai = (metric_label_ai or labels_used.get(q) or per_q_metric_label.get(q, "% value"))
+
                 with st.spinner(f"AI — analyzing {q}…"):
                     try:
                         content, _hint = call_openai_json(
@@ -570,8 +567,8 @@ def tabs_summary_and_per_q(
                                 question_code=q,
                                 question_text=qtext,
                                 df_disp=(dfq.copy(deep=True) if isinstance(dfq, pd.DataFrame) else dfq),
-                                metric_col=metric_col,
-                                metric_label=metric_label,
+                                metric_col=metric_col_ai,
+                                metric_label=metric_label_ai,
                                 category_in_play=(demo_selection != "All respondents")
                             )
                         )
@@ -585,17 +582,16 @@ def tabs_summary_and_per_q(
                     st.markdown(f"**{q} — {qtext}**")
                     st.write(txt)
 
-            # ---------- OVERALL: now use polarity-aware summary_pivot ----------
+            # ---------- OVERALL: use polarity-aware summary_pivot ----------
             overall_narrative = None
             if len(tab_labels) > 1 and summary_pivot is not None and not summary_pivot.empty:
                 with st.spinner("AI — synthesizing overall pattern…"):
                     try:
-                        # IMPORTANT: pass the same matrix the user sees
                         content, _hint = call_openai_json(
                             system=AI_SYSTEM_PROMPT,
                             user=build_overall_prompt(
                                 tab_labels=tab_labels,
-                                pivot_df=summary_pivot.copy(deep=True),  # <— fixed
+                                pivot_df=summary_pivot.copy(deep=True),  # aligned matrix
                                 q_to_metric={q: (labels_used.get(q) or per_q_metric_label[q]) for q in tab_labels},
                                 code_to_text=code_to_text,
                             )
@@ -623,10 +619,14 @@ def tabs_summary_and_per_q(
             _render_data_validation_subsection(
                 tab_labels=tab_labels,
                 per_q_disp=per_q_disp,
-                per_q_metric_col=per_q_metric_col,
+                per_q_metric_col={
+                    # ensure validator reads the same column used for AI
+                    q: (_pick_metric_for_summary(per_q_disp[q], q, meta)[0] or per_q_metric_col.get(q))
+                    for q in tab_labels
+                },
                 per_q_narratives=st.session_state.get("menu1_ai_narr_per_q", {}) or {},
             )
-            # NEW: Overall narrative validation against summary_pivot
+            # Overall narrative validation against summary_pivot
             if len(tab_labels) > 1 and summary_pivot is not None and not summary_pivot.empty:
                 overall_txt = st.session_state.get("menu1_ai_narr_overall", "")
                 if overall_txt:
@@ -665,8 +665,11 @@ def tabs_summary_and_per_q(
                     export_per_q, export_overall = _compute_ai_narratives(
                         tab_labels=tab_labels,
                         per_q_disp=per_q_disp_ai2,
-                        per_q_metric_col=per_q_metric_col,
-                        per_q_metric_label=per_q_metric_label,
+                        per_q_metric_col={
+                            q: (_pick_metric_for_summary(per_q_disp[q], q, meta)[0] or per_q_metric_col.get(q))
+                            for q in tab_labels
+                        },
+                        per_q_metric_label={q: (labels_used.get(q) or per_q_metric_label.get(q, "% value")) for q in tab_labels},
                         code_to_text=code_to_text,
                         demo_selection=demo_selection,
                         pivot=summary_pivot.copy(deep=True) if (summary_pivot is not None and not summary_pivot.empty) else pivot_from_payload.copy(deep=True),
