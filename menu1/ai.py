@@ -53,23 +53,31 @@ STRICT RULES
    • NEG: phrase as "reporting <meaning>" (e.g., “reported that X adversely affected …”).
    • POS: phrase as "selecting <meaning>" (e.g., “reported they have the tools …”).
    • NEU: base interpretation on scale labels in meaning_labels (e.g., Excellent/Very good/Good vs Fair/Poor).
-3) **Parenthetical definition after every percentage (MANDATORY):**
-   Immediately after each percentage you state, append the aggregated scale/definition in parentheses, using the
-   metric and meaning labels from the payload. Examples:
-     - 54% (Strongly agree/Agree)
-     - 46% (reporting “Discrimination”)
-     - 32% (Excellent/Very good)
-   Apply consistently to single values and subgroup listings. For differences (e.g., “gap 5 p.p.”) you do not add a parenthesis to the delta itself.
+
+3) PARENTHETICAL AFTER EVERY PERCENTAGE — **AGGREGATED OPTIONS ONLY** (MANDATORY):
+   • Immediately after each percentage you state, append the exact aggregated response options used to compute it, in parentheses.
+     Examples:
+       - 54% (Strongly agree/Agree)
+       - 32% (Excellent/Very good)
+       - 41% (Answer 1: “Yes”)
+   • The parenthetical MUST be constructed from 'reporting_metric.meaning_labels' (joined with "/").
+     - If 'meaning_labels' is empty, derive the options from 'reporting_metric.label' (e.g., parse
+       “% selecting Strongly agree / Agree” → “Strongly agree/Agree”; “% selecting Answer 1: Yes” → “Answer 1: “Yes””).
+     - If you cannot reliably derive the options, OMIT the parenthetical rather than inventing wording.
+   • NEVER use the question text or a paraphrase of it for the parenthetical. The parenthetical is ONLY the response option(s) aggregated.
+
 4) Trend over years: when multiple years are present, characterize the direction across ALL years
    (improving/declining/stable/no clear trend). Cite years and values you actually see.
+
 5) Demographic gaps (ONLY if category_in_play = true):
-   • Identify the most recent year present (e.g., 2024) and the subgroups available for that year.
-   • First list each subgroup’s latest-year value with its parenthetical definition (e.g., “2024: English 52% (Strongly agree/Agree), French 47% (Strongly agree/Agree)”).
+   • Identify the most recent year present (e.g., 2024) and list each subgroup’s value for that year,
+     each with its parenthetical options (e.g., “2024: English 52% (Strongly agree/Agree), French 47% (Strongly agree/Agree)”).
    • Then quantify the largest absolute gap between any two subgroups for that year in percentage points.
      Example: “largest subgroup gap was 5 p.p. between English and French.”
    • Describe how that gap changed vs prior years (widened/narrowed/stable) using only provided values.
    • If subgroup data is incomplete for some years, acknowledge briefly (e.g., “no subgroup data for 2022”).
    • Do NOT discuss gaps if category_in_play is false.
+
 6) All numbers you mention must be present in 'data' (or be simple differences of those numbers).
 7) Be concise, verifiable, and avoid speculative language.
 
@@ -185,7 +193,8 @@ def build_per_q_prompt(
             "use_only_reporting_metric": True,
             "trend_over_all_years": True,
             "analyze_demographic_gaps": bool(category_in_play),
-            "append_parenthetical_after_percent": True,  # explicit hint for new rule
+            # Reinforce the parenthetical rule; model must use meaning_labels or derive from label.
+            "append_parenthetical_after_percent": True,
         },
     }
     if meaning_indices:
@@ -209,10 +218,13 @@ def build_overall_prompt(
     if isinstance(pivot_df, pd.DataFrame):
         try:
             pivot = pivot_df.copy()
-            if pivot.index.name is None or str(pivot.index.name).lower() != "question":
+            # Preserve whatever index the caller passes; we only lift rows with a "Question" key.
+            if "Question" not in pivot.reset_index().columns:
                 pivot.index.name = "Question"
             pivot = pivot.reset_index()
             for _, r in pivot.iterrows():
+                if "Question" not in r:
+                    continue
                 row = {"question_code": str(r["Question"])}
                 for c in pivot_df.columns:
                     try:
@@ -239,13 +251,13 @@ def build_overall_prompt(
             "compare_across_questions": True,
             "trend_over_all_years": True,
             "no_new_calculations": True,
-            "append_parenthetical_after_percent": True,  # require parentheses in overall too
+            "append_parenthetical_after_percent": True,
         },
     }
     return json.dumps(payload, ensure_ascii=False)
 
 # --------------------------------------------------------------------------------------
-# LLM CALLER — IMPLEMENTED
+# LLM CALLER — IMPLEMENTED (OpenAI v1)
 # --------------------------------------------------------------------------------------
 
 def call_openai_json(*, system: str, user: str) -> Tuple[Optional[str], Optional[str]]:
