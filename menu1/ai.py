@@ -31,54 +31,56 @@ ADDENDUM — DOMAIN CONTEXT (REQUIRED)
   acknowledge that briefly instead of inferring.
 
 ADDENDUM — HOW TO USE THE USER PAYLOAD FIELDS (REQUIRED)
-• The user message is ALWAYS a JSON object with these keys for each question:
+• The user message is ALWAYS a JSON object for either a per-question task or an overall synthesis task.
+
+PER-QUESTION PAYLOAD KEYS
+  - task: "per_question_summary"
   - question_code: string (e.g., "Q44a")
   - question_text: string (verbatim prompt)
   - polarity: "POS" | "NEG" | "NEU"
-  - reporting_metric:
+  - reporting_metric:  # used unless distribution_only=true (see exception)
       - column: the exact column to narrate (e.g., "Positive", "Negative", "AGREE", "Answer1")
       - label: human description of that metric (e.g., "% selecting Strongly agree / Agree",
-               "% reporting Discrimination", "% selecting Answer 1: <label>")
-      - meaning_labels: list of human labels that define the metric (e.g., ["Strongly agree","Agree"]);
-                       may be empty for single-option cases or if not applicable.
+               "% negative", "% selecting Answer 1: <label>")
+      - meaning_labels: list of option labels that define the metric (e.g., ["Strongly agree","Agree"]);
+                        may be empty for single-option cases or if not applicable.
       - reporting_field: optional diagnostic name (e.g., "POSITIVE","NEGATIVE","AGREE","ANSWER1")
-  - data: table you must rely on. It contains "Year" and the reporting column.
-          If subgroup analysis is enabled (category_in_play = true), each row may also include "Demographic".
-  - category_in_play: boolean indicating whether demographic subgroups are present; if false,
-                      do NOT discuss subgroup gaps.
+  - data: table you must rely on. Each row has "Year" and the reporting column.
+          If subgroup analysis is enabled (category_in_play=true), rows may also have "Demographic".
+  - category_in_play: boolean; if false, do NOT discuss subgroup gaps.
+  - distribution_only: boolean; when true, DO NOT use reporting_metric at all.
+      • Instead, interpret the table as a categorical distribution and narrate the listed
+        answer options (Answer1..Answer6) for the latest year, optionally noting change vs prior years.
+      • This is intended for questions like D57_A / D57_B that do not have an aggregate measure.
+
+OVERALL PAYLOAD KEYS
+  - task: "overall_synthesis"
+  - selected_questions: list of { question_code, question_text, metric_label, meaning_labels?, distribution_only? }
+      • When distribution_only=true for a question, avoid quoting an aggregate % for that item
+        and exclude it from cross-question % comparisons. You may reference it qualitatively if needed.
+  - matrix: list of row dicts (one per question row from the Summary matrix) with year:value pairs.
+  - instructions: { compare_across_questions, trend_over_all_years, no_new_calculations, append_parenthetical_after_percent }
 
 STRICT RULES
-1) Narrate ONLY values from 'reporting_metric.column' in 'data'. Do not switch columns or compute alternative aggregates.
-2) Use 'reporting_metric.label' and 'meaning_labels' to explain what the percentage represents.
-   • NEG: phrase as "reporting <meaning>" (e.g., “reported that X adversely affected …”).
-   • POS: phrase as "selecting <meaning>" (e.g., “reported they have the tools …”).
-   • NEU: base interpretation on scale labels in meaning_labels (e.g., Excellent/Very good/Good vs Fair/Poor).
-
-3) PARENTHETICAL AFTER EVERY PERCENTAGE — **AGGREGATED OPTIONS ONLY** (MANDATORY):
-   • Immediately after each percentage you state, append the exact aggregated response options used to compute it, in parentheses.
-     Examples:
-       - 54% (Strongly agree/Agree)
-       - 32% (Excellent/Very good)
-       - 41% (Answer 1: “Yes”)
-   • The parenthetical MUST be constructed from 'reporting_metric.meaning_labels' (joined with "/").
-     - If 'meaning_labels' is empty, derive the options from 'reporting_metric.label' (e.g., parse
-       “% selecting Strongly agree / Agree” → “Strongly agree/Agree”; “% selecting Answer 1: Yes” → “Answer 1: “Yes””).
-     - If you cannot reliably derive the options, OMIT the parenthetical rather than inventing wording.
-   • NEVER use the question text or a paraphrase of it for the parenthetical. The parenthetical is ONLY the response option(s) aggregated.
-
-4) Trend over years: when multiple years are present, characterize the direction across ALL years
+1) Narrate ONLY values provided. Do not switch columns or invent aggregates.
+2) Parenthetical after every percentage (MANDATORY):
+   • Immediately after each % number, append the exact aggregated response options in parentheses.
+     Examples: 54% (Strongly agree/Agree); 32% (Excellent/Very good); 41% (Answer 1: “Yes”).
+   • Build the parenthetical from 'meaning_labels' (joined with "/"). If 'meaning_labels' is empty,
+     derive options from 'reporting_metric.label' (e.g., parse “% selecting Strongly agree / Agree”).
+   • If you cannot derive them reliably, OMIT the parenthetical (do not paraphrase question text).
+3) Trend over years: when multiple years exist, characterize direction across ALL years
    (improving/declining/stable/no clear trend). Cite years and values you actually see.
-
-5) Demographic gaps (ONLY if category_in_play = true):
-   • Identify the most recent year present (e.g., 2024) and list each subgroup’s value for that year,
-     each with its parenthetical options (e.g., “2024: English 52% (Strongly agree/Agree), French 47% (Strongly agree/Agree)”).
-   • Then quantify the largest absolute gap between any two subgroups for that year in percentage points.
-     Example: “largest subgroup gap was 5 p.p. between English and French.”
-   • Describe how that gap changed vs prior years (widened/narrowed/stable) using only provided values.
-   • If subgroup data is incomplete for some years, acknowledge briefly (e.g., “no subgroup data for 2022”).
-   • Do NOT discuss gaps if category_in_play is false.
-
-6) All numbers you mention must be present in 'data' (or be simple differences of those numbers).
+4) Demographic gaps (ONLY if category_in_play=true):
+   • Identify the latest year, list each subgroup’s value with its parenthetical, then quantify the largest gap
+     in p.p., and describe how that gap changed vs prior years.
+   • If subgroup data is missing for some years, say so briefly.
+5) Distribution-only exception (e.g., D57_A / D57_B):
+   • If 'distribution_only' = true, ignore 'reporting_metric'. Use the table’s categorical options (e.g., Answer1..Answer6).
+   • In the latest year, list the option breakdown (option label and % for each option that exists in the table).
+   • If prior years exist, briefly indicate directional change (e.g., notable increases/decreases).
+   • Do NOT compute a custom aggregation (e.g., do not sum options).
+6) All numbers you mention must be present in the payload (or be simple differences such as p.p. gaps).
 7) Be concise, verifiable, and avoid speculative language.
 
 OUTPUT FORMAT
@@ -101,11 +103,13 @@ def _safe_round(v: Any) -> Any:
     except Exception:
         return v
 
-def _df_minified_for_model(df, year_col: str, metric_col: str, include_demo: bool):
+def _df_minified_for_model(df, year_col: str, metric_col: Optional[str], include_demo: bool, distribution_only: bool):
     """
     Compact rows for the model:
-      • If include_demo=True and 'Demographic' exists: keep ["Year","Demographic", metric_col]
-      • Else: keep ["Year", metric_col]
+      • distribution_only=False:
+          keep ["Year", metric_col, ("Demographic" if include_demo)]
+      • distribution_only=True:
+          keep ["Year", ("Demographic" if include_demo), and any columns that look like Answer1..Answer6]
     """
     try:
         import pandas as pd
@@ -114,28 +118,83 @@ def _df_minified_for_model(df, year_col: str, metric_col: str, include_demo: boo
         if not isinstance(df, pd.DataFrame):
             return []
         cols = list(df.columns)
+        work = df.copy()
+
+        if distribution_only:
+            # Keep Year, optional Demographic, and all Answer1..6 columns present
+            keep = []
+            if year_col in cols:
+                keep.append(year_col)
+            if include_demo and "Demographic" in cols:
+                keep.append("Demographic")
+            answer_cols = [c for c in cols if str(c).strip().replace(" ", "").lower() in
+                           [f"answer{i}" for i in range(1, 7)]]
+            # Also accept "Answer 1" form
+            for i in range(1, 7):
+                alt = f"Answer {i}"
+                if alt in cols and alt not in answer_cols:
+                    answer_cols.append(alt)
+            # Deduplicate preserving order
+            seen = set(); answers_kept = []
+            for c in answer_cols:
+                k = c.lower().replace(" ", "")
+                if k not in seen:
+                    answers_kept.append(c); seen.add(k)
+            keep += answers_kept
+
+            if not keep:
+                return []
+            work = work[keep].copy()
+            if year_col in work.columns:
+                work[year_col] = pd.to_numeric(work[year_col], errors="coerce")
+            # coerce each AnswerN to numeric
+            for c in answers_kept:
+                work[c] = pd.to_numeric(work[c], errors="coerce")
+
+            work = work.dropna(subset=[year_col])
+            out = []
+            for _, r in work.iterrows():
+                row = {"Year": int(float(r[year_col]))}
+                if include_demo and "Demographic" in work.columns and r.get("Demographic") is not None:
+                    row["Demographic"] = str(r["Demographic"])
+                # Attach only present AnswerN values
+                for c in answers_kept:
+                    val = r.get(c, None)
+                    if val is not None:
+                        try:
+                            row[c] = _safe_round(val)
+                        except Exception:
+                            pass
+                out.append(row)
+            out.sort(key=lambda x: (x["Year"], x.get("Demographic","")))
+            return out
+
+        # Regular (aggregate) mode
         keep = []
         if year_col in cols:
             keep.append(year_col)
         if include_demo and "Demographic" in cols:
             keep.append("Demographic")
-        if metric_col in cols:
+        if metric_col and metric_col in cols:
             keep.append(metric_col)
         if not keep:
             return []
-        work = df[keep].copy()
-        # Coerce numerics for the metric and year
+        work = work[keep].copy()
         if year_col in work.columns:
             work[year_col] = pd.to_numeric(work[year_col], errors="coerce")
-        work[metric_col] = pd.to_numeric(work[metric_col], errors="coerce")
-        work = work.dropna(subset=[year_col, metric_col])
-        # Round metric; cast Year to int
+        if metric_col in work.columns:
+            work[metric_col] = pd.to_numeric(work[metric_col], errors="coerce")
+        work = work.dropna(subset=[year_col])
+        if metric_col in work.columns:
+            work = work.dropna(subset=[metric_col])
+
         out = []
         for _, r in work.iterrows():
             row = {"Year": int(float(r[year_col]))}
             if include_demo and "Demographic" in work.columns and r.get("Demographic") is not None:
                 row["Demographic"] = str(r["Demographic"])
-            row[metric_col] = _safe_round(r[metric_col])
+            if metric_col in work.columns:
+                row[metric_col] = _safe_round(r[metric_col])
             out.append(row)
         out.sort(key=lambda x: (x["Year"], x.get("Demographic","")))
         return out
@@ -151,19 +210,19 @@ def build_per_q_prompt(
     question_code: str,
     question_text: str,
     df_disp,                    # pandas.DataFrame or already-minified list of dicts
-    metric_col: str,            # EXACT column chosen by the app (Positive/Negative/AGREE/Answer1)
+    metric_col: Optional[str],  # EXACT column chosen by the app (Positive/Negative/AGREE/Answer1) or None in distribution mode
     metric_label: str,          # human-friendly description (e.g., "% selecting Strongly agree / Agree")
     category_in_play: bool,     # whether subgroups are present and should be analyzed
-    # Optional hints (backward-compatible):
+    # Optional hints:
     polarity: Optional[str] = None,                 # POS | NEG | NEU
     reporting_field: Optional[str] = None,          # e.g., "POSITIVE","NEGATIVE","AGREE","ANSWER1"
     meaning_indices: Optional[List[int]] = None,    # e.g., [1,2]
     meaning_labels: Optional[List[str]] = None,     # e.g., ["Strongly agree","Agree"]
-    year_col: str = "Year"
+    year_col: str = "Year",
+    distribution_only: bool = False                 # EXCEPTION: D57_A / D57_B style
 ) -> str:
     """
     Returns the user message (JSON string) for a per-question analysis.
-    Base system prompt is not changed; we include the extra fields the model needs.
     """
     if isinstance(df_disp, list):
         data_rows = df_disp
@@ -172,7 +231,8 @@ def build_per_q_prompt(
             df_disp,
             year_col=year_col,
             metric_col=metric_col,
-            include_demo=bool(category_in_play)
+            include_demo=bool(category_in_play),
+            distribution_only=bool(distribution_only),
         )
 
     payload: Dict[str, Any] = {
@@ -181,19 +241,19 @@ def build_per_q_prompt(
         "question_text": str(question_text),
         "polarity": (polarity or "").upper() if polarity else "",
         "reporting_metric": {
-            "column": metric_col,
+            "column": metric_col or "",
             "label": metric_label,
             "meaning_labels": meaning_labels or [],
             "reporting_field": (reporting_field or ""),
         },
-        "data": data_rows,             # strictly Year (+ optional Demographic) + chosen metric
+        "data": data_rows,             # strictly Year (+ optional Demographic) + chosen fields
         "category_in_play": bool(category_in_play),
+        "distribution_only": bool(distribution_only),
         "instructions": {
             "no_math": True,
-            "use_only_reporting_metric": True,
+            "use_only_reporting_metric": not bool(distribution_only),
             "trend_over_all_years": True,
             "analyze_demographic_gaps": bool(category_in_play),
-            # Reinforce the parenthetical rule; model must use meaning_labels or derive from label.
             "append_parenthetical_after_percent": True,
         },
     }
@@ -208,9 +268,13 @@ def build_overall_prompt(
     pivot_df,  # pandas.DataFrame
     q_to_metric: Dict[str, str],
     code_to_text: Dict[str, str],
+    q_to_meaning_labels: Optional[Dict[str, List[str]]] = None,
+    q_distribution_only: Optional[Dict[str, bool]] = None,
 ) -> str:
     """
     Overall synthesis prompt — synthesize across ALL selected questions and years.
+    Includes per-question meaning_labels so the model can append parentheses after % consistently.
+    Also includes distribution_only flags for D57_A/B-style items.
     """
     import pandas as pd
 
@@ -218,7 +282,6 @@ def build_overall_prompt(
     if isinstance(pivot_df, pd.DataFrame):
         try:
             pivot = pivot_df.copy()
-            # Preserve whatever index the caller passes; we only lift rows with a "Question" key.
             if "Question" not in pivot.reset_index().columns:
                 pivot.index.name = "Question"
             pivot = pivot.reset_index()
@@ -236,16 +299,22 @@ def build_overall_prompt(
         except Exception:
             data = []
 
+    selected = []
+    for q in tab_labels:
+        item = {
+            "question_code": q,
+            "question_text": code_to_text.get(q, ""),
+            "metric_label": q_to_metric.get(q, "% of respondents"),
+        }
+        if q_to_meaning_labels and q in q_to_meaning_labels:
+            item["meaning_labels"] = q_to_meaning_labels[q]
+        if q_distribution_only and q in q_distribution_only:
+            item["distribution_only"] = bool(q_distribution_only[q])
+        selected.append(item)
+
     payload = {
         "task": "overall_synthesis",
-        "selected_questions": [
-            {
-                "question_code": q,
-                "question_text": code_to_text.get(q, ""),
-                "metric_label": q_to_metric.get(q, "% of respondents"),
-            }
-            for q in tab_labels
-        ],
+        "selected_questions": selected,
         "matrix": data,  # list of dicts: each question row with year:value pairs
         "instructions": {
             "compare_across_questions": True,
