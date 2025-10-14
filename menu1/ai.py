@@ -84,6 +84,9 @@ ADDENDUM — FORMATTING RULES FOR SCALE LABELS (REQUIRED)
 """,
 )
 
+# Backward-compat alias for callers that import AI_SYSTEM_PROMPT
+AI_SYSTEM_PROMPT = BASE_SYSTEM_PROMPT
+
 # --------------------------------------------------------------------------------------
 # Public API: build payloads and call the LLM (unchanged interface)
 # --------------------------------------------------------------------------------------
@@ -223,4 +226,3 @@ def call_llm_openai_chat(
 
     fb = json.dumps({"narrative": "The AI service is temporarily unavailable."}, ensure_ascii=False)
     return fb, f"LLM error: {type(last_err).__name__}"
-
