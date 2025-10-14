@@ -12,7 +12,9 @@ import streamlit as st
 # Reuse your shared AI system prompt and (unchanged) calling utilities
 from ..ai import AI_SYSTEM_PROMPT  # unchanged
 
-# Import the same metadata loaders used elsewhere in Menu 1
+# >>> NEW: import the same metadata loaders used elsewhere in Menu 1
+# These should ultimately read from metadata/Survey Questions.xlsx and metadata/Survey Scales.xlsx
+# and/or return cached dataframes already loaded at app start.
 from ..main import load_questions_metadata, load_scales_metadata
 
 
@@ -109,6 +111,7 @@ def _get_meta_questions() -> pd.DataFrame:
     Should contain: positive / negative / agree (indices like "1,2")
     May contain: scale / scale_id / scale_name (optional keys into scales)
     """
+    # Try common session keys first (keep non-breaking)
     for k in ("survey_questions", "survey_questions_df", "meta_questions"):
         df = st.session_state.get(k)
         if isinstance(df, pd.DataFrame) and not df.empty:
@@ -117,6 +120,7 @@ def _get_meta_questions() -> pd.DataFrame:
             if "code" in work.columns:
                 work["code"] = work["code"].astype(str).str.strip().str.upper()
             return work
+    # Fallback to the app's canonical loader
     try:
         df = load_questions_metadata()
         if isinstance(df, pd.DataFrame):
@@ -143,6 +147,7 @@ def _get_meta_scales() -> pd.DataFrame:
         if isinstance(df, pd.DataFrame) and not df.empty:
             work = df.copy()
             work.columns = [c.strip().lower() for c in work.columns]
+            # best-effort normalize
             c_code = None
             for n in ("code","question","qcode","qid","scale","scale_id","scale_key","scale_name","item"):
                 if n in work.columns:
@@ -155,7 +160,7 @@ def _get_meta_scales() -> pd.DataFrame:
             for n in ("label","answer_label","option_label","text","desc","description"):
                 if n in work.columns:
                     c_label = n; break
-            if c_code, c_val, c_label:
+            if c_code and c_val and c_label:
                 out = work[[c_code, c_val, c_label]].copy()
                 out.columns = ["code", "value", "label"]
                 out["code"] = out["code"].astype(str).str.strip().str.upper()
@@ -164,6 +169,7 @@ def _get_meta_scales() -> pd.DataFrame:
                 out["value"] = out["value"].astype(int)
                 out["label"] = out["label"].astype(str).str.strip()
                 return out
+    # Fallback to the app's canonical loader
     try:
         df = load_scales_metadata()
         if isinstance(df, pd.DataFrame):
@@ -267,15 +273,17 @@ def _meaning_labels_for_question(
     """
     try:
         qU = str(qcode).strip().upper()
+        # 1) indices from Survey Questions row
         idxs: List[int] = []
         row = meta_q[meta_q.get("code", pd.Series(dtype=object)) == qU]
         if reporting_field and not row.empty:
-            colname = reporting_field.lower()
+            colname = reporting_field.lower()  # positive/negative/agree/answer1
             if colname in row.columns:
                 idxs = _parse_index_list(row.iloc[0][colname])
 
         labels: List[str] = []
 
+        # helper to map indices using a given key into Survey Scales
         def _map_by_scales_key(key: Optional[str]) -> List[str]:
             if not key:
                 return []
@@ -289,9 +297,11 @@ def _meaning_labels_for_question(
                     out.append(m[i])
             return out
 
+        # Try by question code
         if idxs:
             labels = _map_by_scales_key(qU)
 
+        # Try by a scale key from Survey Questions (scale/scale_id/scale_name)
         if not labels and idxs and not row.empty:
             for sk in ("scale", "scale_id", "scale_name"):
                 if sk in row.columns:
@@ -301,15 +311,18 @@ def _meaning_labels_for_question(
                         if labels:
                             break
 
+        # Canonical fallback: choose scale by question text and slice
         if not labels:
             scale_key = _pick_fallback_scale(question_text)
             full = _CANONICAL_SCALES.get(scale_key, [])
-            effective_idxs = list(idxs)
+            effective_idxs = list(idxs)  # copy
+            # SPECIAL: “extent” NEGATIVE with missing indices -> [2,3,4,5]
             if (not effective_idxs) and reporting_field and reporting_field.upper() == "NEGATIVE" and scale_key == "EXTENT5":
                 effective_idxs = [2,3,4,5]
             if effective_idxs and full:
                 labels = [full[i - 1] for i in effective_idxs if 1 <= i <= len(full)]
 
+        # Derive from metric_label if still nothing
         if not labels and isinstance(metric_label, str):
             m = re.search(r"%\s*selecting\s*(.+)$", metric_label.strip(), flags=re.IGNORECASE)
             if m:
@@ -317,6 +330,7 @@ def _meaning_labels_for_question(
                 parts = [p.strip(" []") for p in re.split(r"\s*/\s*", tail) if p.strip()]
                 labels = parts
 
+        # dedupe preserving order
         seen = set(); out = []
         for x in labels:
             k = (x or "").lower()
@@ -426,8 +440,7 @@ def _build_summary_pivot_from_disp(
     index_cols = ["Question", "Demographic"] if has_any_demo else ["Question"]
 
     pivot = df.pivot_table(index=index_cols, columns="Year", values="Value", aggfunc="first").sort_index()
-    # CHANGED: replace deprecated applymap with apply(...map(...))
-    pivot = pivot.apply(lambda col: col.map(lambda v: round(v, 1) if pd.notna(v) else v))
+    pivot = pivot.applymap(lambda v: round(v, 1) if pd.notna(v) else v)
     return pivot, labels_used
 
 
@@ -714,18 +727,6 @@ def _render_data_validation_subsection(
 
 # ------------------------------ main renderer -------------------------------
 
-def _meaning_labels_for_build(q: str, qtext: str, metric_col: Optional[str], metric_label: str,
-                              meta_q: pd.DataFrame, meta_scales: pd.DataFrame) -> List[str]:
-    reporting_field = _infer_reporting_field(metric_col)
-    return _meaning_labels_for_question(
-        qcode=q,
-        question_text=qtext,
-        reporting_field=reporting_field,
-        metric_label=metric_label or "",
-        meta_q=meta_q,
-        meta_scales=meta_scales
-    )
-
 def tabs_summary_and_per_q(
     *,
     payload: Dict[str, Any],
@@ -800,10 +801,7 @@ def tabs_summary_and_per_q(
                     unsafe_allow_html=True
                 )
         if summary_pivot is not None and not summary_pivot.empty:
-            # CHANGED: avoid mixed-type col names warning in Streamlit (display only)
-            _disp = summary_pivot.copy()
-            _disp.columns = [str(c) for c in _disp.columns]
-            st.dataframe(_disp.reset_index(), use_container_width=True)
+            st.dataframe(summary_pivot.reset_index(), use_container_width=True)
         else:
             st.info("No data available for the summary under current filters.")
         _source_link_line(source_title, source_url)
@@ -873,7 +871,7 @@ def tabs_summary_and_per_q(
                     reporting_field_ai = _infer_reporting_field(metric_col_ai)
                     category_in_play = ("Demographic" in dfq.columns and dfq["Demographic"].astype(str).nunique(dropna=True) > 1)
 
-                    # Derive parenthetical labels from metadata (in-memory or fallback)
+                    # Derive parenthetical meaning labels (now using the same in-memory metadata as the rest of the app)
                     meaning_labels_ai = _meaning_labels_for_question(
                         qcode=q,
                         question_text=qtext,
