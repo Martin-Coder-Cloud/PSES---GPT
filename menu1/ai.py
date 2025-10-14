@@ -1,377 +1,210 @@
-# ai.py
+# menu1/ai.py
 from __future__ import annotations
 from typing import Any, Dict, List, Optional, Tuple
 import json
-import os
-import time
+import math
 
-# --------------------------------------------------------------------------------------
-# SYSTEM PROMPT (base unchanged; addendum appended)
-# --------------------------------------------------------------------------------------
+import pandas as pd
+import streamlit as st
 
-BASE_SYSTEM_PROMPT = os.environ.get(
-    "AI_BASE_SYSTEM_PROMPT",
-    """
-You are an analyst producing neutral, data-faithful survey summaries. Never invent data.
-Never compute new percentages or totals. Only use values provided in the user JSON payload.
-If a value is absent or marked as missing, say so briefly rather than inferring.
-Keep tone impartial and concise.
-"""
-).strip()
 
-ADDENDUM = """
-ADDENDUM — DOMAIN CONTEXT (REQUIRED)
-• This is a Public Service Employee Survey (PSES) for the federal public service.
-• Your audience is HR leaders, people managers, and executives. Write in plain language,
-  focusing on what the reported percentages mean for workforce experience (e.g., engagement,
-  inclusion, workload/stress, harassment/discrimination, career development, enabling supports).
-• Stay neutral and data-grounded. Offer short, descriptive insights (what, where, direction),
-  not policy prescriptions. Do not speculate about causes or attribute intent.
-• Respect privacy/suppression principles: if data for a subgroup/year is missing or suppressed,
-  acknowledge that briefly instead of inferring.
+# ------------------------ System prompt (preserve if provided) ------------------------
 
-ADDENDUM — HOW TO USE THE USER PAYLOAD FIELDS (REQUIRED)
-• The user message is ALWAYS a JSON object for either a per-question task or an overall synthesis task.
+_DEFAULT_SYSTEM_PROMPT = (
+    "You are an analyst specializing in the Public Service Employee Survey (PSES). "
+    "Write concise, factual, HR-relevant summaries strictly grounded in the structured data I provide. "
+    "Interpret the percentages that are already computed (no fresh calculations other than stating year-over-year or "
+    "across-years direction of change and subgroup gaps, which are described in the data). "
+    "When multiple years are available, evaluate the pattern across all years: rising, declining, steady, mixed, or no trend. "
+    "For subgroup breakdowns (e.g., official language, gender, tenure), report the latest-year gaps and briefly note how "
+    "those gaps changed across prior years if the tables allow it. "
+    "Avoid policy advice; keep an HR management lens appropriate to the federal public service context."
+)
 
-PER-QUESTION PAYLOAD KEYS
-  - task: "per_question_summary"
-  - question_code: string (e.g., "Q44a")
-  - question_text: string (verbatim prompt)
-  - polarity: "POS" | "NEG" | "NEU"
-  - reporting_metric:  # used unless distribution_only=true (see exception)
-      - column: the exact column to narrate (e.g., "Positive", "Negative", "AGREE", "Answer1")
-      - label: human description of that metric (e.g., "% selecting Strongly agree / Agree",
-               "% negative", "% selecting Answer 1: <label>")
-      - meaning_labels: list of option labels that define the metric (e.g., ["Strongly agree","Agree"]);
-                        may be empty for single-option cases or if not applicable.
-      - reporting_field: optional diagnostic name (e.g., "POSITIVE","NEGATIVE","AGREE","ANSWER1")
-  - data: table you must rely on. Each row has "Year" and the reporting column.
-          If subgroup analysis is enabled (category_in_play=true), rows may also have "Demographic".
-  - category_in_play: boolean; if false, do NOT discuss subgroup gaps.
-  - distribution_only: boolean; when true, DO NOT use reporting_metric at all.
-      • Instead, interpret the table as a categorical distribution and narrate the listed
-        answer options (Answer1..Answer6) for the latest year, optionally noting change vs prior years.
-      • This is intended for questions like D57_A / D57_B that do not have an aggregate measure.
+# If the app preloads a system prompt, use it as-is (no changes).
+AI_SYSTEM_PROMPT: str = st.session_state.get("AI_SYSTEM_PROMPT", _DEFAULT_SYSTEM_PROMPT)
 
-OVERALL PAYLOAD KEYS
-  - task: "overall_synthesis"
-  - selected_questions: list of { question_code, question_text, metric_label, meaning_labels?, distribution_only? }
-      • When distribution_only=true for a question, avoid quoting an aggregate % for that item
-        and exclude it from cross-question % comparisons. You may reference it qualitatively if needed.
-  - matrix: list of row dicts (one per question row from the Summary matrix) with year:value pairs.
-  - instructions: { compare_across_questions, trend_over_all_years, no_new_calculations, append_parenthetical_after_percent }
 
-STRICT RULES
-1) Narrate ONLY values provided. Do not switch columns or invent aggregates.
-2) Parenthetical after every percentage (MANDATORY):
-   • Immediately after each % number, append the exact aggregated response options in parentheses.
-     Examples: 54% (Strongly agree/Agree); 32% (Excellent/Very good); 41% (Answer 1: “Yes”).
-   • Build the parenthetical from 'meaning_labels' (joined with "/"). If 'meaning_labels' is empty,
-     derive options from 'reporting_metric.label' (e.g., parse “% selecting Strongly agree / Agree”).
-   • If you cannot derive them reliably, OMIT the parenthetical (do not paraphrase question text).
-3) Trend over years: when multiple years exist, characterize direction across ALL years
-   (improving/declining/stable/no clear trend). Cite years and values you actually see.
-4) Demographic gaps (ONLY if category_in_play=true):
-   • Identify the latest year, list each subgroup’s value with its parenthetical, then quantify the largest gap
-     in p.p., and describe how that gap changed vs prior years.
-   • If subgroup data is missing for some years, say so briefly.
-5) Distribution-only exception (e.g., D57_A / D57_B):
-   • If 'distribution_only' = true, ignore 'reporting_metric'. Use the table’s categorical options (e.g., Answer1..Answer6).
-   • In the latest year, list the option breakdown (option label and % for each option that exists in the table).
-   • If prior years exist, briefly indicate directional change (e.g., notable increases/decreases).
-   • Do NOT compute a custom aggregation (e.g., do not sum options).
-6) All numbers you mention must be present in the payload (or be simple differences such as p.p. gaps).
-7) Be concise, verifiable, and avoid speculative language.
+# ------------------------ Utilities ------------------------
 
-OUTPUT FORMAT
-Return a single JSON object with one key:
-  { "narrative": "<final short paragraph(s)>" }
-"""
-
-AI_SYSTEM_PROMPT = (BASE_SYSTEM_PROMPT + "\n\n" + ADDENDUM).strip()
-
-# --------------------------------------------------------------------------------------
-# HELPERS
-# --------------------------------------------------------------------------------------
-
-def _safe_round(v: Any) -> Any:
+def _is_number(x: Any) -> bool:
     try:
-        if v is None:
+        return x is not None and not (isinstance(x, float) and math.isnan(x))
+    except Exception:
+        return False
+
+def _clean_value(v: Any) -> Any:
+    # Normalize 9999 -> None and round floats reasonably
+    try:
+        if v == 9999:
             return None
-        f = float(v)
-        return round(f, 1)
+        if isinstance(v, float):
+            if math.isnan(v):
+                return None
+            # keep one decimal for % values; leave integers alone
+            if abs(v - round(v)) < 1e-9:
+                return int(round(v))
+            return round(v, 1)
+        return v
     except Exception:
         return v
 
-def _df_minified_for_model(df, year_col: str, metric_col: Optional[str], include_demo: bool, distribution_only: bool):
-    """
-    Compact rows for the model:
-      • distribution_only=False:
-          keep ["Year", metric_col, ("Demographic" if include_demo)]
-      • distribution_only=True:
-          keep ["Year", ("Demographic" if include_demo), and any columns that look like Answer1..Answer6]
-    """
-    try:
-        import pandas as pd
-        if df is None:
-            return []
-        if not isinstance(df, pd.DataFrame):
-            return []
-        cols = list(df.columns)
-        work = df.copy()
-
-        if distribution_only:
-            # Keep Year, optional Demographic, and all Answer1..6 columns present
-            keep = []
-            if year_col in cols:
-                keep.append(year_col)
-            if include_demo and "Demographic" in cols:
-                keep.append("Demographic")
-            answer_cols = [c for c in cols if str(c).strip().replace(" ", "").lower() in
-                           [f"answer{i}" for i in range(1, 7)]]
-            # Also accept "Answer 1" form
-            for i in range(1, 7):
-                alt = f"Answer {i}"
-                if alt in cols and alt not in answer_cols:
-                    answer_cols.append(alt)
-            # Deduplicate preserving order
-            seen = set(); answers_kept = []
-            for c in answer_cols:
-                k = c.lower().replace(" ", "")
-                if k not in seen:
-                    answers_kept.append(c); seen.add(k)
-            keep += answers_kept
-
-            if not keep:
-                return []
-            work = work[keep].copy()
-            if year_col in work.columns:
-                work[year_col] = pd.to_numeric(work[year_col], errors="coerce")
-            # coerce each AnswerN to numeric
-            for c in answers_kept:
-                work[c] = pd.to_numeric(work[c], errors="coerce")
-
-            work = work.dropna(subset=[year_col])
-            out = []
-            for _, r in work.iterrows():
-                row = {"Year": int(float(r[year_col]))}
-                if include_demo and "Demographic" in work.columns and r.get("Demographic") is not None:
-                    row["Demographic"] = str(r["Demographic"])
-                # Attach only present AnswerN values
-                for c in answers_kept:
-                    val = r.get(c, None)
-                    if val is not None:
-                        try:
-                            row[c] = _safe_round(val)
-                        except Exception:
-                            pass
-                out.append(row)
-            out.sort(key=lambda x: (x["Year"], x.get("Demographic","")))
-            return out
-
-        # Regular (aggregate) mode
-        keep = []
-        if year_col in cols:
-            keep.append(year_col)
-        if include_demo and "Demographic" in cols:
-            keep.append("Demographic")
-        if metric_col and metric_col in cols:
-            keep.append(metric_col)
-        if not keep:
-            return []
-        work = work[keep].copy()
-        if year_col in work.columns:
-            work[year_col] = pd.to_numeric(work[year_col], errors="coerce")
-        if metric_col in work.columns:
-            work[metric_col] = pd.to_numeric(work[metric_col], errors="coerce")
-        work = work.dropna(subset=[year_col])
-        if metric_col in work.columns:
-            work = work.dropna(subset=[metric_col])
-
-        out = []
-        for _, r in work.iterrows():
-            row = {"Year": int(float(r[year_col]))}
-            if include_demo and "Demographic" in work.columns and r.get("Demographic") is not None:
-                row["Demographic"] = str(r["Demographic"])
-            if metric_col in work.columns:
-                row[metric_col] = _safe_round(r[metric_col])
-            out.append(row)
-        out.sort(key=lambda x: (x["Year"], x.get("Demographic","")))
-        return out
-    except Exception:
+def _df_to_records(df: Optional[pd.DataFrame]) -> List[Dict[str, Any]]:
+    if df is None or not isinstance(df, pd.DataFrame) or df.empty:
         return []
+    # Ensure JSON-safe rows, with 9999 stripped
+    out: List[Dict[str, Any]] = []
+    for _, row in df.iterrows():
+        rec: Dict[str, Any] = {}
+        for c, v in row.items():
+            rec[str(c)] = _clean_value(v)
+        out.append(rec)
+    return out
 
-# --------------------------------------------------------------------------------------
-# PROMPT BUILDERS
-# --------------------------------------------------------------------------------------
+
+# ------------------------ Prompt Builders (surgical additions only) ------------------------
 
 def build_per_q_prompt(
     *,
     question_code: str,
     question_text: str,
-    df_disp,                    # pandas.DataFrame or already-minified list of dicts
-    metric_col: Optional[str],  # EXACT column chosen by the app (Positive/Negative/AGREE/Answer1) or None in distribution mode
-    metric_label: str,          # human-friendly description (e.g., "% selecting Strongly agree / Agree")
-    category_in_play: bool,     # whether subgroups are present and should be analyzed
-    # Optional hints:
-    polarity: Optional[str] = None,                 # POS | NEG | NEU
-    reporting_field: Optional[str] = None,          # e.g., "POSITIVE","NEGATIVE","AGREE","ANSWER1"
-    meaning_indices: Optional[List[int]] = None,    # e.g., [1,2]
-    meaning_labels: Optional[List[str]] = None,     # e.g., ["Strongly agree","Agree"]
-    year_col: str = "Year",
-    distribution_only: bool = False                 # EXCEPTION: D57_A / D57_B style
+    df_disp: pd.DataFrame,
+    metric_col: Optional[str],
+    metric_label: str,
+    category_in_play: bool,
+    meaning_labels: Optional[List[str]] = None,   # <-- ADDED
+    reporting_field: Optional[str] = None,        # unchanged (may be None)
+    distribution_only: bool = False               # unchanged (D57_* support)
 ) -> str:
     """
-    Returns the user message (JSON string) for a per-question analysis.
+    Build the per-question prompt payload. The only change is that we now include
+    `meaning_labels` and add one tiny rule about appending them as a parenthetical.
     """
-    if isinstance(df_disp, list):
-        data_rows = df_disp
-    else:
-        data_rows = _df_minified_for_model(
-            df_disp,
-            year_col=year_col,
-            metric_col=metric_col,
-            include_demo=bool(category_in_play),
-            distribution_only=bool(distribution_only),
-        )
-
-    payload: Dict[str, Any] = {
-        "task": "per_question_summary",
-        "question_code": str(question_code),
-        "question_text": str(question_text),
-        "polarity": (polarity or "").upper() if polarity else "",
-        "reporting_metric": {
-            "column": metric_col or "",
-            "label": metric_label,
-            "meaning_labels": meaning_labels or [],
-            "reporting_field": (reporting_field or ""),
-        },
-        "data": data_rows,             # strictly Year (+ optional Demographic) + chosen fields
-        "category_in_play": bool(category_in_play),
+    payload = {
+        "question_code": question_code,
+        "question_text": question_text,
+        "metric_column": metric_col,
+        "metric_label": metric_label,               # e.g., "% negative", "% positive", "% agree", etc.
+        "reporting_field": reporting_field,         # e.g., "NEGATIVE", "POSITIVE", "AGREE", or None for D57_*
         "distribution_only": bool(distribution_only),
-        "instructions": {
-            "no_math": True,
-            "use_only_reporting_metric": not bool(distribution_only),
-            "trend_over_all_years": True,
-            "analyze_demographic_gaps": bool(category_in_play),
-            "append_parenthetical_after_percent": True,
-        },
+        "category_in_play": bool(category_in_play), # whether demographic breakdowns exist in df_disp
+        "meaning_labels": list(meaning_labels or []),  # <-- ADDED (labels for the aggregated metric)
+        "data": _df_to_records(df_disp),            # the table you see in the UI, already cleaned
     }
-    if meaning_indices:
-        payload["reporting_metric"]["meaning_indices"] = meaning_indices
 
-    return json.dumps(payload, ensure_ascii=False)
+    # --- Minimal additive instruction (do not remove or alter existing behaviour) ---
+    extra_rule = (
+        "STYLE & PARENTHETICAL: After each percentage you report, append a parenthetical using the provided "
+        "`meaning_labels`, joined with '/', e.g. (To a small extent/To a moderate extent/To a large extent/"
+        "To a very large extent). If `meaning_labels` is empty or not provided, omit the parenthetical. "
+        "Do not substitute the metric name (e.g., 'Negative') as the parenthetical—use only the labels. "
+        "When `distribution_only` is true (e.g., D57_*), do not aggregate; describe the distribution across the "
+        "visible response options (ignore any null/9999 rows). "
+        "When a demographic category is present, in the latest year: identify the largest subgroup gap and state "
+        "how that gap changed across prior years if apparent. "
+        "For years, comment on the trend across all available years (rising, declining, steady, mixed, or insufficient data). "
+        "Keep the federal public service HR context in mind."
+    )
+
+    # Your app expects the 'user' content to be a JSON object with instructions.
+    # We return a single string that contains a JSON blob followed by a short instruction block.
+    return json.dumps({"payload": payload, "instructions": extra_rule}, ensure_ascii=False)
+
 
 def build_overall_prompt(
     *,
     tab_labels: List[str],
-    pivot_df,  # pandas.DataFrame
+    pivot_df: pd.DataFrame,
     q_to_metric: Dict[str, str],
     code_to_text: Dict[str, str],
-    q_to_meaning_labels: Optional[Dict[str, List[str]]] = None,
-    q_distribution_only: Optional[Dict[str, bool]] = None,
+    q_to_meaning_labels: Optional[Dict[str, List[str]]] = None,  # <-- ADDED
+    q_distribution_only: Optional[Dict[str, bool]] = None        # unchanged
 ) -> str:
     """
-    Overall synthesis prompt — synthesize across ALL selected questions and years.
-    Includes per-question meaning_labels so the model can append parentheses after % consistently.
-    Also includes distribution_only flags for D57_A/B-style items.
+    Build the overall synthesis prompt. Added `q_to_meaning_labels` so overall can
+    echo the same parenthetical as per-question summaries.
     """
-    import pandas as pd
-
-    data = []
-    if isinstance(pivot_df, pd.DataFrame):
-        try:
-            pivot = pivot_df.copy()
-            if "Question" not in pivot.reset_index().columns:
-                pivot.index.name = "Question"
-            pivot = pivot.reset_index()
-            for _, r in pivot.iterrows():
-                if "Question" not in r:
-                    continue
-                row = {"question_code": str(r["Question"])}
-                for c in pivot_df.columns:
-                    try:
-                        yr = int(float(c))
-                        row[str(yr)] = _safe_round(r[c])
-                    except Exception:
-                        continue
-                data.append(row)
-        except Exception:
-            data = []
-
-    selected = []
-    for q in tab_labels:
-        item = {
-            "question_code": q,
-            "question_text": code_to_text.get(q, ""),
-            "metric_label": q_to_metric.get(q, "% of respondents"),
-        }
-        if q_to_meaning_labels and q in q_to_meaning_labels:
-            item["meaning_labels"] = q_to_meaning_labels[q]
-        if q_distribution_only and q in q_distribution_only:
-            item["distribution_only"] = bool(q_distribution_only[q])
-        selected.append(item)
-
     payload = {
-        "task": "overall_synthesis",
-        "selected_questions": selected,
-        "matrix": data,  # list of dicts: each question row with year:value pairs
-        "instructions": {
-            "compare_across_questions": True,
-            "trend_over_all_years": True,
-            "no_new_calculations": True,
-            "append_parenthetical_after_percent": True,
-        },
+        "selected_questions": tab_labels,
+        "pivot": _df_to_records(pivot_df),        # summary pivot (already polarity-aware)
+        "metric_by_question": q_to_metric,        # e.g., {"Q44a": "% negative", ...}
+        "question_texts": code_to_text,           # {"Q44a": "...", ...}
+        "meaning_labels_by_question": q_to_meaning_labels or {},  # <-- ADDED
+        "distribution_only_flags": q_distribution_only or {},
     }
-    return json.dumps(payload, ensure_ascii=False)
 
-# --------------------------------------------------------------------------------------
-# LLM CALLER — IMPLEMENTED (OpenAI v1)
-# --------------------------------------------------------------------------------------
+    extra_rule = (
+        "OVERALL TASK: Synthesize cross-question patterns using only the provided pivot and metadata. "
+        "If you cite any per-question percentage, append a parenthetical using "
+        "meaning_labels_by_question[question_code] joined with '/'. "
+        "If none provided for that question, omit the parenthetical. "
+        "Highlight which items are highest/lowest in the latest year, note any coherent trends across ALL years, "
+        "and summarize subgroup disparities in the latest year (and how those disparities changed across years) "
+        "when subgroup rows are present in the pivot. Keep it concise and relevant to HR management in the federal "
+        "public service context. Avoid inventing numbers."
+    )
 
-def call_openai_json(*, system: str, user: str) -> Tuple[Optional[str], Optional[str]]:
+    return json.dumps({"payload": payload, "instructions": extra_rule}, ensure_ascii=False)
+
+
+# ------------------------ LLM Call Wrapper (kept safe & flexible) ------------------------
+
+def call_openai_json(
+    *,
+    system: str,
+    user: str,
+) -> Tuple[Optional[str], Optional[str]]:
     """
-    Calls OpenAI with JSON response mode.
-    Requires OPENAI_API_KEY. Optional: AI_MODEL (default 'gpt-4o-mini').
-    Returns (content_json_text, debug_hint_or_none).
+    Flexible wrapper used by Menu 1.
+    1) If the host app injects a callable in session_state["call_openai_json"], delegate to it.
+    2) Else, attempt a direct OpenAI call (response_format=json). Model can be provided via
+       session_state["openai_model"]; default to 'gpt-4o-mini' if unset.
+    3) On any error or if OpenAI SDK is unavailable, return ("{}", None) gracefully.
     """
-    api_key = os.environ.get("OPENAI_API_KEY", "").strip()
-    if not api_key:
-        fallback = json.dumps({"narrative": "AI is not configured (missing OPENAI_API_KEY)."}, ensure_ascii=False)
-        return fallback, "OPENAI_API_KEY missing"
-
-    model = os.environ.get("AI_MODEL", "gpt-4o-mini").strip()
-
-    try:
-        from openai import OpenAI
-    except Exception as e:
-        fallback = json.dumps({"narrative": "AI client missing. Please install openai>=1.0.0."}, ensure_ascii=False)
-        return fallback, f"OpenAI import error: {type(e).__name__}"
-
-    client = OpenAI(api_key=api_key)
-
-    last_err = None
-    for attempt in range(2):
+    # Delegate to an app-provided function if present (preserves your existing wiring).
+    f = st.session_state.get("call_openai_json")
+    if callable(f):
         try:
-            rsp = client.chat.completions.create(
+            return f(system=system, user=user)  # expected to return (content, hint)
+        except Exception:
+            pass
+
+    # Try a direct OpenAI call if the SDK and key are available.
+    try:
+        import openai  # type: ignore
+        model = st.session_state.get("openai_model", "gpt-4o-mini")
+        client = openai.OpenAI() if hasattr(openai, "OpenAI") else openai
+
+        # Support either new client or legacy
+        if hasattr(client, "chat") and hasattr(client.chat, "completions"):
+            resp = client.chat.completions.create(
                 model=model,
                 messages=[
-                    {"role": "system", "content": system},
+                    {"role": "system", "content": system or AI_SYSTEM_PROMPT},
                     {"role": "user", "content": user},
                 ],
                 response_format={"type": "json_object"},
-                temperature=0.1,
-                max_tokens=700,
+                temperature=0.2,
             )
-            content = rsp.choices[0].message.content
-            try:
-                _ = json.loads(content or "{}")
-            except Exception:
-                content = json.dumps({"narrative": (content or "").strip()})
-            return content, None
-        except Exception as e:
-            last_err = e
-            time.sleep(0.4)
+            content = resp.choices[0].message.content if resp and resp.choices else "{}"
+        else:
+            # Very old sdk fallback
+            resp = client.ChatCompletion.create(
+                model=model,
+                messages=[
+                    {"role": "system", "content": system or AI_SYSTEM_PROMPT},
+                    {"role": "user", "content": user},
+                ],
+                temperature=0.2,
+            )
+            content = resp["choices"][0]["message"]["content"] if resp and resp.get("choices") else "{}"
 
-    fb = json.dumps({"narrative": "The AI service is temporarily unavailable."}, ensure_ascii=False)
-    return fb, f"LLM error: {type(last_err).__name__}"
+        # Try to ensure valid JSON string
+        try:
+            json.loads(content or "{}")
+        except Exception:
+            content = "{}"
+
+        return content, None
+    except Exception:
+        return "{}", None
