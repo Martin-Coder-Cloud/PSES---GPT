@@ -9,7 +9,12 @@ import re
 import pandas as pd
 import streamlit as st
 
+# Reuse your shared AI system prompt and (unchanged) calling utilities
 from ..ai import AI_SYSTEM_PROMPT  # unchanged
+
+# Import the same metadata loaders used elsewhere in Menu 1
+from ..main import load_questions_metadata, load_scales_metadata
+
 
 # ----------------------------- small helpers -----------------------------
 
@@ -74,82 +79,120 @@ def _is_d57_exception(q: str) -> bool:
     return qn in {"D57_A", "D57_B", "D57A", "D57B"}
 
 def _sanitize_9999(df: pd.DataFrame) -> pd.DataFrame:
-    """Replace 9999 with NaN in all numeric-looking columns (incl. Answer1..6)."""
+    """Replace 9999 with NaN in numeric survey percentage columns, incl. Answer1..Answer6."""
     if not isinstance(df, pd.DataFrame) or df.empty:
         return df
     out = df.copy()
-    # identify numeric-ish columns
     num_cols = []
     for c in out.columns:
         lc = str(c).lower().replace(" ", "")
-        if lc in {"positive", "negative", "agree", "answer1", "answer2", "answer3", "answer4", "answer5", "answer6"}:
+        if lc in {"positive", "negative", "agree",
+                  "answer1", "answer2", "answer3", "answer4", "answer5", "answer6"}:
             num_cols.append(c)
         elif re.fullmatch(r"answer\s*[1-6]", str(c), flags=re.IGNORECASE):
             num_cols.append(c)
-        elif str(c).isdigit() and len(str(c)) == 4:
-            # year columns in a wide table (rare here) – ignore
-            pass
-    # Coerce and replace 9999
     for c in set(num_cols):
         out[c] = pd.to_numeric(out[c], errors="coerce").replace(9999, pd.NA)
     return out
 
+
 # ---------------------- metadata (polarity + scales) ----------------------
 
 @st.cache_data(show_spinner=False)
-def _load_survey_questions_meta() -> pd.DataFrame:
+def _get_meta_questions() -> pd.DataFrame:
     """
-    Expect metadata/Survey Questions.xlsx
-    Required: code, polarity (POS/NEG/NEU)
-    Optional (for meaning): positive / negative / agree : indices string like "1,2"
+    Retrieve Survey Questions metadata the *same way* the rest of Menu 1 does.
+    Priority:
+      1) In-memory (session) object if present (exact same df)
+      2) Fallback to the shared loader in menu1.main
+    Must contain: code, polarity (POS/NEG/NEU)
+    Should contain: positive / negative / agree (indices like "1,2")
+    May contain: scale / scale_id / scale_name (optional keys into scales)
     """
+    for k in ("survey_questions", "survey_questions_df", "meta_questions"):
+        df = st.session_state.get(k)
+        if isinstance(df, pd.DataFrame) and not df.empty:
+            work = df.copy()
+            work.columns = [c.strip().lower() for c in work.columns]
+            if "code" in work.columns:
+                work["code"] = work["code"].astype(str).str.strip().str.upper()
+            return work
     try:
-        df = pd.read_excel("metadata/Survey Questions.xlsx")
-        df = df.rename(columns={c: c.strip().lower() for c in df.columns})
-        if "question" in df.columns and "code" not in df.columns:
-            df = df.rename(columns={"question": "code"})
-        df["code"] = df["code"].astype(str).str.strip().str.upper()
-        if "polarity" not in df.columns:
-            df["polarity"] = "POS"
-        df["polarity"] = df["polarity"].astype(str).str.upper().str.strip()
-        for c in ("positive", "negative", "agree"):
-            if c not in df.columns:
-                df[c] = None
-            else:
-                df[c] = df[c].apply(lambda x: str(x).strip() if pd.notna(x) else None)
-        return df
+        df = load_questions_metadata()
+        if isinstance(df, pd.DataFrame):
+            work = df.copy()
+            work.columns = [c.strip().lower() for c in work.columns]
+            if "code" in work.columns:
+                work["code"] = work["code"].astype(str).str.strip().str.upper()
+            return work
     except Exception:
-        return pd.DataFrame(columns=["code", "polarity", "positive", "negative", "agree"])
+        pass
+    return pd.DataFrame(columns=["code", "polarity", "positive", "negative", "agree", "scale", "scale_id", "scale_name"])
 
 @st.cache_data(show_spinner=False)
-def _load_survey_scales_meta() -> pd.DataFrame:
+def _get_meta_scales() -> pd.DataFrame:
     """
-    Expect metadata/Survey Scales.xlsx with columns we map to:
-      code, value (option index), label (option text)
+    Retrieve Survey Scales metadata the *same way* the rest of Menu 1 does.
+    Priority:
+      1) In-memory (session) object if present (exact same df)
+      2) Fallback to the shared loader in menu1.main
+    Normalized to: code (question code or scale key), value (index), label (text)
     """
+    for k in ("survey_scales", "survey_scales_df", "meta_scales", "scales_df"):
+        df = st.session_state.get(k)
+        if isinstance(df, pd.DataFrame) and not df.empty:
+            work = df.copy()
+            work.columns = [c.strip().lower() for c in work.columns]
+            c_code = None
+            for n in ("code","question","qcode","qid","scale","scale_id","scale_key","scale_name","item"):
+                if n in work.columns:
+                    c_code = n; break
+            c_val = None
+            for n in ("value","option","index","answer","answer_value","order","position"):
+                if n in work.columns:
+                    c_val = n; break
+            c_label = None
+            for n in ("label","answer_label","option_label","text","desc","description"):
+                if n in work.columns:
+                    c_label = n; break
+            if c_code, c_val, c_label:
+                out = work[[c_code, c_val, c_label]].copy()
+                out.columns = ["code", "value", "label"]
+                out["code"] = out["code"].astype(str).str.strip().str.upper()
+                out["value"] = pd.to_numeric(out["value"], errors="coerce")
+                out = out.dropna(subset=["code","value","label"])
+                out["value"] = out["value"].astype(int)
+                out["label"] = out["label"].astype(str).str.strip()
+                return out
     try:
-        df = pd.read_excel("metadata/Survey Scales.xlsx")
-        df.columns = [c.strip().lower() for c in df.columns]
-        def pick(opts):  # helper
-            for n in opts:
-                if n in df.columns:
-                    return n
-            return None
-        c_code  = pick(["code","question","qcode","qid","scale_code","item"])
-        c_val   = pick(["value","option","index","answer","answer_value","order","position"])
-        c_label = pick(["label","answer_label","option_label","text","desc","description"])
-        if not (c_code and c_val and c_label):
-            return pd.DataFrame(columns=["code","value","label"])
-        out = df[[c_code, c_val, c_label]].copy()
-        out.columns = ["code", "value", "label"]
-        out["code"] = out["code"].astype(str).str.strip().str.upper()
-        out["value"] = pd.to_numeric(out["value"], errors="coerce")
-        out = out.dropna(subset=["code","value","label"])
-        out["value"] = out["value"].astype(int)
-        out["label"] = out["label"].astype(str).str.strip()
-        return out
+        df = load_scales_metadata()
+        if isinstance(df, pd.DataFrame):
+            work = df.copy()
+            work.columns = [c.strip().lower() for c in work.columns]
+            c_code = None
+            for n in ("code","question","qcode","qid","scale","scale_id","scale_key","scale_name","item"):
+                if n in work.columns:
+                    c_code = n; break
+            c_val = None
+            for n in ("value","option","index","answer","answer_value","order","position"):
+                if n in work.columns:
+                    c_val = n; break
+            c_label = None
+            for n in ("label","answer_label","option_label","text","desc","description"):
+                if n in work.columns:
+                    c_label = n; break
+            if c_code and c_val and c_label:
+                out = work[[c_code, c_val, c_label]].copy()
+                out.columns = ["code", "value", "label"]
+                out["code"] = out["code"].astype(str).str.strip().str.upper()
+                out["value"] = pd.to_numeric(out["value"], errors="coerce")
+                out = out.dropna(subset=["code","value","label"])
+                out["value"] = out["value"].astype(int)
+                out["label"] = out["label"].astype(str).str.strip()
+                return out
     except Exception:
-        return pd.DataFrame(columns=["code","value","label"])
+        pass
+    return pd.DataFrame(columns=["code","value","label"])
 
 def _parse_index_list(s: Optional[str]) -> List[int]:
     if not s or not isinstance(s, str):
@@ -165,7 +208,7 @@ def _parse_index_list(s: Optional[str]) -> List[int]:
             continue
     return out
 
-def _infer_reporting_field(metric_col: str) -> Optional[str]:
+def _infer_reporting_field(metric_col: Optional[str]) -> Optional[str]:
     if not metric_col:
         return None
     lc = metric_col.replace(" ", "").lower()
@@ -175,63 +218,129 @@ def _infer_reporting_field(metric_col: str) -> Optional[str]:
     if lc in ("answer1","answer_1"): return "ANSWER1"
     return None
 
+
+# ----------- canonical scales (fallback) -----------
+
+_CANONICAL_SCALES: Dict[str, List[str]] = {
+    "AGREE5": [
+        "Strongly disagree",
+        "Disagree",
+        "Neither agree nor disagree",
+        "Agree",
+        "Strongly agree",
+    ],
+    "EXTENT5": [
+        "To a very small extent",
+        "To a small extent",
+        "To a moderate extent",
+        "To a large extent",
+        "To a very large extent",
+    ],
+}
+
+def _pick_fallback_scale(question_text: Optional[str]) -> str:
+    qt = (question_text or "").lower()
+    if "to what extent" in qt or "extent" in qt:
+        return "EXTENT5"
+    return "AGREE5"
+
 def _meaning_labels_for_question(
     *,
     qcode: str,
+    question_text: Optional[str],
     reporting_field: Optional[str],
     metric_label: str,
     meta_q: pd.DataFrame,
     meta_scales: pd.DataFrame
 ) -> List[str]:
-    """Return list of aggregated option labels (e.g., ["Strongly agree","Agree"])."""
+    """
+    Return aggregated option labels (e.g., ["Strongly agree","Agree"]).
+    Resolution order:
+      1) Indices from Survey Questions row -> labels from Survey Scales where scales.code == question code.
+      2) If none, look for a 'scale' key in Survey Questions row (scale/scale_id/scale_name) and map there.
+      3) If still none:
+         • choose canonical scale by question text (EXTENT5 for “extent”, else AGREE5)
+         • slice by indices if present
+         • SPECIAL PATCH: if no indices AND reporting_field == NEGATIVE AND scale == EXTENT5,
+           assume indices [2,3,4,5] (small→very large extent) to cover Q44x family.
+      4) As a last resort, derive from metric_label (“% selecting A / B”).
+    """
     try:
         qU = str(qcode).strip().upper()
-        # 1) indices from Survey Questions row
         idxs: List[int] = []
-        if reporting_field:
-            colname = reporting_field.lower()  # positive/negative/agree/answer1
-            row = meta_q[meta_q["code"] == qU]
-            if not row.empty and colname in row.columns:
+        row = meta_q[meta_q.get("code", pd.Series(dtype=object)) == qU]
+        if reporting_field and not row.empty:
+            colname = reporting_field.lower()
+            if colname in row.columns:
                 idxs = _parse_index_list(row.iloc[0][colname])
+
         labels: List[str] = []
-        # 2) map indices via Survey Scales
-        if idxs and not meta_scales.empty:
-            sc = meta_scales[meta_scales["code"] == qU]
-            if not sc.empty:
-                m = {int(v): str(l) for v, l in zip(sc["value"], sc["label"])}
-                for i in idxs:
-                    if i in m:
-                        labels.append(m[i])
-        # 3) derive from metric label if still empty
+
+        def _map_by_scales_key(key: Optional[str]) -> List[str]:
+            if not key:
+                return []
+            sc = meta_scales[meta_scales.get("code", pd.Series(dtype=object)) == str(key).strip().upper()]
+            if sc.empty:
+                return []
+            m = {int(v): str(l) for v, l in zip(sc["value"], sc["label"])}
+            out: List[str] = []
+            for i in idxs:
+                if i in m:
+                    out.append(m[i])
+            return out
+
+        if idxs:
+            labels = _map_by_scales_key(qU)
+
+        if not labels and idxs and not row.empty:
+            for sk in ("scale", "scale_id", "scale_name"):
+                if sk in row.columns:
+                    key = row.iloc[0][sk]
+                    if pd.notna(key) and str(key).strip():
+                        labels = _map_by_scales_key(str(key))
+                        if labels:
+                            break
+
+        if not labels:
+            scale_key = _pick_fallback_scale(question_text)
+            full = _CANONICAL_SCALES.get(scale_key, [])
+            effective_idxs = list(idxs)
+            if (not effective_idxs) and reporting_field and reporting_field.upper() == "NEGATIVE" and scale_key == "EXTENT5":
+                effective_idxs = [2,3,4,5]
+            if effective_idxs and full:
+                labels = [full[i - 1] for i in effective_idxs if 1 <= i <= len(full)]
+
         if not labels and isinstance(metric_label, str):
             m = re.search(r"%\s*selecting\s*(.+)$", metric_label.strip(), flags=re.IGNORECASE)
             if m:
                 tail = m.group(1).strip()
                 parts = [p.strip(" []") for p in re.split(r"\s*/\s*", tail) if p.strip()]
                 labels = parts
-        # dedupe preserving order
+
         seen = set(); out = []
         for x in labels:
-            k = x.lower()
-            if k not in seen:
+            k = (x or "").lower()
+            if k and k not in seen:
                 out.append(x); seen.add(k)
         return out
     except Exception:
         return []
 
+
 # ---------------------- Summary pivot (polarity-aware) ----------------------
 
 def _pick_metric_for_summary(dfq: pd.DataFrame, qcode: str, meta: pd.DataFrame) -> Tuple[Optional[str], str]:
     """
-    Choose the correct reporting metric column + a generic label
-    based on POLARITY with your fallback rules: POS→Positive→Agree→Answer1→Negative;
-    NEG→Negative→Agree→Answer1→Positive; NEU→Agree→Answer1→Positive→Negative.
+    POLARITY rules with fallbacks:
+      POS -> Positive -> Agree -> Answer1 -> Negative
+      NEG -> Negative -> Agree -> Answer1 -> Positive
+      NEU -> Agree    -> Answer1 -> Positive -> Negative
     """
     pol = None
     if not meta.empty:
-        row = meta[meta["code"] == str(qcode).strip().upper()]
+        row = meta[meta.get("code", pd.Series(dtype=object)) == str(qcode).strip().upper()]
         if not row.empty:
-            pol = str(row.iloc[0]["polarity"] or "").upper().strip()
+            pol = str(row.iloc[0].get("polarity", "") or "").upper().strip()
     pol = pol or "POS"
 
     col_pos = _find_col(dfq, ["Positive", "POSITIVE"])
@@ -258,16 +367,13 @@ def _build_summary_pivot_from_disp(
     meta: pd.DataFrame
 ) -> Tuple[pd.DataFrame, Dict[str, str]]:
     """
-    If a per-question display table includes a 'Demographic' column with >1 unique values,
-    emit one row per (Question, Demographic). Otherwise one row per Question.
-    D57_A / D57_B are excluded (distribution-only).
+    Demographic-aware pivot. D57_A/B are excluded (distribution-only rule).
     """
     rows: List[Dict[str, Any]] = []
     labels_used: Dict[str, str] = {}
 
     for q in tab_labels:
         if _is_d57_exception(q):
-            # Exclude D57 from summary pivot by rule.
             continue
 
         dfq_raw = per_q_disp.get(q)
@@ -283,12 +389,10 @@ def _build_summary_pivot_from_disp(
         if not metric_col:
             continue
 
-        # Demographic-aware: if multiple subgroups exist, include them
         has_demo = "Demographic" in dfq.columns and dfq["Demographic"].astype(str).nunique(dropna=True) > 1
         group_cols = [ycol, metric_col] + (["Demographic"] if has_demo else [])
         tmp = dfq[group_cols].copy()
 
-        # Enforce 9999 rule (already sanitized), convert and drop missing metric rows
         tmp[ycol] = pd.to_numeric(tmp[ycol], errors="coerce")
         tmp[metric_col] = pd.to_numeric(tmp[metric_col], errors="coerce")
         tmp = tmp.replace(9999, pd.NA)
@@ -322,28 +426,15 @@ def _build_summary_pivot_from_disp(
     index_cols = ["Question", "Demographic"] if has_any_demo else ["Question"]
 
     pivot = df.pivot_table(index=index_cols, columns="Year", values="Value", aggfunc="first").sort_index()
-    pivot = pivot.applymap(lambda v: round(v, 1) if pd.notna(v) else v)
+    # CHANGED: replace deprecated applymap with apply(...map(...))
+    pivot = pivot.apply(lambda col: col.map(lambda v: round(v, 1) if pd.notna(v) else v))
     return pivot, labels_used
+
 
 # ---------------------- Validator helpers (per-question) ----------------------
 
 def _is_year_like(n: int) -> bool:
     return 1900 <= n <= 2100
-
-def _safe_int(x: Any) -> Optional[int]:
-    try:
-        if x is None:
-            return None
-        if isinstance(x, str) and x.strip().lower() in ("", "na", "n/a", "none", "nan", "null"):
-            return None
-        if x == 9999:
-            return None
-        v = pd.to_numeric(x, errors="coerce")
-        if pd.isna(v):
-            return None
-        return int(round(float(v)))
-    except Exception:
-        return None
 
 def _pick_display_metric(df: pd.DataFrame, prefer: Optional[str] = None) -> Optional[str]:
     if prefer and prefer in df.columns:
@@ -357,7 +448,6 @@ def _allowed_numbers_from_disp(df: pd.DataFrame, metric_col: str) -> Tuple[Set[i
     if df is None or df.empty:
         return set(), set()
     work = df.copy()
-    # sanitize 9999 for the metric
     if metric_col in work.columns:
         work[metric_col] = pd.to_numeric(work[metric_col], errors="coerce").replace(9999, pd.NA)
 
@@ -383,7 +473,6 @@ def _allowed_numbers_from_disp(df: pd.DataFrame, metric_col: str) -> Tuple[Set[i
     years = set([int(y) for y in work["__Y__"].dropna().unique().tolist() if _is_year_like(int(y))])
     allowed: Set[int] = set([int(v) for v in work["__V__"].dropna().unique().tolist()])
 
-    # within-series deltas by year (and by subgroup if present)
     if "Demographic" in work.columns:
         groups = list(work["Demographic"].astype(str).unique())
         for g in groups:
@@ -399,7 +488,6 @@ def _allowed_numbers_from_disp(df: pd.DataFrame, metric_col: str) -> Tuple[Set[i
             for j in range(i + 1, len(vals)):
                 allowed.add(abs(vals[j] - vals[i]))
 
-    # latest-year between-groups gaps
     if years:
         latest = max(years)
         latest_rows = work[work["__Y__"] == latest]
@@ -414,6 +502,7 @@ def _allowed_numbers_from_disp(df: pd.DataFrame, metric_col: str) -> Tuple[Set[i
                 except Exception:
                     pass
     return allowed, years
+
 
 def _extract_datapoint_integers_with_sentences(text: str) -> List[Tuple[int, str]]:
     if not text:
@@ -456,6 +545,7 @@ def _validate_narrative(narrative: str, allowed: Set[int], years: Set[int]) -> d
             problems.append(f"{n} — {sentence}")
     return {"ok": len(bad) == 0, "bad_numbers": bad, "problems": problems[:5]}
 
+
 # ------------------- overall validator against summary_pivot ------------------
 
 def _allowed_numbers_from_summary_pivot(pivot: pd.DataFrame) -> Tuple[Set[int], Set[int]]:
@@ -468,18 +558,15 @@ def _allowed_numbers_from_summary_pivot(pivot: pd.DataFrame) -> Tuple[Set[int], 
     years_set = set(years)
     allowed: Set[int] = set()
 
-    # values
     for v in work.values.flatten():
         if pd.notna(v):
             allowed.add(int(round(float(v))))
-    # within-question(-demographic) deltas
     for _, row in work.iterrows():
         vals = [row.get(y) for y in years]
         vals = [int(round(float(v))) for v in vals if pd.notna(v)]
         for i in range(len(vals)):
             for j in range(i + 1, len(vals)):
                 allowed.add(abs(vals[j] - vals[i]))
-    # same-year cross-row gaps + change vs prior
     for y in years:
         col = work[y]
         pairs = []
@@ -502,6 +589,7 @@ def _allowed_numbers_from_summary_pivot(pivot: pd.DataFrame) -> Tuple[Set[int], 
                 gap_prev = abs(int(round(float(vi))) - int(round(float(vj))))
                 allowed.add(abs(gap_latest - gap_prev))
     return allowed, years_set
+
 
 # ==================== AI narrative computation (unchanged core) ====================
 
@@ -561,6 +649,7 @@ def _compute_ai_narratives(
 
     return per_q_narratives, overall_narrative
 
+
 # ----- AI Data Validation (per-question; unchanged) --------------------------
 
 def _render_data_validation_subsection(
@@ -585,7 +674,6 @@ def _render_data_validation_subsection(
                 details.append(("caption", f"{q}: validation skipped (no metric column)."))
                 continue
 
-            # sanitize before validation
             df_val = df_disp.copy()
             if metric_col in df_val.columns:
                 df_val[metric_col] = pd.to_numeric(df_val[metric_col], errors="coerce").replace(9999, pd.NA)
@@ -623,7 +711,20 @@ def _render_data_validation_subsection(
         for level, msg in details:
             st.warning(msg) if level == "warning" else st.caption(msg)
 
+
 # ------------------------------ main renderer -------------------------------
+
+def _meaning_labels_for_build(q: str, qtext: str, metric_col: Optional[str], metric_label: str,
+                              meta_q: pd.DataFrame, meta_scales: pd.DataFrame) -> List[str]:
+    reporting_field = _infer_reporting_field(metric_col)
+    return _meaning_labels_for_question(
+        qcode=q,
+        question_text=qtext,
+        reporting_field=reporting_field,
+        metric_label=metric_label or "",
+        meta_q=meta_q,
+        meta_scales=meta_scales
+    )
 
 def tabs_summary_and_per_q(
     *,
@@ -636,8 +737,8 @@ def tabs_summary_and_per_q(
     source_title: str,
 ) -> None:
     per_q_disp_in: Dict[str, pd.DataFrame] = payload["per_q_disp"]
-    per_q_metric_col_in: Dict[str, str]   = payload["per_q_metric_col"]   # used as fallback
-    per_q_metric_label_in: Dict[str, str] = payload["per_q_metric_label"] # used as fallback
+    per_q_metric_col_in: Dict[str, str]   = payload["per_q_metric_col"]   # caller-provided fallback
+    per_q_metric_label_in: Dict[str, str] = payload["per_q_metric_label"] # caller-provided fallback
     pivot_from_payload: pd.DataFrame      = payload["pivot"]
     tab_labels                            = payload["tab_labels"]
     years                                 = payload["years"]
@@ -645,16 +746,14 @@ def tabs_summary_and_per_q(
     sub_selection                         = payload["sub_selection"]
     code_to_text                          = payload["code_to_text"]
 
-    # Sanitize per-question tables (9999 -> NaN) for our operations
-    per_q_disp: Dict[str, pd.DataFrame] = {}
-    for q, df in per_q_disp_in.items():
-        per_q_disp[q] = _sanitize_9999(df)
+    # Sanitize per-question tables (9999 -> NaN)
+    per_q_disp: Dict[str, pd.DataFrame] = {q: _sanitize_9999(df) for q, df in per_q_disp_in.items()}
 
-    # Load metadata
-    meta_q = _load_survey_questions_meta()
-    meta_scales = _load_survey_scales_meta()
+    # Load metadata EXACTLY the same way Menu 1 does
+    meta_q = _get_meta_questions()
+    meta_scales = _get_meta_scales()
 
-    # Build polarity-aware (and demographic-aware) Summary pivot; exclude D57
+    # Build polarity-aware Summary pivot; exclude D57
     summary_pivot, labels_used = _build_summary_pivot_from_disp(
         per_q_disp=per_q_disp,
         tab_labels=tab_labels,
@@ -679,39 +778,37 @@ def tabs_summary_and_per_q(
     tab_titles = ["Summary table"] + tab_labels + ["Technical notes"]
     tabs = st.tabs(tab_titles)
 
-    # Summary tab (shows polarity + demographic aware pivot)
+    # Summary tab
     with tabs[0]:
         st.markdown("### Summary table")
         if tab_labels:
-            st.markdown("<div style='font-size:0.9rem; color:#444; margin-bottom:4px;'>"
-                        "Questions & metrics included:</div>", unsafe_allow_html=True)
+            st.markdown("<div style='font-size:0.9rem; color:#444; margin-bottom:4px;'>Questions & metrics included:</div>",
+                        unsafe_allow_html=True)
             for q in tab_labels:
                 if _is_d57_exception(q):
-                    # Make it explicit that D57 is distribution-only and summarized in its own tab.
                     st.markdown(
-                        f"<div style='font-size:0.85rem; color:#555;'>"
-                        f"<strong>{q}</strong>: {code_to_text.get(q, '')} "
-                        f"<span style='opacity:.85;'>[distribution-only: Answer1..Answer6]</span>"
-                        f"</div>",
+                        f"<div style='font-size:0.85rem; color:#555;'><strong>{q}</strong>: {code_to_text.get(q, '')} "
+                        f"<span style='opacity:.85;'>[distribution-only: Answer1..Answer6]</span></div>",
                         unsafe_allow_html=True
                     )
                     continue
                 qtext = code_to_text.get(q, "")
                 mlabel = labels_used.get(q) or per_q_metric_label_in.get(q, "% value")
                 st.markdown(
-                    f"<div style='font-size:0.85rem; color:#555;'>"
-                    f"<strong>{q}</strong>: {qtext} "
-                    f"<span style='opacity:.85;'>[{mlabel}]</span>"
-                    f"</div>",
+                    f"<div style='font-size:0.85rem; color:#555;'><strong>{q}</strong>: {qtext} "
+                    f"<span style='opacity:.85;'>[{mlabel}]</span></div>",
                     unsafe_allow_html=True
                 )
         if summary_pivot is not None and not summary_pivot.empty:
-            st.dataframe(summary_pivot.reset_index(), use_container_width=True)
+            # CHANGED: avoid mixed-type col names warning in Streamlit (display only)
+            _disp = summary_pivot.copy()
+            _disp.columns = [str(c) for c in _disp.columns]
+            st.dataframe(_disp.reset_index(), use_container_width=True)
         else:
             st.info("No data available for the summary under current filters.")
         _source_link_line(source_title, source_url)
 
-    # Per-question tabs (show raw tables as-is, sanitized)
+    # Per-question tabs
     for idx, qcode in enumerate(tab_labels, start=1):
         with tabs[idx]:
             qtext = code_to_text.get(qcode, "")
@@ -760,28 +857,26 @@ def tabs_summary_and_per_q(
                 qtext = code_to_text.get(q, "")
 
                 if _is_d57_exception(q):
-                    # D57: distribution-only; no aggregate metric
                     metric_col_ai = None
                     metric_label_ai = "Distribution (Answer1..Answer6)"
                     reporting_field_ai = None
                     category_in_play = ("Demographic" in dfq.columns and dfq["Demographic"].astype(str).nunique(dropna=True) > 1)
-                    # no meaning labels for distribution; each AnswerN is explicit
                     meaning_labels_ai: List[str] = []
                     q_distribution_only[q] = True
                 else:
-                    # choose the same metric the Summary logic picked
                     metric_col_ai, metric_label_ai = _pick_metric_for_summary(dfq, q, meta_q)
                     if not metric_col_ai:
-                        # fallback to caller-provided
                         metric_col_ai = per_q_metric_col_in.get(q)
                         metric_label_ai = per_q_metric_label_in.get(q, "% value")
                     else:
                         metric_label_ai = (metric_label_ai or labels_used.get(q) or per_q_metric_label_in.get(q, "% value"))
                     reporting_field_ai = _infer_reporting_field(metric_col_ai)
                     category_in_play = ("Demographic" in dfq.columns and dfq["Demographic"].astype(str).nunique(dropna=True) > 1)
-                    # derive meaning labels for parenthetical
+
+                    # Derive parenthetical labels from metadata (in-memory or fallback)
                     meaning_labels_ai = _meaning_labels_for_question(
                         qcode=q,
+                        question_text=qtext,
                         reporting_field=reporting_field_ai,
                         metric_label=metric_label_ai or "",
                         meta_q=meta_q,
@@ -789,12 +884,10 @@ def tabs_summary_and_per_q(
                     )
                     q_distribution_only[q] = False
 
-                # Save for overall parentheticals
                 q_to_meaning_labels[q] = meaning_labels_ai
 
                 with st.spinner(f"AI — analyzing {q}…"):
                     try:
-                        # For D57, we pass distribution_only=True so AI narrates Answer1..6 only.
                         content, _hint = call_openai_json(
                             system=AI_SYSTEM_PROMPT,
                             user=build_per_q_prompt(
@@ -804,7 +897,6 @@ def tabs_summary_and_per_q(
                                 metric_col=metric_col_ai,
                                 metric_label=metric_label_ai,
                                 category_in_play=category_in_play,
-                                # new fields for correct parentheses:
                                 meaning_labels=meaning_labels_ai,
                                 reporting_field=reporting_field_ai,
                                 distribution_only=_is_d57_exception(q)
@@ -829,11 +921,10 @@ def tabs_summary_and_per_q(
                             system=AI_SYSTEM_PROMPT,
                             user=build_overall_prompt(
                                 tab_labels=tab_labels,
-                                pivot_df=summary_pivot.copy(deep=True),  # aligned matrix
+                                pivot_df=summary_pivot.copy(deep=True),
                                 q_to_metric={q: (labels_used.get(q) or per_q_metric_label_in[q]) for q in tab_labels},
                                 code_to_text=code_to_text,
-                                # NEW: pass meaning labels (for parentheses) and D57 flags
-                                q_to_meaning_labels=q_to_meaning_labels,
+                                q_to_meaning_labels=q_to_meaning_labels,   # ensure parentheses in overall
                                 q_distribution_only=q_distribution_only
                             )
                         )
@@ -856,7 +947,6 @@ def tabs_summary_and_per_q(
 
         # ---------- AI Data Validation ----------
         try:
-            # Per-question validator uses the SAME column used for AI; sanitize 9999
             _render_data_validation_subsection(
                 tab_labels=tab_labels,
                 per_q_disp=per_q_disp,
@@ -866,7 +956,6 @@ def tabs_summary_and_per_q(
                 },
                 per_q_narratives=st.session_state.get("menu1_ai_narr_per_q", {}) or {},
             )
-            # Overall narrative validation against summary_pivot (demo-aware)
             if len(tab_labels) > 1 and summary_pivot is not None and not summary_pivot.empty:
                 overall_txt = st.session_state.get("menu1_ai_narr_overall", "")
                 if overall_txt:
@@ -922,7 +1011,7 @@ def tabs_summary_and_per_q(
                     export_per_q, export_overall = {}, None
 
         _render_excel_download(
-            summary_pivot=summary_pivot,  # corrected summary pivot (demo-aware)
+            summary_pivot=summary_pivot,
             per_q_disp=per_q_disp,
             tab_labels=tab_labels,
             per_q_narratives=(export_per_q or {}),
@@ -962,7 +1051,8 @@ def tabs_summary_and_per_q(
             except Exception:
                 st.experimental_rerun()
 
-# ------------------- Excel export (uses corrected Summary) --------------------
+
+# ------------------- Excel export --------------------
 
 def _render_excel_download(
     *,
