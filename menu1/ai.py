@@ -134,3 +134,209 @@ def call_openai_json(*, system: str, user: str) -> Tuple[Optional[str], Optional
 
     fb = json.dumps({"narrative": "The AI service is temporarily unavailable."}, ensure_ascii=False)
     return fb, f"LLM error: {type(last_err).__name__}"
+
+# --------------------------------------------------------------------------------------
+# LEGACY HELPERS (added for backward compatibility; serialization only)
+# --------------------------------------------------------------------------------------
+
+def _minify_df_for_model(
+    df, *,
+    year_col: str = "Year",
+    metric_col: Optional[str] = None,
+    include_demo: bool = True,
+    distribution_only: bool = False,
+) -> List[Dict[str, Any]]:
+    """
+    Convert a per-question display DataFrame into compact rows for the model.
+    - distribution_only=False: keep Year, optional Demographic, and the chosen metric column.
+    - distribution_only=True: keep Year, optional Demographic, and any Answer1..Answer6 columns.
+    Values of 9999 are excluded (treated as missing).
+    """
+    try:
+        import pandas as pd  # local import to avoid hard dependency unless needed
+        if df is None:
+            return []
+        if isinstance(df, list):
+            # already minified
+            return df  # type: ignore[return-value]
+        if not isinstance(df, pd.DataFrame) or df.empty:
+            return []
+
+        work = df.copy()
+        cols = list(work.columns)
+
+        def _to_num(s):
+            try:
+                f = float(s)
+                return None if f == 9999 else f
+            except Exception:
+                return None
+
+        if distribution_only:
+            keep = []
+            if year_col in cols: keep.append(year_col)
+            if include_demo and "Demographic" in cols: keep.append("Demographic")
+            # collect Answer1..Answer6 (with or without space)
+            ans = []
+            for i in range(1, 7):
+                for name in (f"Answer{i}", f"Answer {i}"):
+                    if name in cols and name not in ans:
+                        ans.append(name)
+            keep += ans
+            if not keep:
+                return []
+            work = work[keep].copy()
+            # coerce numerics and drop missing year
+            if year_col in work.columns:
+                work[year_col] = pd.to_numeric(work[year_col], errors="coerce")
+            for c in ans:
+                work[c] = work[c].apply(_to_num)
+            work = work.dropna(subset=[year_col])
+            out: List[Dict[str, Any]] = []
+            for _, r in work.iterrows():
+                row: Dict[str, Any] = {"Year": int(float(r[year_col]))}
+                if include_demo and "Demographic" in work.columns and pd.notna(r.get("Demographic", None)):
+                    row["Demographic"] = str(r["Demographic"])
+                for c in ans:
+                    v = r.get(c, None)
+                    if v is not None:
+                        row[c] = v
+                out.append(row)
+            out.sort(key=lambda x: (x["Year"], x.get("Demographic","")))
+            return out
+
+        # aggregate metric mode
+        keep = []
+        if year_col in cols: keep.append(year_col)
+        if include_demo and "Demographic" in cols: keep.append("Demographic")
+        if metric_col and metric_col in cols: keep.append(metric_col)
+        if not keep:
+            return []
+        work = work[keep].copy()
+        if year_col in work.columns:
+            work[year_col] = pd.to_numeric(work[year_col], errors="coerce")
+        if metric_col in work.columns:
+            work[metric_col] = work[metric_col].apply(_to_num)
+        work = work.dropna(subset=[year_col])
+        if metric_col in work.columns:
+            work = work.dropna(subset=[metric_col])
+        out: List[Dict[str, Any]] = []
+        for _, r in work.iterrows():
+            row: Dict[str, Any] = {"Year": int(float(r[year_col]))}
+            if include_demo and "Demographic" in work.columns and r.get("Demographic") is not None:
+                row["Demographic"] = str(r["Demographic"])
+            if metric_col in work.columns and r.get(metric_col, None) is not None:
+                row[metric_col] = r[metric_col]
+            out.append(row)
+        out.sort(key=lambda x: (x["Year"], x.get("Demographic","")))
+        return out
+    except Exception:
+        return []
+
+def build_per_q_prompt(
+    *,
+    question_code: str,
+    question_text: str,
+    df_disp,                    # pandas.DataFrame or already-minified list of dicts
+    metric_col: Optional[str],  # EXACT column chosen by the app (Positive/Negative/Agree/Answer1) or None in distribution mode
+    metric_label: str,          # human-friendly description (e.g., "% selecting Strongly agree / Agree")
+    category_in_play: bool,     # whether subgroups are present and should be analyzed
+    meaning_labels: Optional[List[str]] = None,     # e.g., ["Strongly agree","Agree"]
+    reporting_field: Optional[str] = None,          # e.g., "POSITIVE","NEGATIVE","AGREE","ANSWER1"
+    year_col: str = "Year",
+    distribution_only: bool = False                 # EXCEPTION: D57_A / D57_B style
+) -> str:
+    """
+    Legacy helper: returns the USER message JSON string for a per-question analysis.
+    Serialization only; no extra computations.
+    """
+    data_rows = _minify_df_for_model(
+        df_disp,
+        year_col=year_col,
+        metric_col=metric_col,
+        include_demo=bool(category_in_play),
+        distribution_only=bool(distribution_only),
+    )
+    payload: Dict[str, Any] = {
+        "task": "per_question_summary",
+        "question_code": str(question_code),
+        "question_text": str(question_text),
+        "reporting_metric": {
+            "column": metric_col or "",
+            "label": metric_label or "",
+            "meaning_labels": meaning_labels or [],
+            "reporting_field": reporting_field or "",
+        },
+        "data": data_rows,
+        "category_in_play": bool(category_in_play),
+        "distribution_only": bool(distribution_only),
+    }
+    return json.dumps(payload, ensure_ascii=False)
+
+def build_overall_prompt(
+    *,
+    tab_labels: List[str],
+    pivot_df,  # pandas.DataFrame
+    q_to_metric: Dict[str, str],
+    code_to_text: Dict[str, str],
+    q_to_meaning_labels: Optional[Dict[str, List[str]]] = None,
+    q_distribution_only: Optional[Dict[str, bool]] = None,
+) -> str:
+    """
+    Legacy helper: returns the USER message JSON string for overall synthesis.
+    Uses the summary pivot and per-question metadata the renderer already resolved.
+    """
+    try:
+        import pandas as pd
+    except Exception:
+        pd = None  # type: ignore
+
+    matrix: List[Dict[str, Any]] = []
+    if pd is not None and isinstance(pivot_df, pd.DataFrame) and not pivot_df.empty:
+        piv = pivot_df.copy()
+        if "Question" not in piv.reset_index().columns:
+            piv.index.name = "Question"
+        piv = piv.reset_index()
+        for _, r in piv.iterrows():
+            if "Question" not in r:
+                continue
+            row = {"question_code": str(r["Question"])}
+            for c in pivot_df.columns:
+                try:
+                    yr = int(float(c))
+                    val = r[c]
+                    try:
+                        f = float(val)
+                        if f == 9999:
+                            continue
+                        row[str(yr)] = f
+                    except Exception:
+                        continue
+                except Exception:
+                    continue
+            matrix.append(row)
+
+    selected = []
+    for q in tab_labels:
+        item = {
+            "question_code": q,
+            "question_text": code_to_text.get(q, ""),
+            "metric_label": q_to_metric.get(q, "% value"),
+        }
+        if q_to_meaning_labels and q in q_to_meaning_labels:
+            item["meaning_labels"] = q_to_meaning_labels[q] or []
+        if q_distribution_only and q in q_distribution_only:
+            item["distribution_only"] = bool(q_distribution_only[q])
+        selected.append(item)
+
+    payload = {
+        "task": "overall_synthesis",
+        "selected_questions": selected,
+        "matrix": matrix,
+        "instructions": {
+            "compare_across_questions": True,
+            "trend_over_all_years": True,
+            "no_new_calculations": True
+        },
+    }
+    return json.dumps(payload, ensure_ascii=False)
