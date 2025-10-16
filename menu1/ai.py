@@ -19,7 +19,7 @@ __all__ = [
 ]
 
 # --------------------------------------------------------------------------------------
-# SYSTEM PROMPT (same as approved, plus tighter anti-hallucination rules)
+# SYSTEM PROMPT (same as approved; added single-year style guard)
 # --------------------------------------------------------------------------------------
 
 AI_SYSTEM_PROMPT = (
@@ -85,11 +85,17 @@ AI_SYSTEM_PROMPT = (
 "- Never mention or invent years not listed in `years_present`.\n"
 "- In overall synthesis, discuss trends only for questions with `allow_trend=true`. "
 "Do not generalize trends across all questions if others have single-year data.\n"
-"- When uncertain, default to single-year phrasing.\n"
+"- When uncertain, default to single-year phrasing.\n\n"
+
+"ADDENDUM — Single-year style guard (readability & consistency)\n"
+"- When `allow_trend=false`, open with a full sentence — do NOT use telegraphic formats like “YYYY: 54 %* …”. "
+"  Start with: “In <LATEST_YEAR>, <VALUE>%* …”.\n"
+"- <LATEST_YEAR> must be the maximum of `years_present`. <VALUE> must be the reported metric for that year as given in the table.\n"
+"- After this sentence, you may add: “There is no trend data available for prior years.”\n"
 )
 
 # --------------------------------------------------------------------------------------
-# OpenAI call
+# OpenAI call (unchanged)
 # --------------------------------------------------------------------------------------
 
 def call_openai_json(*, system: str, user: str) -> Tuple[Optional[str], Optional[str]]:
@@ -153,7 +159,6 @@ def _distinct_valid_years(df, metric_col: Optional[str]) -> List[int]:
         return []
     try:
         work = df[[metric_col]].copy()
-        # find year column or wide columns
         years: List[int] = []
         if "Year" in df.columns:
             valid = df.loc[df[metric_col].notna(), "Year"]
@@ -168,7 +173,7 @@ def _distinct_valid_years(df, metric_col: Optional[str]) -> List[int]:
         return []
 
 # --------------------------------------------------------------------------------------
-# Prompt builders
+# Prompt builders (unchanged except for allow_trend/years_present we added earlier)
 # --------------------------------------------------------------------------------------
 
 def build_per_q_prompt(
