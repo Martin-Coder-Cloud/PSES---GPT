@@ -19,7 +19,7 @@ __all__ = [
 ]
 
 # --------------------------------------------------------------------------------------
-# SYSTEM PROMPT (same as approved; added single-year style guard)
+# SYSTEM PROMPT (approved text + anti-hallucination + single-year style guard + DEMO GAPS addendum)
 # --------------------------------------------------------------------------------------
 
 AI_SYSTEM_PROMPT = (
@@ -91,7 +91,15 @@ AI_SYSTEM_PROMPT = (
 "- When `allow_trend=false`, open with a full sentence — do NOT use telegraphic formats like “YYYY: 54 %* …”. "
 "  Start with: “In <LATEST_YEAR>, <VALUE>%* …”.\n"
 "- <LATEST_YEAR> must be the maximum of `years_present`. <VALUE> must be the reported metric for that year as given in the table.\n"
-"- After this sentence, you may add: “There is no trend data available for prior years.”\n"
+"- After this sentence, you may add: “There is no trend data available for prior years.”\n\n"
+
+"ADDENDUM — Demographic gaps (latest year) and change-over-time\n"
+"- When the payload indicates `demographic_breakdown_present=true`, you MUST:\n"
+"  • Identify the latest year present in `years_present` and report the largest gap between demographic groups for the reported metric in that year, as an absolute difference in % points. Write it as: “Group A (XX%) vs Group B (YY%): ZZ % points gap.”\n"
+"  • If the same two groups also have values in earlier years in the table, state whether that gap has widened, narrowed, or remained stable since the earliest comparable year (or vs the previous year if only two years exist), and include the change in % points.\n"
+"- Use only numbers visible in the table for the relevant groups and years. Do not infer values for missing years or groups.\n"
+"- If fewer than two groups have values in the latest year, omit gap reporting.\n"
+"- In overall synthesis, summarize notable gaps across the selected questions strictly from the provided tables; do not recompute or average.\n"
 )
 
 # --------------------------------------------------------------------------------------
@@ -136,7 +144,7 @@ def call_openai_json(*, system: str, user: str) -> Tuple[Optional[str], Optional
     return fb, f"LLM error: {type(last_err).__name__}"
 
 # --------------------------------------------------------------------------------------
-# Helpers
+# Helpers (unchanged)
 # --------------------------------------------------------------------------------------
 
 def _df_to_records_sanitized(df) -> List[Dict[str, Any]]:
@@ -158,12 +166,12 @@ def _distinct_valid_years(df, metric_col: Optional[str]) -> List[int]:
     if df is None or pd is None or metric_col is None or metric_col not in df.columns:
         return []
     try:
-        work = df[[metric_col]].copy()
         years: List[int] = []
         if "Year" in df.columns:
             valid = df.loc[df[metric_col].notna(), "Year"]
             years = sorted({int(y) for y in pd.to_numeric(valid, errors="coerce").dropna().tolist() if 1900 <= int(y) <= 2100})
         else:
+            # if wide, include only columns with non-null values in metric_col context
             for c in df.columns:
                 if len(str(c)) == 4 and str(c).isdigit():
                     if df[c].notna().any():
@@ -173,7 +181,7 @@ def _distinct_valid_years(df, metric_col: Optional[str]) -> List[int]:
         return []
 
 # --------------------------------------------------------------------------------------
-# Prompt builders (unchanged except for allow_trend/years_present we added earlier)
+# Prompt builders (unchanged; already pass allow_trend & years_present)
 # --------------------------------------------------------------------------------------
 
 def build_per_q_prompt(
