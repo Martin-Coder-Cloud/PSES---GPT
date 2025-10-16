@@ -718,7 +718,7 @@ def _meaning_labels_for_build(q: str, qtext: str, metric_col: Optional[str], met
         meta_scales=meta_scales
     )
 
-# ---- New: robust asterisk inserter + footnote compressor ----
+# ---- Asterisk and footnote helpers ----
 
 # match "54%", "54 %", and with Unicode thin/non-breaking spaces
 _percent_pat = re.compile(r"(\d{1,3})(?:[ \t\u00A0\u2009\u202F]*)%")
@@ -909,14 +909,14 @@ def tabs_summary_and_per_q(
             per_q_narratives = cached.get("per_q", {}) or {}
             overall_narrative = cached.get("overall")
 
-            # collect label strings to cite once under Overall
-            overall_foot_labels: List[str] = []
+            # Track the first available labels (non-D57) for the single Overall footnote
+            first_overall_lab: Optional[str] = None
 
             for q in tab_labels:
                 txt = per_q_narratives.get(q, "")
                 if txt:
                     st.markdown(f"**{q} — {code_to_text.get(q, '')}**")
-                    # asterisk after first %
+                    # asterisk after first % for per-question
                     txt_star = _insert_first_percent_asterisk(txt)
                     st.write(txt_star)
 
@@ -933,27 +933,29 @@ def tabs_summary_and_per_q(
                         lab = _compress_labels_for_footnote(labels) if labels else None
                         if lab:
                             st.caption(f"* Percentages represent respondents’ aggregate answers: {lab}.")
-                            overall_foot_labels.append(f"{q} — {lab}")
+                            # set first overall lab if not yet set
+                            if first_overall_lab is None:
+                                first_overall_lab = lab
                         else:
                             st.caption("* Percentages correspond to the reported metric above.")
-                            overall_foot_labels.append(f"{q} — [metric]")
 
             if overall_narrative and len(tab_labels) > 1:
                 st.markdown("**Overall**")
-                st.write(overall_narrative)
-                if overall_foot_labels:
-                    st.caption(
-                        "* In this section, percentages refer to the same aggregates used above: "
-                        + "; ".join(overall_foot_labels) + "."
-                    )
+                # asterisk after first % ONLY
+                overall_txt_star = _insert_first_percent_asterisk(overall_narrative)
+                st.write(overall_txt_star)
+                # Single overall footnote (use the first available labels captured above)
+                if first_overall_lab:
+                    st.caption(f"* Percentages represent respondents’ aggregate answers: {first_overall_lab}.")
+
         else:
             # ---------- per-question AI ----------
             per_q_narratives: Dict[str, str] = {}
             q_to_meaning_labels: Dict[str, List[str]] = {}
             q_distribution_only: Dict[str, bool] = {}
 
-            # collect label strings to cite once under Overall
-            overall_foot_labels: List[str] = []
+            # Track first available labels (non-D57) for the single Overall footnote
+            first_overall_lab: Optional[str] = None
 
             for q in tab_labels:
                 dfq = per_q_disp.get(q)
@@ -1017,17 +1019,16 @@ def tabs_summary_and_per_q(
                     st.write(txt_star)
 
                     if not _is_d57_exception(q):
-                        labels = _resolve_footnote_labels(
-                            q=q, qtext=qtext, metric_col=metric_col_ai, metric_label=metric_label_ai or "",
-                            meta_q=meta_q, meta_scales=meta_scales
-                        )
+                        # Use the labels we computed for this question
+                        labels = meaning_labels_ai
                         lab = _compress_labels_for_footnote(labels) if labels else None
                         if lab:
                             st.caption(f"* Percentages represent respondents’ aggregate answers: {lab}.")
-                            overall_foot_labels.append(f"{q} — {lab}")
+                            # set first overall lab if not yet set
+                            if first_overall_lab is None:
+                                first_overall_lab = lab
                         else:
                             st.caption("* Percentages correspond to the reported metric above.")
-                            overall_foot_labels.append(f"{q} — [metric]")
 
             # ---------- OVERALL ----------
             overall_narrative = None
@@ -1056,12 +1057,12 @@ def tabs_summary_and_per_q(
 
                 if overall_narrative:
                     st.markdown("**Overall**")
-                    st.write(overall_narrative)
-                    if overall_foot_labels:
-                        st.caption(
-                            "* In this section, percentages refer to the same aggregates used above: "
-                            + "; ".join(overall_foot_labels) + "."
-                        )
+                    # asterisk after first % ONLY
+                    overall_txt_star = _insert_first_percent_asterisk(overall_narrative)
+                    st.write(overall_txt_star)
+                    # Single overall footnote (use first available labels from above)
+                    if first_overall_lab:
+                        st.caption(f"* Percentages represent respondents’ aggregate answers: {first_overall_lab}.")
 
             _ai_cache_put(ai_key, {"per_q": per_q_narratives, "overall": overall_narrative})
             st.session_state["menu1_ai_narr_per_q"] = per_q_narratives
