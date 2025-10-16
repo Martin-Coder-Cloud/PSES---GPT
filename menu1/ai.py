@@ -19,7 +19,7 @@ __all__ = [
 ]
 
 # --------------------------------------------------------------------------------------
-# SYSTEM PROMPT (approved text + anti-hallucination + single-year style guard + DEMO GAPS addendum)
+# SYSTEM PROMPT (approved text + anti-hallucination + single-year style guard + DEMO GAPS addendum + narrative addendum)
 # --------------------------------------------------------------------------------------
 
 AI_SYSTEM_PROMPT = (
@@ -99,7 +99,15 @@ AI_SYSTEM_PROMPT = (
 "  • If the same two groups also have values in earlier years in the table, state whether that gap has widened, narrowed, or remained stable since the earliest comparable year (or vs the previous year if only two years exist), and include the change in % points.\n"
 "- Use only numbers visible in the table for the relevant groups and years. Do not infer values for missing years or groups.\n"
 "- If fewer than two groups have values in the latest year, omit gap reporting.\n"
-"- In overall synthesis, summarize notable gaps across the selected questions strictly from the provided tables; do not recompute or average.\n"
+"- In overall synthesis, summarize notable gaps across the selected questions strictly from the provided tables; do not recompute or average.\n\n"
+
+"ADDENDUM — Narrative and readability\n"
+"- Express insights in a natural, narrative tone suitable for executive briefing notes.\n"
+"- Vary sentence structure to avoid repetitive phrasing such as “The largest gap is…” or “The difference is…”.\n"
+"- Integrate gap observations smoothly within the paragraph. For example: "
+"“Results show a modest 3 % points difference between English (54 %) and French (51 %) respondents, indicating comparable experiences.”\n"
+"- Keep concise yet fluid phrasing — avoid telegraphic, list-like statements.\n"
+"- Maintain neutrality and factuality. Do not speculate or infer causes.\n"
 )
 
 # --------------------------------------------------------------------------------------
@@ -171,7 +179,6 @@ def _distinct_valid_years(df, metric_col: Optional[str]) -> List[int]:
             valid = df.loc[df[metric_col].notna(), "Year"]
             years = sorted({int(y) for y in pd.to_numeric(valid, errors="coerce").dropna().tolist() if 1900 <= int(y) <= 2100})
         else:
-            # if wide, include only columns with non-null values in metric_col context
             for c in df.columns:
                 if len(str(c)) == 4 and str(c).isdigit():
                     if df[c].notna().any():
