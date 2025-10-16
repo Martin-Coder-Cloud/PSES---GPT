@@ -1,15 +1,22 @@
-# ai.py
+# menu1/ai.py
 from __future__ import annotations
 from typing import Any, Dict, List, Optional, Tuple
 import json
 import os
 import time
 
-# (Minimal import required for DataFrame serialization in prompt builders)
+# Optional pandas import (prompt builders guard if unavailable)
 try:
     import pandas as pd  # type: ignore
 except Exception:  # pragma: no cover
-    pd = None  # We'll guard usage below
+    pd = None
+
+__all__ = [
+    "AI_SYSTEM_PROMPT",
+    "call_openai_json",
+    "build_per_q_prompt",
+    "build_overall_prompt",
+]
 
 # --------------------------------------------------------------------------------------
 # SYSTEM PROMPT (merged + refined)
@@ -100,7 +107,7 @@ AI_SYSTEM_PROMPT = (
 )
 
 # --------------------------------------------------------------------------------------
-# LLM CALLER (unchanged from your working version)
+# LLM CALLER (unchanged settings; temp=0.1)
 # --------------------------------------------------------------------------------------
 
 def call_openai_json(*, system: str, user: str) -> Tuple[Optional[str], Optional[str]]:
@@ -134,7 +141,7 @@ def call_openai_json(*, system: str, user: str) -> Tuple[Optional[str], Optional
                     {"role": "user", "content": user},
                 ],
                 response_format={"type": "json_object"},
-                temperature=0.1,  # kept as requested
+                temperature=0.1,  # keep as requested
                 max_tokens=700,
             )
             content = rsp.choices[0].message.content
@@ -151,25 +158,23 @@ def call_openai_json(*, system: str, user: str) -> Tuple[Optional[str], Optional
     return fb, f"LLM error: {type(last_err).__name__}"
 
 # --------------------------------------------------------------------------------------
-# PROMPT BUILDERS (restored; surgical addition only)
+# PROMPT BUILDERS (restored; exported)
 # --------------------------------------------------------------------------------------
 
 def _df_to_records_sanitized(df) -> List[Dict[str, Any]]:
     """
-    Convert a DataFrame to a list of dicts (records), replacing 9999 with None
-    in common survey numeric fields. Works even if pandas is unavailable.
+    Convert a DataFrame to records, replacing 9999 with None in common survey fields.
+    Works even if pandas isn't available.
     """
     if df is None:
         return []
-    # If pandas isn't available, attempt a best-effort conversion
     if pd is None or not hasattr(df, "to_dict"):
         try:
-            return list(df)  # may be wrong; callers provide real DataFrames in app
+            return list(df)
         except Exception:
             return []
 
     work = df.copy(deep=True)
-    # Identify likely numeric survey columns
     for c in list(work.columns):
         lc = str(c).lower().replace(" ", "")
         if lc in {"positive", "negative", "agree",
@@ -190,8 +195,8 @@ def _distinct_years_in_df(df) -> List[int]:
             yrs = pd.to_numeric(df["Year"], errors="coerce")
             years = sorted({int(y) for y in yrs.dropna().unique().tolist() if 1900 <= int(y) <= 2100})
             return years
-        # wide form: columns like 2019, 2020 ...
-        col_years = []
+        # Wide form with year columns (e.g., 2019, 2020...)
+        col_years: List[int] = []
         for c in df.columns:
             s = str(c)
             if len(s) == 4 and s.isdigit():
@@ -215,9 +220,8 @@ def build_per_q_prompt(
     distribution_only: bool = False,
 ) -> str:
     """
-    Build the per-question user prompt. This mirrors your legacy helper signature
-    and passes only the allowed data plus explicit year_count to enforce the
-    anti-hallucination gating in the system prompt.
+    Build the per-question user prompt. Matches the legacy signature.
+    Includes year_count to activate anti-hallucination gating.
     """
     data_records = _df_to_records_sanitized(df_disp)
     years = _distinct_years_in_df(df_disp)
@@ -237,7 +241,7 @@ def build_per_q_prompt(
         # Critical for trend gating:
         "year_count": len(years),
         "years_present": years,
-        # Narrative constraints (explicit reminders for the model):
+        # Constraints reminder:
         "constraints": {
             "numbers": "Use only integers in the table or their simple differences (YoY/gaps); 9999 means N/A.",
             "no_averages_or_decimals": True,
@@ -258,46 +262,36 @@ def build_overall_prompt(
 ) -> str:
     """
     Build the overall synthesis prompt (legacy name/signature).
-    Provides the summary matrix and per-question metadata, including per-question
-    year_counts to ensure the model limits trend statements appropriately.
+    Provides the summary matrix and per-question year_counts to constrain trend talk.
     """
-    # pivot_df is a matrix indexed by question (and optionally demographic) with year columns
-    # We'll convert it to a plain structure: index -> row dict, plus year columns list.
     matrix: Dict[str, Dict[str, Any]] = {}
     years: List[int] = []
     if pd is not None and hasattr(pivot_df, "to_dict"):
         try:
-            # Identify year columns
             years = []
             for c in pivot_df.columns:
                 s = str(c)
                 if len(s) == 4 and s.isdigit():
                     years.append(int(s))
             years = sorted(set(years))
-            # Convert each row to dict, keyed by its index repr
             for idx, row in pivot_df.iterrows():
                 key = idx if isinstance(idx, str) else str(idx)
-                matrix[key] = {str(y): (None if pd.isna(row.get(y)) else int(round(float(row.get(y))))) for y in years}
+                matrix[key] = {
+                    str(y): (None if pd.isna(row.get(y)) else int(round(float(row.get(y))))) for y in years
+                }
         except Exception:
             matrix = {}
             years = []
-    else:
-        matrix = {}
-        years = []
-
-    # Build per-question year_count map: count non-null across the row for each question
+    # Per-question year_count (non-null in row)
     q_year_counts: Dict[str, int] = {}
     if pd is not None and hasattr(pivot_df, "loc"):
         try:
             for q in tab_labels:
                 try:
-                    # Sum non-null across available year columns for that question (first index level)
                     row = pivot_df.loc[q]
-                    if hasattr(row, "to_frame"):  # could be Series or DataFrame (multi-index)
-                        if hasattr(row, "to_dict"):
-                            # flatten: take first row if multi-index
-                            if hasattr(row, "index") and len(getattr(row, "index", [])) > 0 and isinstance(row, pd.DataFrame):
-                                row = row.iloc[0]
+                    # If multi-index row, reduce to first row
+                    if hasattr(row, "to_frame") and isinstance(row, pd.DataFrame):
+                        row = row.iloc[0]
                     non_null = 0
                     for y in years:
                         try:
@@ -327,9 +321,8 @@ def build_overall_prompt(
         ],
         "matrix": {
             "years": years,
-            "values_by_row": matrix,  # index-> { "2019": 54, "2020": 56, ... } (ints or None)
+            "values_by_row": matrix,
         },
-        # Narrative constraints (explicit reminders for the model):
         "constraints": {
             "numbers": "Use only integers in the matrix or simple differences (YoY/gaps).",
             "no_averages_or_decimals": True,
