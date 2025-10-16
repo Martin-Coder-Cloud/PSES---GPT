@@ -679,6 +679,7 @@ def _render_data_validation_subsection(
                 details.append(("warning", f"{q}: potential mismatches detected ({nums})."))
             else:
                 details.append(("caption", f"{q}: no numeric inconsistencies detected."))
+
         except Exception as e:
             details.append(("caption", f"{q}: validation skipped ({type(e).__name__})."))
 
@@ -716,6 +717,87 @@ def _meaning_labels_for_build(q: str, qtext: str, metric_col: Optional[str], met
         meta_q=meta_q,
         meta_scales=meta_scales
     )
+
+# ---- New: robust asterisk inserter + footnote compressor ----
+
+# match "54%", "54 %", and with Unicode thin/non-breaking spaces
+_percent_pat = re.compile(r"(\d{1,3})(?:[ \t\u00A0\u2009\u202F]*)%")
+
+def _insert_first_percent_asterisk(text: str) -> str:
+    """Insert a single asterisk immediately after the first percent sign occurrence."""
+    if not text:
+        return text
+    m = _percent_pat.search(text)
+    if not m:
+        return text
+    end = m.end()
+    if end < len(text) and text[end] == "*":
+        return text
+    return text[:end] + "*" + text[end:]
+
+def _compress_labels_for_footnote(labels: List[str]) -> Optional[str]:
+    """Safe compression like (To a small/moderate/large extent/very large extent), else full join."""
+    if not labels:
+        return None
+    full = "(" + "/".join(labels) + ")"
+    try:
+        from os.path import commonprefix
+        prefix = commonprefix(labels)
+        rev = [s[::-1] for s in labels]
+        suffix = commonprefix(rev)[::-1]
+        parts: List[str] = []
+        for i, lab in enumerate(labels):
+            core = lab
+            if prefix and core.startswith(prefix):
+                core = core[len(prefix):]
+            if suffix and core.endswith(suffix):
+                core = core[: -len(suffix)]
+            if not core.strip():
+                core = lab
+            if i == 0 and lab.startswith(prefix):
+                core = prefix + core
+            if suffix and lab.endswith(suffix) and not core.endswith(suffix):
+                core = core + suffix
+            parts.append(core)
+        compressed = "(" + "/".join(parts) + ")"
+        if all(p.strip() for p in parts) and len(parts) == len(labels):
+            return compressed
+        return full
+    except Exception:
+        return full
+
+def _derive_labels_from_metric_label(metric_label: str) -> List[str]:
+    if not isinstance(metric_label, str):
+        return []
+    m = re.search(r"%\s*selecting\s*(.+)$", metric_label.strip(), flags=re.IGNORECASE)
+    if not m:
+        return []
+    tail = m.group(1).strip()
+    parts = [p.strip(" []") for p in re.split(r"\s*/\s*", tail) if p.strip()]
+    return parts
+
+def _resolve_footnote_labels(
+    *, q: str, qtext: str, metric_col: Optional[str], metric_label: str,
+    meta_q: pd.DataFrame, meta_scales: pd.DataFrame
+) -> List[str]:
+    """Always return something sensible for the footnote (metadata → metric label → canonical fallback)."""
+    # 1) metadata-driven
+    labels = _meaning_labels_for_build(q, qtext, metric_col, metric_label, meta_q, meta_scales)
+    if labels:
+        return labels
+    # 2) derive from metric label (e.g., "% selecting A/B")
+    labels = _derive_labels_from_metric_label(metric_label or "")
+    if labels:
+        return labels
+    # 3) canonical fallback by question text & polarity defaults
+    rf = _infer_reporting_field(metric_col)
+    scale_key = _pick_fallback_scale(qtext)
+    full = _CANONICAL_SCALES.get(scale_key, [])
+    if rf and rf.upper() == "NEGATIVE" and scale_key == "EXTENT5":
+        idxs = [2, 3, 4, 5]
+        return [full[i - 1] for i in idxs if 1 <= i <= len(full)]
+    # last resort: return the full scale (keeps footnote useful)
+    return full
 
 def tabs_summary_and_per_q(
     *,
@@ -826,19 +908,52 @@ def tabs_summary_and_per_q(
         if cached:
             per_q_narratives = cached.get("per_q", {}) or {}
             overall_narrative = cached.get("overall")
+
+            # collect label strings to cite once under Overall
+            overall_foot_labels: List[str] = []
+
             for q in tab_labels:
                 txt = per_q_narratives.get(q, "")
                 if txt:
                     st.markdown(f"**{q} — {code_to_text.get(q, '')}**")
-                    st.write(txt)
+                    # asterisk after first %
+                    txt_star = _insert_first_percent_asterisk(txt)
+                    st.write(txt_star)
+
+                    # per-question footnote (skip D57)
+                    if not _is_d57_exception(q):
+                        metric_col = (_pick_metric_for_summary(per_q_disp[q], q, meta_q)[0]
+                                      or per_q_metric_col_in.get(q))
+                        metric_label = labels_used.get(q) or per_q_metric_label_in.get(q, "% value")
+                        qtext = code_to_text.get(q, "")
+                        labels = _resolve_footnote_labels(
+                            q=q, qtext=qtext, metric_col=metric_col, metric_label=metric_label,
+                            meta_q=meta_q, meta_scales=meta_scales
+                        )
+                        lab = _compress_labels_for_footnote(labels) if labels else None
+                        if lab:
+                            st.caption(f"* Percentages represent respondents’ aggregate answers: {lab}.")
+                            overall_foot_labels.append(f"{q} — {lab}")
+                        else:
+                            st.caption("* Percentages correspond to the reported metric above.")
+                            overall_foot_labels.append(f"{q} — [metric]")
+
             if overall_narrative and len(tab_labels) > 1:
                 st.markdown("**Overall**")
                 st.write(overall_narrative)
+                if overall_foot_labels:
+                    st.caption(
+                        "* In this section, percentages refer to the same aggregates used above: "
+                        + "; ".join(overall_foot_labels) + "."
+                    )
         else:
             # ---------- per-question AI ----------
             per_q_narratives: Dict[str, str] = {}
             q_to_meaning_labels: Dict[str, List[str]] = {}
             q_distribution_only: Dict[str, bool] = {}
+
+            # collect label strings to cite once under Overall
+            overall_foot_labels: List[str] = []
 
             for q in tab_labels:
                 dfq = per_q_disp.get(q)
@@ -898,7 +1013,21 @@ def tabs_summary_and_per_q(
                 per_q_narratives[q] = txt
                 if txt:
                     st.markdown(f"**{q} — {qtext}**")
-                    st.write(txt)
+                    txt_star = _insert_first_percent_asterisk(txt)
+                    st.write(txt_star)
+
+                    if not _is_d57_exception(q):
+                        labels = _resolve_footnote_labels(
+                            q=q, qtext=qtext, metric_col=metric_col_ai, metric_label=metric_label_ai or "",
+                            meta_q=meta_q, meta_scales=meta_scales
+                        )
+                        lab = _compress_labels_for_footnote(labels) if labels else None
+                        if lab:
+                            st.caption(f"* Percentages represent respondents’ aggregate answers: {lab}.")
+                            overall_foot_labels.append(f"{q} — {lab}")
+                        else:
+                            st.caption("* Percentages correspond to the reported metric above.")
+                            overall_foot_labels.append(f"{q} — [metric]")
 
             # ---------- OVERALL ----------
             overall_narrative = None
@@ -928,6 +1057,11 @@ def tabs_summary_and_per_q(
                 if overall_narrative:
                     st.markdown("**Overall**")
                     st.write(overall_narrative)
+                    if overall_foot_labels:
+                        st.caption(
+                            "* In this section, percentages refer to the same aggregates used above: "
+                            + "; ".join(overall_foot_labels) + "."
+                        )
 
             _ai_cache_put(ai_key, {"per_q": per_q_narratives, "overall": overall_narrative})
             st.session_state["menu1_ai_narr_per_q"] = per_q_narratives
