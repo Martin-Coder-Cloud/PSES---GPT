@@ -112,8 +112,11 @@ def _is_d57_exception(qcode: str) -> bool:
     q = (qcode or "").strip().lower()
     return q in {"d57_a", "d57_b", "d57a", "d57b"}
 
-# ... all your existing helper functions, loaders, metadata resolution,
-#     and rendering logic remain unchanged ...
+# NOTE: The following helpers are expected to exist elsewhere in your codebase:
+#  - _infer_reporting_field(metric_col)
+#  - _meaning_labels_for_question(...)
+#  - _pick_metric_for_summary(...)
+#  - _run_ai_and_collect(...)
 
 # ----------------------------- main render function -----------------------------
 def render_results_tab(
@@ -151,6 +154,10 @@ def render_results_tab(
         if cached:
             per_q_narratives = cached.get("per_q", {}) or {}
             overall_narrative = cached.get("overall")
+
+            # Collect label strings for the Overall caption
+            overall_foot_labels: List[str] = []
+
             for q in tab_labels:
                 txt = per_q_narratives.get(q, "")
                 if txt:
@@ -178,16 +185,27 @@ def render_results_tab(
                             lab = _compress_labels_for_footnote(labels)
                             if lab:
                                 st.caption(f"* Percentages represent respondents’ aggregate answers: {lab}.")
+                                overall_foot_labels.append(f"{q} — {lab}")
                     except Exception:
                         pass
+
             if overall_narrative and len(tab_labels) > 1:
                 st.markdown("**Overall**")
                 st.write(overall_narrative)
+                # Overall caption listing each question's label set (once)
+                if overall_foot_labels:
+                    st.caption(
+                        "* In this section, percentages refer to the same aggregates used above: "
+                        + "; ".join(overall_foot_labels) + "."
+                    )
         else:
             # ---------- per-question AI ----------
             per_q_narratives: Dict[str, str] = {}
             q_to_meaning_labels: Dict[str, List[str]] = {}
             q_distribution_only: Dict[str, bool] = {}
+
+            # Collect label strings for the Overall caption
+            overall_foot_labels: List[str] = []
 
             for q in tab_labels:
                 dfq = per_q_disp.get(q)
@@ -253,6 +271,7 @@ def render_results_tab(
                         lab = _compress_labels_for_footnote(meaning_labels_ai)
                         if lab:
                             st.caption(f"* Percentages represent respondents’ aggregate answers: {lab}.")
+                            overall_foot_labels.append(f"{q} — {lab}")
 
             # ---------- OVERALL ----------
             overall_narrative = None
@@ -278,6 +297,12 @@ def render_results_tab(
                 if overall_narrative:
                     st.markdown("**Overall**")
                     st.write(overall_narrative)
+                    # Overall caption listing each question's label set (once)
+                    if overall_foot_labels:
+                        st.caption(
+                            "* In this section, percentages refer to the same aggregates used above: "
+                            + "; ".join(overall_foot_labels) + "."
+                        )
 
             # Cache results for reuse on re-toggle or same selection
             _ai_cache_put(ai_key, {"per_q": per_q_narratives, "overall": overall_narrative})
@@ -370,4 +395,51 @@ def _render_excel_download(
         file_name="PSES_results_with_AI.xlsx",
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         key="menu1_excel_download",
+    )
+
+# ----------------------------- compatibility wrapper -----------------------------
+def tabs_summary_and_per_q(
+    *,
+    payload: Dict[str, Any],
+    ai_on: bool,
+    build_overall_prompt: Callable[..., str],
+    build_per_q_prompt: Callable[..., str],
+    call_openai_json: Callable[..., Tuple[Optional[str], Optional[str]]],
+    source_url: str,
+    source_title: str,
+) -> None:
+    """
+    Back-compat shim: adapt legacy entry point to the current render function.
+    Expects payload to carry the same keys the app already produces.
+    """
+    tab_labels = payload.get("tab_labels", [])
+    per_q_disp = payload.get("per_q_disp", {})
+    per_q_metric_col_in = payload.get("per_q_metric_col_in", {})
+    per_q_metric_label_in = payload.get("per_q_metric_label_in", {})
+    summary_pivot = payload.get("summary_pivot")
+    pivot_from_payload = payload.get("pivot_from_payload", pd.DataFrame())
+    meta_q = payload.get("meta_q", pd.DataFrame())
+    meta_scales = payload.get("meta_scales", pd.DataFrame())
+    code_to_text = payload.get("code_to_text", {})
+    labels_used = payload.get("labels_used", {})
+
+    # Preserve the toggle passed by caller
+    st.session_state["menu1_ai_toggle"] = bool(ai_on)
+
+    # Render header or any outer elements if your app expects them (omitted here by design).
+    # Delegate to the new renderer:
+    render_results_tab(
+        tab_labels=tab_labels,
+        per_q_disp=per_q_disp,
+        per_q_metric_col_in=per_q_metric_col_in,
+        per_q_metric_label_in=per_q_metric_label_in,
+        summary_pivot=summary_pivot,
+        pivot_from_payload=pivot_from_payload,
+        meta_q=meta_q,
+        meta_scales=meta_scales,
+        code_to_text=code_to_text,
+        labels_used=labels_used,
+        build_overall_prompt=build_overall_prompt,
+        build_per_q_prompt=build_per_q_prompt,
+        call_openai_json=call_openai_json,
     )
