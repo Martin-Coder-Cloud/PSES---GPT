@@ -423,11 +423,11 @@ def tabs_summary_and_per_q(
     code_to_text = payload.get("code_to_text", {})
     labels_used = payload.get("labels_used", {})
 
-    # Preserve the toggle passed by caller
-    st.session_state["menu1_ai_toggle"] = bool(ai_on)
+    # Only set a default if the widget/state hasn't already been created by the UI:
+    if "menu1_ai_toggle" not in st.session_state:
+        st.session_state["menu1_ai_toggle"] = bool(ai_on)
 
-    # Render header or any outer elements if your app expects them (omitted here by design).
-    # Delegate to the new renderer:
+    # Delegate to the renderer:
     render_results_tab(
         tab_labels=tab_labels,
         per_q_disp=per_q_disp,
