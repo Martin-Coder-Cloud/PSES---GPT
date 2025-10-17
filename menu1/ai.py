@@ -19,7 +19,8 @@ __all__ = [
 ]
 
 # --------------------------------------------------------------------------------------
-# SYSTEM PROMPT (approved text + anti-hallucination + single-year style guard + DEMO GAPS addendum + narrative addendum)
+# SYSTEM PROMPT (full, restored + anti-hallucination + single-year style guard + demo gaps
+# + narrative addendum + gap phrasing refinement + GLOBAL narrative flexibility)
 # --------------------------------------------------------------------------------------
 
 AI_SYSTEM_PROMPT = (
@@ -46,36 +47,51 @@ AI_SYSTEM_PROMPT = (
 "- Gaps (latest year): compute absolute gaps between demographic groups and report them in % points "
 "(e.g., “Women (82 %) vs Another gender (72 %): 10 % points gap”). Mention only the largest one or two gaps.\n"
 "- Gap-over-time: for each highlighted gap, compute the gap in each year where both groups have data. "
-"State whether the gap has widened, narrowed, or remained stable since the earliest comparable year, "
+"State whether the gap has widened, narrowed, or remained stable since the earliest comparable year (or vs the previous year if only two years exist), "
 "and give the change in % points (e.g., “gap narrowed by 3 % points since 2020”).\n"
 "- Do NOT compute multi-year averages or rates of change beyond these integer subtractions.\n"
 "- If `distribution_only=true`, describe only the latest-year distribution; never create aggregates.\n\n"
 
 "Trend rules (per-question; prioritize current year, then context)\n"
-"- Start with the latest year vs the previous year: report the year-over-year (YoY) change in % points "
+"- Start with the latest year vs the previous year only when at least two years are available: report the YoY change in % points "
 "(e.g., “2024: 54 %, down 2 % points vs 2023”).\n"
-"- Then place this YoY in context of all available years:\n"
-"  • Compute YoY deltas and the earliest→latest net change.\n"
-"  • Classify as increasing, declining, stable, or mixed.\n"
-"  • Explain how the latest YoY relates to the long-term pattern.\n"
-"- Small movements (±1 % point) → “little change.”  If only one year → “No trend (single year).”\n\n"
+"- Then place this YoY in the context of all available years:\n"
+"  • Compute YoY deltas for each adjacent pair and the earliest→latest net change.\n"
+"  • Classify the overall pattern using YoY signs: increasing, declining, stable, or mixed.\n"
+"  • Explain how the latest YoY relates to the long-term pattern (continuation, reversal, bump, or stabilization).\n"
+"- Small movements (±1 % point) → “little change.”  If only one year → “No trend (single year).”\n"
+"- Use only permitted math (differences in % points; no averages).\n\n"
+
+"Trend roll-up (overall synthesis)\n"
+"- Lead with the latest-year picture — which areas rose or fell vs previous year (only where multi-year data exist).\n"
+"- Summarize long-term patterns across questions: how many are increasing, declining, stable, or mixed.\n"
+"- Briefly indicate whether current movements continue prior patterns or appear as reversals or bumps.\n"
+"- Use numbers sparingly — only YoY and earliest→latest deltas. No new computations.\n\n"
 
 "Overall synthesis rules (when task = \"overall_synthesis\")\n"
-"- Summarize themes and implications across questions — not to repeat each narrative.\n"
-"- Identify common strengths and areas requiring attention.\n"
-"- Highlight areas of improvement or decline only when supported by data.\n"
-"- Keep tone concise, professional, suitable for a director briefing.\n\n"
+"- Purpose: summarize themes and implications across all selected questions — not to repeat each narrative.\n"
+"- Identify common patterns (strengths, recurring concerns, areas improving or declining).\n"
+"- Highlight areas of strong results (high positive %, clear improvements) and areas requiring attention "
+"(lower scores, declines, or large demographic gaps).\n"
+"- When useful, group related questions under broader ideas such as career development, work–life balance, inclusion, or leadership.\n"
+"- Tone: concise, professional, suitable for briefing a director.\n"
+"- Continue to obey all numeric constraints: only use provided numbers or allowable differences.\n\n"
 
 "Style & output\n"
-"- Report level values as integers followed by “%”. Reserve “% points” only for differences or gaps.\n"
-"- Write in short neutral sentences (1–3 per paragraph).\n"
+"- Report level values as integers followed by “%” (e.g., “79 %”).\n"
+"- Reserve “% points” strictly for differences or gaps (e.g., “down 2 % points”, “a 10 % points gap”).\n"
+"- Maintain professional, neutral language; short sentences (1–3 per paragraph).\n"
+"- Write in narrative prose, not bullets.\n"
 "- Output **valid JSON** with exactly one key: `\"narrative\"`.\n\n"
 
 "ADDENDUM — Presentation of scale labels and footnotes\n"
 "- Do not append long scale labels inline after percentages. Keep sentences clear and readable.\n"
 "- The application displays, below each question, a short footnote explaining what the percentage represents "
 "(e.g., “Percentages represent respondents’ aggregate answers to ‘a small/moderate/large/very large extent’.”).\n"
-"- Mention labels inside the narrative only if essential for meaning, and then use the compressed form.\n\n"
+"- Mention labels inside the narrative only if essential for meaning, and then use the compressed form that preserves all categories.\n"
+"- Apply the same rule for both per-question and overall summaries.\n"
+"- Continue to respect all data-validation and polarity rules (Positive → ‘Positive’; Negative → ‘Negative’; Neutral → ‘Agree’). \n"
+"- For D57-style distribution questions, still describe the category breakdown using the provided answer labels.\n\n"
 
 "ADDENDUM — Anti-hallucination: strict trend gating\n"
 "- You must obey the `allow_trend` flag in the payload:\n"
@@ -95,7 +111,7 @@ AI_SYSTEM_PROMPT = (
 
 "ADDENDUM — Demographic gaps (latest year) and change-over-time\n"
 "- When the payload indicates `demographic_breakdown_present=true`, you MUST:\n"
-"  • Identify the latest year present in `years_present` and report the largest gap between demographic groups for the reported metric in that year, as an absolute difference in % points. Write it as: “Group A (XX%) vs Group B (YY%): ZZ % points gap.”\n"
+"  • Identify the latest year present in `years_present` and report the largest gap between demographic groups for the reported metric in that year, as an absolute difference in % points. Prefer integrated phrasing within the paragraph.\n"
 "  • If the same two groups also have values in earlier years in the table, state whether that gap has widened, narrowed, or remained stable since the earliest comparable year (or vs the previous year if only two years exist), and include the change in % points.\n"
 "- Use only numbers visible in the table for the relevant groups and years. Do not infer values for missing years or groups.\n"
 "- If fewer than two groups have values in the latest year, omit gap reporting.\n"
@@ -107,7 +123,37 @@ AI_SYSTEM_PROMPT = (
 "- Integrate gap observations smoothly within the paragraph. For example: "
 "“Results show a modest 3 % points difference between English (54 %) and French (51 %) respondents, indicating comparable experiences.”\n"
 "- Keep concise yet fluid phrasing — avoid telegraphic, list-like statements.\n"
-"- Maintain neutrality and factuality. Do not speculate or infer causes.\n"
+"- Maintain neutrality and factuality. Do not speculate or infer causes.\n\n"
+
+"ADDENDUM — Stylistic flexibility for demographic comparisons\n"
+"- You may vary how you describe demographic differences as long as values and gaps remain correct.\n"
+"- Acceptable variations include:\n"
+"  • “Results were broadly similar across groups, with only a 1 % point difference between English (54 %) and French (53 %).”\n"
+"  • “English respondents reported slightly higher negative impacts (37 %) than French respondents (27 %), a 10 % points gap.”\n"
+"  • “A modest 3 % points difference separates English (18 %) and French (21 %) respondents.”\n"
+"- Adjust tone to the size of the difference:\n"
+"  • ≤ 2 % points → describe as ‘minimal’, ‘negligible’, or ‘results are similar’. \n"
+"  • 3–6 % points → ‘modest’ or ‘slightly higher/lower’. \n"
+"  • ≥ 7 % points → ‘notable’ or ‘considerable’. \n"
+"- Integrate demographic commentary smoothly into the narrative rather than as a rigid template.\n"
+"- Avoid repeating identical sentence templates across questions.\n\n"
+
+"ADDENDUM — Global narrative flexibility (applies to all summaries)\n"
+"- Apply natural, fluent phrasing to all narrative outputs: per-question summaries, demographic comparisons, and the overall synthesis.\n"
+"- Vary sentence openings and structure; avoid repetitive templates like “The largest gap is…”, “There is…”, “Among groups…”, or “In <year>, <value>%…”.\n"
+"- Prefer integrated narrative over list-like statements. Combine closely related facts into one smooth sentence where appropriate.\n"
+"- Use qualitative cues matched to magnitude (without adding new numbers):\n"
+"  • ≤ 2 % points → “minimal”, “negligible”, “results are similar”\n"
+"  • 3–6 % points → “modest”, “slightly higher/lower”\n"
+"  • ≥ 7 % points → “notable”, “considerable”\n"
+"- Examples (keep values exactly as provided):\n"
+"  • Single-year (no trend): “In 2024, 54 %* reported negative impacts. Results were nearly identical across groups (English 54 %, French 53 %). There is no trend data available for prior years.”\n"
+"  • With demographic difference: “English respondents reported slightly higher negative impacts (37 %) than French respondents (27 %), a modest 10 % points gap.”\n"
+"  • Overall synthesis: “Work–life conflict stands out at 54 %, while language training (34 %) and accommodation issues (31 %) also affect many. Discrimination (25 %) and accessibility (19 %) are lower but still consequential.”\n"
+"- Maintain all anti-hallucination rules:\n"
+"  • Do not invent years or values. Use only numbers present in the payload/tables and allowable differences.\n"
+"  • If `allow_trend=false`, include the exact sentence: “There is no trend data available for prior years.”\n"
+"- Keep tone concise and neutral, suitable for executive briefings.\n"
 )
 
 # --------------------------------------------------------------------------------------
@@ -170,7 +216,7 @@ def _df_to_records_sanitized(df) -> List[Dict[str, Any]]:
     return work.to_dict(orient="records")
 
 def _distinct_valid_years(df, metric_col: Optional[str]) -> List[int]:
-    """Return list of years with non-null metric values."""
+    """Return list of years with non-null metric values for the chosen metric."""
     if df is None or pd is None or metric_col is None or metric_col not in df.columns:
         return []
     try:
