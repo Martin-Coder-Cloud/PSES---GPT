@@ -22,7 +22,7 @@ def drop_suppressed(df: pd.DataFrame) -> pd.DataFrame:
     out = df.copy()
     cols = [f"answer{i}" for i in range(1, 8)] + [
         "POSITIVE", "NEUTRAL", "NEGATIVE",
-        "ANSCOUNT", "positive_pct", "neutral_pct", "negative_pct", "n"
+        "ANSCOUNT", "positive_pct", "neutral_pct", "negative_pct", "agree_pct", "n"
     ]
 
     for c in cols:
@@ -101,7 +101,7 @@ def format_display(
         ["YearNum", "Year"]
         + (["Demographic"] if category_in_play else [])
         + dist_cols
-        + ["positive_pct", "neutral_pct", "negative_pct", "n"]
+        + ["positive_pct", "neutral_pct", "negative_pct", "agree_pct", "n"]
     )
     keep_cols = [c for c in keep_cols if c in out.columns]
 
@@ -109,7 +109,8 @@ def format_display(
     out = out.rename(columns={
         "positive_pct": "Positive",
         "neutral_pct": "Neutral",
-        "negative_pct": "Negative"
+        "negative_pct": "Negative",
+        "agree_pct": "Agree",
     })
 
     # Sort: Year desc, Demographic asc
