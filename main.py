@@ -69,11 +69,13 @@ def render_home():
             }
             .main-section { margin-left: 200px; max-width: 820px; text-align: left; }
             .main-title { font-size: 42px; font-weight: 800; margin-bottom: 16px; }
+            /* subtitle style left as-is but not used */
             .subtitle { font-size: 22px; line-height: 1.4; margin-bottom: 18px; opacity: 0.95; max-width: 700px; }
-            .context { font-size: 18px; line-height: 1.55; margin-top: 8px; margin-bottom: 36px; opacity: 0.95; max-width: 700px; text-align: left; }
+            /* ↑ Only change here: increase font-size from 18px → 20px for body text */
+            .context { font-size: 20px; line-height: 1.6; margin-top: 8px; margin-bottom: 36px; opacity: 0.95; max-width: 700px; text-align: left; }
             .single-button { display: flex; flex-direction: column; gap: 16px; }
 
-            /* Make START button more prominent */
+            /* Prominent START button */
             div.stButton > button {
                 background: linear-gradient(90deg, rgba(255,255,255,0.22), rgba(255,255,255,0.10)) !important;
                 color: #ffffff !important;
@@ -89,14 +91,14 @@ def render_home():
                 box-shadow: 0 14px 36px rgba(0,0,0,0.45) !important;
                 transform: translateY(-1px);
             }
+            .main-section a { color: #fff !important; text-decoration: underline; }
         </style>
     """, unsafe_allow_html=True)
 
     st.markdown("<div class='main-section'>", unsafe_allow_html=True)
     st.markdown("<div class='main-title'>Welcome to the AI-powered Explorer of the Public Service Employee Survey (PSES)</div>", unsafe_allow_html=True)
-    st.markdown("<div class='subtitle'>This app provides Public Service-wide survey results and analysis for the previous 4 survey cycles (2019, 2020, 2022, and 2024)</div>", unsafe_allow_html=True)
+    # (Subtitle removed as requested)
 
-    # Widened intro text (from 560px → 680px)
     st.markdown(
         """
         <div class='context' style='max-width:680px; width:100%;'>
@@ -123,8 +125,6 @@ def render_home():
         st.session_state["menu1_mount_nonce"] = time.time()
         goto("menu1")
     st.markdown("</div>", unsafe_allow_html=True)
-
-    # (Removed the external link block below the Start button)
 
 # ── Menu 1 only ──────────────────────────────────────────────────────────────
 def render_menu1():
