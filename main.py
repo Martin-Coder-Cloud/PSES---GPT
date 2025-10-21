@@ -15,14 +15,10 @@ def main():
     # ✅ Fullscreen background and layout
     st.markdown("""
         <style>
-            html, body {
-                height: 100%;
-                margin: 0;
-                padding: 0;
-            }
+            html, body { height: 100%; margin: 0; padding: 0; }
             .block-container {
                 padding-top: 100px !important;
-                padding-left: 0px !important;
+                padding-left: 0 !important;
                 padding-buttom: 100px !important;
                 background-image: url('https://github.com/Martin-Coder-Cloud/PSES---GPT/blob/main/assets/Teams%20Background%20Tablet_EN.png?raw=true');
                 background-size: cover;
@@ -32,29 +28,43 @@ def main():
                 min-height: 100vh;
                 color: white;
             }
-            .main-section {
-                padding-left: 200px;              /* shift to center-left */
-                max-width: 560px;                  /* keep well left of mid-screen */
+
+            /* Title centered across the page */
+            .hero-title, .survey-years {
+                text-align: center;
+                width: 100%;
             }
             .main-title {
                 font-size: 42px;
                 font-weight: bold;
-                margin-bottom: 20px;
+                margin-bottom: 12px;
                 color: white;
                 line-height: 1.2;
             }
             .survey-years {
                 font-size: 20px;
-                margin-bottom: 20px;
+                margin-bottom: 24px;
                 color: white;
             }
+
+            /* Left-centered content column, like your original:
+               - nudged off the hard left
+               - limited width so it never crosses mid-screen/right image
+            */
+            .main-section {
+                padding-left: 200px;         /* your original left offset */
+                max-width: 560px;             /* narrow column: won’t reach busy right side */
+            }
+
             .intro-panel {
                 font-size: 18px;
                 line-height: 1.6;
                 word-wrap: break-word;
                 overflow-wrap: break-word;
             }
-            /* Make the primary button stand out more */
+            .intro-panel p { margin: 0 0 14px 0; }
+
+            /* Primary button: keep prominent */
             div.stButton > button {
                 background: rgba(255, 255, 255, 0.15) !important;
                 color: #ffffff !important;
@@ -65,11 +75,23 @@ def main():
                 border-radius: 14px !important;
                 box-shadow: 0 6px 18px rgba(0,0,0,0.25) !important;
                 backdrop-filter: blur(3px);
+                min-width: 260px;
             }
             div.stButton > button:hover {
                 background: rgba(255, 255, 255, 0.25) !important;
                 border-color: #ffffff !important;
                 box-shadow: 0 8px 22px rgba(0,0,0,0.35) !important;
+            }
+
+            /* Responsive nudges: keep column left but readable on smaller screens */
+            @media (max-width: 1100px) {
+                .main-section { padding-left: 140px; max-width: 560px; }
+            }
+            @media (max-width: 900px) {
+                .main-section { padding-left: 80px; max-width: 56ch; }
+            }
+            @media (max-width: 700px) {
+                .main-section { padding-left: 24px; max-width: 58ch; }
             }
         </style>
     """, unsafe_allow_html=True)
@@ -96,12 +118,13 @@ def main():
             show_return_then_run(lambda: st.info("📋 View Questionnaire is under construction."))
         return
 
-    # ✅ Render landing content
-    st.markdown("<div class='main-section'>", unsafe_allow_html=True)
-    st.markdown("<div class='main-title'>Welcome to the AI Explorer of the Public Service Employee Survey (PSES)</div>", unsafe_allow_html=True)
+    # ✅ Title (centered)
+    st.markdown("<div class='hero-title'><div class='main-title'>Welcome to the AI Explorer of the Public Service Employee Survey (PSES)</div></div>", unsafe_allow_html=True)
     st.markdown("<div class='survey-years'>(2019, 2020, 2022, and 2024)</div>", unsafe_allow_html=True)
 
-    # 🔹 Updated, wrapped introduction (with PSES link)
+    # ✅ Intro text + button (left-centered, limited width)
+    st.markdown("<div class='main-section'>", unsafe_allow_html=True)
+
     st.markdown("""
         <div class="intro-panel">
           <p>
@@ -125,12 +148,10 @@ def main():
         </div>
     """, unsafe_allow_html=True)
 
-    # 🔹 Single prominent start button (original text preserved)
     if st.button("Start your search", key="start_search"):
         st.session_state.run_menu = "1"
         st.experimental_rerun()
 
-    # (Removed any links below the start button)
     st.markdown("</div>", unsafe_allow_html=True)
 
 if __name__ == "__main__":
