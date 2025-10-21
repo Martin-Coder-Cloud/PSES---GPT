@@ -1,4 +1,4 @@
-# menu1/main.py
+# menu1/main.py — drop-in with two-pass scroll + highlight
 from __future__ import annotations
 
 import time
@@ -6,7 +6,7 @@ from typing import Dict, List, Optional
 
 import pandas as pd
 import streamlit as st
-import streamlit.components.v1 as components  # NEW
+import streamlit.components.v1 as components  # NEW: for smooth scroll
 
 # Local modules (relative to the menu1 package)
 from .constants import (
@@ -91,7 +91,6 @@ def run() -> None:
     # to avoid double-calling it (root main.py calls it once).
 
     # Scoped CSS: ONLY the main Search button is red/white. All others use your global/default style.
-    # Use very high specificity so hosted themes cannot override it.
     st.markdown(
         """
         <style>
@@ -140,6 +139,28 @@ def run() -> None:
         layout.title("PSES Explorer Search")
         ai_on, show_diag = layout.toggles()
 
+        # --- Immediate scroll pass (if requested) ---  # NEW
+        if st.session_state.get("_pre_scroll_results"):
+            # Ensure an early anchor exists in the DOM
+            st.markdown("<span id='results-anchor'></span>", unsafe_allow_html=True)
+            # Immediate + delayed scroll (to survive image/font layout shifts)
+            components.html(
+                """
+                <script>
+                  const go = () => {
+                    const el = window.parent.document.querySelector('span#results-anchor');
+                    if (el) el.scrollIntoView({behavior:'smooth', block:'start', inline:'nearest'});
+                  };
+                  go(); setTimeout(go, 250); setTimeout(go, 750);
+                </script>
+                """,
+                height=0, width=0
+            )
+            # Flip flags and rerun for the actual search
+            st.session_state["_pre_scroll_results"] = False
+            st.session_state["_do_results_search"] = True
+            st.experimental_rerun()
+
         # [AI-toggle gate] Track toggle changes without triggering rebuilds
         _prev_ai = st.session_state.get("menu1_ai_prev", ai_on)
         if _prev_ai != ai_on:
@@ -184,87 +205,27 @@ def run() -> None:
             st.markdown("</div>", unsafe_allow_html=True)
 
             if run_clicked:
-                # NEW: set one-time focus flag to scroll/highlight results
-                st.session_state["_focus_results"] = True  # NEW
-
-                t0 = time.time()
-                per_q_disp: Dict[str, pd.DataFrame] = {}
-                per_q_metric_col: Dict[str, str] = {}
-                per_q_metric_label: Dict[str, str] = {}
-
-                # Build per-question display tables
-                for qcode in question_codes:
-                    df_all = fetch_per_question(qcode, years, demcodes)
-                    if df_all is None or df_all.empty:
-                        continue
-
-                    df_all = normalize_results(df_all)
-                    df_all = drop_suppressed(df_all)
-
-                    spairs = scale_pairs(sdf, qcode)
-                    df_disp = format_display(
-                        df_slice=df_all,
-                        dem_disp_map=disp_map,
-                        category_in_play=category_in_play,
-                        scale_pairs=spairs,
-                    )
-                    if df_disp.empty:
-                        continue
-
-                    det = detect_metric(df_disp, spairs)
-                    per_q_disp[qcode] = df_disp
-                    per_q_metric_col[qcode] = det["metric_col"]
-                    per_q_metric_label[qcode] = det["metric_label"]
-
-                # Build pivot & stash results for centered rendering
-                if per_q_disp:
-                    pivot = _build_summary_pivot(
-                        per_q_disp=per_q_disp,
-                        per_q_metric_col=per_q_metric_col,
-                        years=years,
-                        demo_selection=demo_selection,
-                        sub_selection=sub_selection,
-                    )
-                    code_to_text = dict(zip(qdf["code"], qdf["text"]))
-                    state.stash_results({
-                        "per_q_disp": per_q_disp,
-                        "per_q_metric_col": per_q_metric_col,
-                        "per_q_metric_label": per_q_metric_label,
-                        "pivot": pivot,
-                        "tab_labels": [qc for qc in question_codes if qc in per_q_disp],
-                        "years": years,
-                        "demo_selection": demo_selection,
-                        "sub_selection": sub_selection,
-                        "code_to_text": code_to_text,
-                    })
-
-                # Mark diagnostics timing
-                diagnostics.mark_last_query(
-                    started_ts=t0,
-                    finished_ts=time.time(),
-                    extra={"notes": "Menu 1 query run"},
-                )
-
-                # [AI-toggle gate] A fresh Search clears the dirty flag
-                st.session_state["menu1_ai_toggle_dirty"] = False
+                # Two-pass: request immediate scroll now; the real search runs on next pass
+                st.session_state["_pre_scroll_results"] = True  # NEW
+                st.experimental_rerun()
 
         with colB:
             st.markdown("<div id='menu1-reset-btn'>", unsafe_allow_html=True)
-            # Label per your UX spec (“Clear parameters” beside Search)
             if st.button("Clear parameters", key="menu1_reset_all"):
                 # Reset core menu state
                 state.reset_menu1_state()
-                # Also clear keyword-search UI state so no stale "No questions matched…" persists
+                # Also clear keyword-search UI state
                 _clear_keyword_search_state()
-                # Clear AI caches (to prevent reruns from showing stale narratives)
+                # Clear AI caches
                 st.session_state.pop("menu1_ai_cache", None)
                 st.session_state.pop("menu1_ai_narr_per_q", None)
                 st.session_state.pop("menu1_ai_narr_overall", None)
-                # Clear results-focus flag
-                st.session_state.pop("_focus_results", None)  # NEW
-                # [AI-toggle gate] Clearing parameters also clears the dirty flag
+                # Clear flags
+                st.session_state.pop("_focus_results", None)       # NEW
+                st.session_state.pop("_pre_scroll_results", None)  # NEW
+                st.session_state.pop("_do_results_search", None)   # NEW
+                # [AI-toggle gate]
                 st.session_state.pop("menu1_ai_toggle_dirty", None)
-                # Rerun
                 try:
                     st.rerun()
                 except Exception:
@@ -273,10 +234,76 @@ def run() -> None:
 
         st.markdown("</div>", unsafe_allow_html=True)
 
-        # Results (center area)
-        # NEW: drop an anchor immediately above the results
-        st.markdown("<span id='results-anchor'></span>", unsafe_allow_html=True)  # NEW
+        # Ensure the final results anchor is present near the results area  # NEW
+        st.markdown("<span id='results-anchor'></span>", unsafe_allow_html=True)  # harmless duplicate if already present
 
+        # Run the actual search after pre-scroll requested it
+        if st.session_state.pop("_do_results_search", False):  # NEW
+            # keep the highlight behavior
+            st.session_state["_focus_results"] = True  # NEW
+
+            t0 = time.time()
+            per_q_disp: Dict[str, pd.DataFrame] = {}
+            per_q_metric_col: Dict[str, str] = {}
+            per_q_metric_label: Dict[str, str] = {}
+
+            # Build per-question display tables
+            for qcode in question_codes:
+                df_all = fetch_per_question(qcode, years, demcodes)
+                if df_all is None or df_all.empty:
+                    continue
+
+                df_all = normalize_results(df_all)
+                df_all = drop_suppressed(df_all)
+
+                spairs = scale_pairs(sdf, qcode)
+                df_disp = format_display(
+                    df_slice=df_all,
+                    dem_disp_map=disp_map,
+                    category_in_play=category_in_play,
+                    scale_pairs=spairs,
+                )
+                if df_disp.empty:
+                    continue
+
+                det = detect_metric(df_disp, spairs)
+                per_q_disp[qcode] = df_disp
+                per_q_metric_col[qcode] = det["metric_col"]
+                per_q_metric_label[qcode] = det["metric_label"]
+
+            # Build pivot & stash results for centered rendering
+            if per_q_disp:
+                pivot = _build_summary_pivot(
+                    per_q_disp=per_q_disp,
+                    per_q_metric_col=per_q_metric_col,
+                    years=years,
+                    demo_selection=demo_selection,
+                    sub_selection=sub_selection,
+                )
+                code_to_text = dict(zip(qdf["code"], qdf["text"]))
+                state.stash_results({
+                    "per_q_disp": per_q_disp,
+                    "per_q_metric_col": per_q_metric_col,
+                    "per_q_metric_label": per_q_metric_label,
+                    "pivot": pivot,
+                    "tab_labels": [qc for qc in question_codes if qc in per_q_disp],
+                    "years": years,
+                    "demo_selection": demo_selection,
+                    "sub_selection": sub_selection,
+                    "code_to_text": code_to_text,
+                })
+
+            # Mark diagnostics timing
+            diagnostics.mark_last_query(
+                started_ts=t0,
+                finished_ts=time.time(),
+                extra={"notes": "Menu 1 query run"},
+            )
+
+            # [AI-toggle gate] A fresh Search clears the dirty flag
+            st.session_state["menu1_ai_toggle_dirty"] = False
+
+        # Results (center area)
         if state.has_results():
             # [AI-toggle gate] If the AI toggle changed since last Search, do not render results
             if st.session_state.get("menu1_ai_toggle_dirty", False):
@@ -284,9 +311,9 @@ def run() -> None:
             else:
                 payload = state.get_results()
 
-                # NEW: wrap results in a temporary highlight container
+                # Wrap results in a temporary highlight container
                 wrap_cls = "pulse-highlight" if st.session_state.get("_focus_results") else ""
-                st.markdown(f"<div class='{wrap_cls}'>", unsafe_allow_html=True)  # NEW
+                st.markdown(f"<div class='{wrap_cls}'>", unsafe_allow_html=True)
 
                 results.tabs_summary_and_per_q(
                     payload=payload,
@@ -298,20 +325,11 @@ def run() -> None:
                     source_title=SOURCE_TITLE,
                 )
 
-                st.markdown("</div>", unsafe_allow_html=True)  # NEW
+                st.markdown("</div>", unsafe_allow_html=True)
 
-                # NEW: smooth-scroll once and clear the flag
+                # Clear highlight flag so it only pulses once
                 if st.session_state.get("_focus_results"):
-                    components.html(
-                        """
-                        <script>
-                        const el = window.parent.document.querySelector('span#results-anchor');
-                        if (el) { el.scrollIntoView({ behavior: 'smooth', block: 'start' }); }
-                        </script>
-                        """,
-                        height=0, width=0
-                    )
-                    st.session_state["_focus_results"] = False  # clear flag
+                    st.session_state["_focus_results"] = False
 
 
 if __name__ == "__main__":
