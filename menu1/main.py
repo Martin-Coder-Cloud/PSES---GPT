@@ -1,4 +1,4 @@
-# menu1/main.py — robust single-pass scroll to results (downward), with brief highlight
+# menu1/main.py — two-phase render: (A) tabulations + scroll, then (B) AI summary
 from __future__ import annotations
 
 import time
@@ -10,7 +10,7 @@ import streamlit.components.v1 as components  # for smooth scroll
 
 # Local modules (relative to the menu1 package)
 from .constants import (
-    PAGE_TITLE,          # kept for parity with your imports (not used directly here)
+    PAGE_TITLE,
     CENTER_COLUMNS,
     SOURCE_URL,
     SOURCE_TITLE,
@@ -172,8 +172,11 @@ def run() -> None:
             st.markdown("</div>", unsafe_allow_html=True)
 
             if run_clicked:
-                st.session_state["_focus_results"] = True   # pulse once after render
-                st.session_state["_pending_scroll"] = True  # ask to scroll after render
+                # Phase A request: compute & render TABULATIONS first (no AI), then scroll
+                st.session_state["_m1_phase"] = "tabulations_first"
+                st.session_state["_focus_results"] = True      # one-time highlight
+                st.session_state.pop("_pending_scroll", None)  # phase handles scrolling itself
+                st.experimental_rerun()
 
         with colB:
             st.markdown("<div id='menu1-reset-btn'>", unsafe_allow_html=True)
@@ -183,6 +186,8 @@ def run() -> None:
                 st.session_state.pop("menu1_ai_cache", None)
                 st.session_state.pop("menu1_ai_narr_per_q", None)
                 st.session_state.pop("menu1_ai_narr_overall", None)
+                # clear phase/flags
+                st.session_state.pop("_m1_phase", None)
                 st.session_state.pop("_focus_results", None)
                 st.session_state.pop("_pending_scroll", None)
                 st.session_state.pop("menu1_ai_toggle_dirty", None)
@@ -197,12 +202,12 @@ def run() -> None:
         # ---- Anchor lives directly ABOVE the results section ----
         st.markdown("<div id='results-anchor'></div>", unsafe_allow_html=True)
 
-        # Run the actual search + render (unchanged)
-        # Build results only when user clicks, or on subsequent reruns with state still present
-        # (Your existing state.stash_results() drives state.has_results())
-        # If you want to force clearing until click, keep as-is.
-        # Compute new results iff user clicked, else reuse stashed.
-        if run_clicked:
+        # PHASE CONTROLLER
+        phase = st.session_state.get("_m1_phase", None)
+
+        # --- Build/refresh results if we're starting Phase A ---
+        if phase == "tabulations_first":
+            # Compute everything as usual (we'll render without AI)
             t0 = time.time()
             per_q_disp: Dict[str, pd.DataFrame] = {}
             per_q_metric_col: Dict[str, str] = {}
@@ -259,15 +264,74 @@ def run() -> None:
             )
             st.session_state["menu1_ai_toggle_dirty"] = False
 
-        # ---- Results ----
-        if state.has_results():
-            if st.session_state.get("menu1_ai_toggle_dirty", False):
-                st.info("AI setting changed — click **Search** to refresh results.")
-            else:
+            # After computing, immediately render TABULATIONS ONLY (ai_on=False)
+            if state.has_results():
                 payload = state.get_results()
                 wrap_cls = "pulse-highlight" if st.session_state.get("_focus_results") else ""
                 st.markdown(f"<div class='{wrap_cls}'>", unsafe_allow_html=True)
 
+                # Force AI off for Phase A so tabulations render quickly
+                results.tabs_summary_and_per_q(
+                    payload=payload,
+                    ai_on=False,  # <-- IMPORTANT: render tabulations only now
+                    build_overall_prompt=build_overall_prompt,
+                    build_per_q_prompt=build_per_q_prompt,
+                    call_openai_json=call_openai_json,
+                    source_url=SOURCE_URL,
+                    source_title=SOURCE_TITLE,
+                )
+                st.markdown("</div>", unsafe_allow_html=True)
+
+                # Smooth scroll now that tabulations exist
+                components.html(
+                    """
+                    <script>
+                    (function(){
+                      const d = (window.parent && window.parent.document) ? window.parent.document : document;
+                      const el = d.querySelector('#results-anchor');
+                      if (el) { el.scrollIntoView({behavior:'smooth', block:'start', inline:'nearest'}); }
+                    })();
+                    </script>
+                    """,
+                    height=0, width=0
+                )
+
+                # Clear highlight so it pulses only once
+                if st.session_state.get("_focus_results"):
+                    st.session_state["_focus_results"] = False
+
+                # Move to Phase B and rerun to add AI without re-scrolling
+                st.session_state["_m1_phase"] = "render_ai_if_enabled"
+                st.experimental_rerun()
+            else:
+                # No results; reset phase
+                st.session_state.pop("_m1_phase", None)
+
+        # --- Phase B: add AI summary if toggle is on (no scroll this time) ---
+        if phase == "render_ai_if_enabled" and state.has_results():
+            if st.session_state.get("menu1_ai_toggle_dirty", False):
+                st.info("AI setting changed — click **Search** to refresh results.")
+            else:
+                payload = state.get_results()
+                # Render again with ai_on as per toggle; function will include AI parts
+                results.tabs_summary_and_per_q(
+                    payload=payload,
+                    ai_on=ai_on,  # <-- now we allow AI to render (if toggled on)
+                    build_overall_prompt=build_overall_prompt,
+                    build_per_q_prompt=build_per_q_prompt,
+                    call_openai_json=call_openai_json,
+                    source_url=SOURCE_URL,
+                    source_title=SOURCE_TITLE,
+                )
+            # Clear the phase so subsequent small reruns don't re-render AI repeatedly
+            st.session_state.pop("_m1_phase", None)
+
+        # --- Normal render (no phase active): show whatever is stashed ---
+        if phase is None and state.has_results():
+            if st.session_state.get("menu1_ai_toggle_dirty", False):
+                st.info("AI setting changed — click **Search** to refresh results.")
+            else:
+                payload = state.get_results()
                 results.tabs_summary_and_per_q(
                     payload=payload,
                     ai_on=ai_on,
@@ -277,34 +341,6 @@ def run() -> None:
                     source_url=SOURCE_URL,
                     source_title=SOURCE_TITLE,
                 )
-
-                st.markdown("</div>", unsafe_allow_html=True)
-
-                # Trigger smooth scroll now that content exists (with resilient selector + retries)
-                if st.session_state.pop("_pending_scroll", False):
-                    components.html(
-                        """
-                        <script>
-                        (function(){
-                          const d = (window.parent && window.parent.document) ? window.parent.document : document;
-                          function scrollNow() {
-                            const el = d.querySelector('#results-anchor');
-                            if (el) { el.scrollIntoView({behavior:'smooth', block:'start', inline:'nearest'}); return true; }
-                            return false;
-                          }
-                          // try immediately and a few times in case layout shifts
-                          if (!scrollNow()) { setTimeout(scrollNow, 150); }
-                          setTimeout(scrollNow, 350);
-                          setTimeout(scrollNow, 800);
-                        })();
-                        </script>
-                        """,
-                        height=0, width=0
-                    )
-
-                # Clear the highlight flag so it pulses only once
-                if st.session_state.get("_focus_results"):
-                    st.session_state["_focus_results"] = False
 
 
 if __name__ == "__main__":
