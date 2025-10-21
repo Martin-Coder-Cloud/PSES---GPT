@@ -1,4 +1,4 @@
-# menu1/main.py — two-pass scroll (fixed): anchor lives just below controls; pre-scroll fires there
+# menu1/main.py — robust single-pass scroll to results (downward), with brief highlight
 from __future__ import annotations
 
 import time
@@ -77,11 +77,13 @@ def _clear_keyword_search_state() -> None:
 
 
 def run() -> None:
-    # Scoped CSS
+    # Scoped CSS (button + highlight + anchor offset)
     st.markdown(
         """
         <style>
           .action-row { margin-top: .25rem; margin-bottom: .35rem; }
+
+          /* Solid red for ONLY the Search button inside #menu1-run-btn */
           [data-testid="stAppViewContainer"] .block-container #menu1-run-btn .stButton > button {
             background-color: #e03131 !important;
             color: #ffffff !important;
@@ -99,9 +101,11 @@ def run() -> None:
             background-color: #e03131 !important;
             border-color: #c92a2a !important;
           }
+
+          /* keep reset/clear left-aligned */
           #menu1-reset-btn { text-align: left; }
 
-          /* brief pulse highlight for results after search */
+          /* brief pulse highlight for results */
           @keyframes pulseFade {
             0%   { background: rgba(255, 230, 120, 0.55); }
             100% { background: transparent; }
@@ -110,6 +114,9 @@ def run() -> None:
             animation: pulseFade 1400ms ease-out 1;
             border-radius: 10px;
           }
+
+          /* Make the anchor land a bit below the top bar */
+          #results-anchor { display: block; height: 1px; scroll-margin-top: 96px; }
         </style>
         """,
         unsafe_allow_html=True
@@ -117,6 +124,7 @@ def run() -> None:
 
     left, center, right = layout.centered_page(CENTER_COLUMNS)
     with center:
+        # Header
         layout.banner()
         layout.title("PSES Explorer Search")
         ai_on, show_diag = layout.toggles()
@@ -164,9 +172,8 @@ def run() -> None:
             st.markdown("</div>", unsafe_allow_html=True)
 
             if run_clicked:
-                # Request pre-scroll (handled just below, after the anchor is emitted)
-                st.session_state["_pre_scroll_results"] = True
-                st.experimental_rerun()
+                st.session_state["_focus_results"] = True   # pulse once after render
+                st.session_state["_pending_scroll"] = True  # ask to scroll after render
 
         with colB:
             st.markdown("<div id='menu1-reset-btn'>", unsafe_allow_html=True)
@@ -177,8 +184,7 @@ def run() -> None:
                 st.session_state.pop("menu1_ai_narr_per_q", None)
                 st.session_state.pop("menu1_ai_narr_overall", None)
                 st.session_state.pop("_focus_results", None)
-                st.session_state.pop("_pre_scroll_results", None)
-                st.session_state.pop("_do_results_search", None)
+                st.session_state.pop("_pending_scroll", None)
                 st.session_state.pop("menu1_ai_toggle_dirty", None)
                 try:
                     st.rerun()
@@ -188,31 +194,15 @@ def run() -> None:
 
         st.markdown("</div>", unsafe_allow_html=True)  # end action row
 
-        # ── Anchor lives JUST BELOW the controls; this is where we want to scroll to ──
-        st.markdown("<span id='results-anchor'></span>", unsafe_allow_html=True)
+        # ---- Anchor lives directly ABOVE the results section ----
+        st.markdown("<div id='results-anchor'></div>", unsafe_allow_html=True)
 
-        # If a pre-scroll was requested, fire it RIGHT HERE (downward), then do the real search next run
-        if st.session_state.get("_pre_scroll_results"):
-            components.html(
-                """
-                <script>
-                  const go = () => {
-                    const el = window.parent.document.querySelector('span#results-anchor');
-                    if (el) el.scrollIntoView({behavior:'smooth', block:'start', inline:'nearest'});
-                  };
-                  go(); setTimeout(go, 200); setTimeout(go, 600);
-                </script>
-                """,
-                height=0, width=0
-            )
-            st.session_state["_pre_scroll_results"] = False
-            st.session_state["_do_results_search"] = True
-            st.experimental_rerun()
-
-        # ── Run the actual search after the pre-scroll ──
-        if st.session_state.pop("_do_results_search", False):
-            st.session_state["_focus_results"] = True  # for the highlight
-
+        # Run the actual search + render (unchanged)
+        # Build results only when user clicks, or on subsequent reruns with state still present
+        # (Your existing state.stash_results() drives state.has_results())
+        # If you want to force clearing until click, keep as-is.
+        # Compute new results iff user clicked, else reuse stashed.
+        if run_clicked:
             t0 = time.time()
             per_q_disp: Dict[str, pd.DataFrame] = {}
             per_q_metric_col: Dict[str, str] = {}
@@ -269,7 +259,7 @@ def run() -> None:
             )
             st.session_state["menu1_ai_toggle_dirty"] = False
 
-        # ── Results ──
+        # ---- Results ----
         if state.has_results():
             if st.session_state.get("menu1_ai_toggle_dirty", False):
                 st.info("AI setting changed — click **Search** to refresh results.")
@@ -289,6 +279,30 @@ def run() -> None:
                 )
 
                 st.markdown("</div>", unsafe_allow_html=True)
+
+                # Trigger smooth scroll now that content exists (with resilient selector + retries)
+                if st.session_state.pop("_pending_scroll", False):
+                    components.html(
+                        """
+                        <script>
+                        (function(){
+                          const d = (window.parent && window.parent.document) ? window.parent.document : document;
+                          function scrollNow() {
+                            const el = d.querySelector('#results-anchor');
+                            if (el) { el.scrollIntoView({behavior:'smooth', block:'start', inline:'nearest'}); return true; }
+                            return false;
+                          }
+                          // try immediately and a few times in case layout shifts
+                          if (!scrollNow()) { setTimeout(scrollNow, 150); }
+                          setTimeout(scrollNow, 350);
+                          setTimeout(scrollNow, 800);
+                        })();
+                        </script>
+                        """,
+                        height=0, width=0
+                    )
+
+                # Clear the highlight flag so it pulses only once
                 if st.session_state.get("_focus_results"):
                     st.session_state["_focus_results"] = False
 
