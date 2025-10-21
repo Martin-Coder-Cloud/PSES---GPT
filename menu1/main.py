@@ -6,6 +6,7 @@ from typing import Dict, List, Optional
 
 import pandas as pd
 import streamlit as st
+import streamlit.components.v1 as components  # NEW
 
 # Local modules (relative to the menu1 package)
 from .constants import (
@@ -117,6 +118,16 @@ def run() -> None:
 
           /* Keep the reset/clear button left-aligned; use default theme */
           #menu1-reset-btn { text-align: left; }
+
+          /* NEW: brief pulse highlight for results after search */
+          @keyframes pulseFade {
+            0%   { background: rgba(255, 230, 120, 0.55); }
+            100% { background: transparent; }
+          }
+          .pulse-highlight {
+            animation: pulseFade 1400ms ease-out 1;
+            border-radius: 10px;
+          }
         </style>
         """,
         unsafe_allow_html=True
@@ -173,6 +184,9 @@ def run() -> None:
             st.markdown("</div>", unsafe_allow_html=True)
 
             if run_clicked:
+                # NEW: set one-time focus flag to scroll/highlight results
+                st.session_state["_focus_results"] = True  # NEW
+
                 t0 = time.time()
                 per_q_disp: Dict[str, pd.DataFrame] = {}
                 per_q_metric_col: Dict[str, str] = {}
@@ -246,6 +260,8 @@ def run() -> None:
                 st.session_state.pop("menu1_ai_cache", None)
                 st.session_state.pop("menu1_ai_narr_per_q", None)
                 st.session_state.pop("menu1_ai_narr_overall", None)
+                # Clear results-focus flag
+                st.session_state.pop("_focus_results", None)  # NEW
                 # [AI-toggle gate] Clearing parameters also clears the dirty flag
                 st.session_state.pop("menu1_ai_toggle_dirty", None)
                 # Rerun
@@ -258,12 +274,20 @@ def run() -> None:
         st.markdown("</div>", unsafe_allow_html=True)
 
         # Results (center area)
+        # NEW: drop an anchor immediately above the results
+        st.markdown("<span id='results-anchor'></span>", unsafe_allow_html=True)  # NEW
+
         if state.has_results():
             # [AI-toggle gate] If the AI toggle changed since last Search, do not render results
             if st.session_state.get("menu1_ai_toggle_dirty", False):
                 st.info("AI setting changed — click **Search** to refresh results.")
             else:
                 payload = state.get_results()
+
+                # NEW: wrap results in a temporary highlight container
+                wrap_cls = "pulse-highlight" if st.session_state.get("_focus_results") else ""
+                st.markdown(f"<div class='{wrap_cls}'>", unsafe_allow_html=True)  # NEW
+
                 results.tabs_summary_and_per_q(
                     payload=payload,
                     ai_on=ai_on,
@@ -273,6 +297,21 @@ def run() -> None:
                     source_url=SOURCE_URL,
                     source_title=SOURCE_TITLE,
                 )
+
+                st.markdown("</div>", unsafe_allow_html=True)  # NEW
+
+                # NEW: smooth-scroll once and clear the flag
+                if st.session_state.get("_focus_results"):
+                    components.html(
+                        """
+                        <script>
+                        const el = window.parent.document.querySelector('span#results-anchor');
+                        if (el) { el.scrollIntoView({ behavior: 'smooth', block: 'start' }); }
+                        </script>
+                        """,
+                        height=0, width=0
+                    )
+                    st.session_state["_focus_results"] = False  # clear flag
 
 
 if __name__ == "__main__":
