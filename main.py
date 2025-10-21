@@ -1,98 +1,93 @@
+# main.py — Home-first router; preload on app load; Home-only background
+from __future__ import annotations
+import importlib
+import time
 import streamlit as st
 
-st.set_page_config(layout="wide")
+# ── Make set_page_config idempotent ──────────────────────────────────────────
+if not hasattr(st, "_setpcf_wrapped"):
+    _orig_spc = st.set_page_config
+    def _safe_set_page_config(*args, **kwargs):
+        if st.session_state.get("_page_config_done"):
+            return
+        st.session_state["_page_config_done"] = True
+        return _orig_spc(*args, **kwargs)
+    st.set_page_config = _safe_set_page_config
+    st._setpcf_wrapped = True
 
-# ✅ Helper: show menu and return button
-def show_return_then_run(run_func):
-    run_func()
-    st.markdown("---")
-    if st.button("🔙 Return to Main Menu"):
-        st.session_state.run_menu = None
-        st.experimental_set_query_params()
-        st.experimental_rerun()
+st.set_page_config(page_title="PSES Explorer", layout="wide")
 
-def main():
-    # ✅ Fullscreen background and layout
+# ── Load data loader (optional) ──────────────────────────────────────────────
+_loader_err = ""
+_dl = None
+try:
+    _dl = importlib.import_module("utils.data_loader")
+except Exception as e:
+    _loader_err = f"{type(e).__name__}: {e}"
+
+def _fn(name, default=None):
+    return getattr(_dl, name, default) if _dl else default
+
+prewarm_all              = _fn("prewarm_all")
+get_backend_info         = _fn("get_backend_info")
+preload_pswide_dataframe = _fn("preload_pswide_dataframe")
+get_last_query_diag      = _fn("get_last_query_diag")
+
+# ── Navigation helper ────────────────────────────────────────────────────────
+def goto(page: str):
+    st.session_state["_nav"] = page
+    st.rerun()
+
+# ── Remove hero background for non-Home pages ────────────────────────────────
+def _clear_bg_css():
     st.markdown("""
         <style>
-            html, body {
-                height: 100%;
-                margin: 0;
-                padding: 0;
-            }
             .block-container {
-                padding-top: 100px !important;
-                padding-left: 0px !important;
-                padding-buttom: 100px !important;
-                background-image: url('https://github.com/Martin-Coder-Cloud/PSES---GPT/blob/main/assets/Teams%20Background%20Tablet_EN.png?raw=true');
-                background-size: cover;
-                background-position: center top;
-                background-repeat: no-repeat;
-                background-attachment: fixed;
-                min-height: 100vh;
-                color: white;
-            }
-            .main-section {
-                padding-left: 200px;  /* Shift content to center-left */
-                max-width: 700px;
-            }
-            .main-title {
-                font-size: 42px;
-                font-weight: bold;
-                margin-bottom: 20px;
-                color: white;
-                line-height: 1.2;
-            }
-            .subtitle {
-                font-size: 24px;
-                margin-bottom: 0px;
-                color: white;
-            }
-            .survey-years {
-                font-size: 20px;
-                margin-bottom: 40px;
-                color: white;
-            }
-            .menu-option {
-                font-size: 20px;
-                font-weight: 600;
-                margin: 16px 0;
-                padding: 16px 28px;
-                background-color: rgba(255,255,255,0.12);
-                border-radius: 12px;
-                display: inline-block;
-                text-decoration: none;
-                transition: background 0.3s;
-                color: white !important;
-            }
-            .menu-option:hover {
-                background-color: rgba(255,255,255,0.25);
+                background-image: none !important;
+                background: none !important;
+                color: inherit !important;
+                padding-top: 1.25rem !important;
+                padding-left: 1.25rem !important;
+                padding-bottom: 2rem !important;
             }
         </style>
     """, unsafe_allow_html=True)
 
-    # ✅ Menu routing logic (Menu 1 only)
-    if "run_menu" in st.session_state:
-        selection = st.session_state.run_menu
-    else:
-        params = st.experimental_get_query_params()
-        selection = params.get("menu", [None])[0]
-        if selection:
-            st.session_state.run_menu = selection
+# ── Home ─────────────────────────────────────────────────────────────────────
+def render_home():
+    st.markdown("""
+        <style>
+            .block-container {
+                padding-top: 100px !important;
+                padding-left: 300px !important;
+                padding-bottom: 300px !important;
+                background-image: url('https://github.com/Martin-Coder-Cloud/PSES---GPT/blob/main/assets/Teams%20Background%20Tablet_EN.png?raw=true');
+                background-repeat: no-repeat;
+                background-size: cover;
+                background-position: center top;
+                color: white;
+            }
+            .main-section { margin-left: 200px; max-width: 820px; text-align: left; }
+            .main-title { font-size: 42px; font-weight: 800; margin-bottom: 16px; }
+            .subtitle { font-size: 22px; line-height: 1.4; margin-bottom: 18px; opacity: 0.95; max-width: 700px; }
+            .context { font-size: 18px; line-height: 1.55; margin-top: 8px; margin-bottom: 36px; opacity: 0.95; max-width: 700px; text-align: left; }
+            .single-button { display: flex; flex-direction: column; gap: 16px; }
+            div.stButton > button {
+                background-color: rgba(255,255,255,0.08) !important; color: white !important;
+                border: 2px solid rgba(255, 255, 255, 0.35) !important;
+                font-size: 30px !important; font-weight: 700 !important;
+                padding: 26px 34px !important; width: 420px !important; min-height: 88px !important;
+                border-radius: 14px !important; text-align: left !important; backdrop-filter: blur(2px);
+            }
+            div.stButton > button:hover { border-color: white !important; background-color: rgba(255, 255, 255, 0.14) !important; }
+            .main-section a { color: #fff !important; text-decoration: underline; }
+        </style>
+    """, unsafe_allow_html=True)
 
-    if "run_menu" in st.session_state:
-        if st.session_state.run_menu == "1":
-            from menu1.main import run_menu1
-            show_return_then_run(run_menu1)
-        return
-
-    # ✅ Render landing content
     st.markdown("<div class='main-section'>", unsafe_allow_html=True)
-    st.markdown("<div class='main-title'>Welcome to the AI Explorer of the Public Service Employee Survey (PSES)</div>", unsafe_allow_html=True)
-    # Subtitle intentionally removed
-    st.markdown("<div class='survey-years'>(2019, 2020, 2022, and 2024)</div>", unsafe_allow_html=True)
-
-    # 🔹 New intro + semantic search + concise results text (PS-wide only)
+    st.markdown("<div class='main-title'>Welcome to the AI-powered Explorer of the Public Service Employee Survey (PSES)</div>", unsafe_allow_html=True)
+    st.markdown("<div class='subtitle'>This app provides Public Service-wide survey results and analysis for the previous 4 survey cycles (2019, 2020, 2022, and 2024)</div>", unsafe_allow_html=True)
+     # 🔹 New intro + semantic search + results text (PS-wide only)
     st.markdown("""
         <div style="font-size:18px; line-height:1.6;">
           <p>
@@ -116,12 +111,67 @@ def main():
         </div>
     """, unsafe_allow_html=True)
 
-    # 🔹 Single entry point (legacy menu links removed)
+    st.markdown("<div class='single-button'>", unsafe_allow_html=True)
+    if st.button("▶️ Start your search", key="menu_start_button"):
+        # Set nonce ONCE at navigation time (no nonce changes inside Menu 1)
+        st.session_state["menu1_mount_nonce"] = time.time()
+        goto("menu1")
+    st.markdown("</div>", unsafe_allow_html=True)
+
     st.markdown(
-        f"<a class='menu-option' href='?menu=1'>🔍 Search the Survey Results</a>",
+        "<div class='context'>"
+        "<a href='https://www.canada.ca/en/treasury-board-secretariat/services/innovation/public-service-employee-survey.html' target='_blank'>"
+        "Public Service Employee Survey - Canada.ca</a>"
+        "</div>",
         unsafe_allow_html=True
     )
-    st.markdown("</div>", unsafe_allow_html=True)
+
+# ── Menus ────────────────────────────────────────────────────────────────────
+def render_menu1():
+    _clear_bg_css()
+    try:
+        from menu1.main import run_menu1
+        run_menu1()
+    except Exception as e:
+        st.error(f"Menu 1 is unavailable: {type(e).__name__}: {e}")
+    st.markdown("---")
+    if st.button("🔙 Return to Main Menu"):
+        goto("home")
+
+def render_menu2():
+    _clear_bg_css()
+    try:
+        from menu2.main import run_menu2
+        run_menu2()
+    except Exception as e:
+        st.error(f"Menu 2 is unavailable: {type(e).__name__}: {e}")
+    st.markdown("---")
+    if st.button("🔙 Return to Main Menu", key="back2"):
+        goto("home")
+
+# ── Entry ────────────────────────────────────────────────────────────────────
+def main():
+    if "run_menu" in st.session_state:
+        st.session_state.pop("run_menu")
+
+    if prewarm_all:
+        if not st.session_state.get("_prewarmed", False):
+            with st.spinner("Preparing data backend (one-time)…"):
+                prewarm_all()
+            st.session_state["_prewarmed"] = True
+        else:
+            prewarm_all()
+
+    if "_nav" not in st.session_state:
+        st.session_state["_nav"] = "home"
+
+    page = st.session_state["_nav"]
+    if page == "menu1":
+        render_menu1()
+    elif page == "menu2":
+        render_menu2()
+    else:
+        render_home()
 
 if __name__ == "__main__":
     main()
