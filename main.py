@@ -1,156 +1,173 @@
+# main.py — Home-first router; preload on app load; Home-only background
+from __future__ import annotations
+import importlib
+import time
 import streamlit as st
 
-st.set_page_config(layout="wide")
+# ── Make set_page_config idempotent ──────────────────────────────────────────
+if not hasattr(st, "_setpcf_wrapped"):
+    _orig_spc = st.set_page_config
+    def _safe_set_page_config(*args, **kwargs):
+        if st.session_state.get("_page_config_done"):
+            return
+        st.session_state["_page_config_done"] = True
+        return _orig_spc(*args, **kwargs)
+    st.set_page_config = _safe_set_page_config
+    st._setpcf_wrapped = True
 
-# ✅ Helper: show menu and return button
-def show_return_then_run(run_func):
-    run_func()
-    st.markdown("---")
-    if st.button("🔙 Return to Main Menu"):
-        st.session_state.run_menu = None
-        st.experimental_set_query_params()
-        st.experimental_rerun()
+st.set_page_config(page_title="PSES Explorer", layout="wide")
 
-def main():
-    # ✅ Fullscreen background and layout (fixed bottom padding typo; added box-sizing)
+# ── Load data loader (optional) ──────────────────────────────────────────────
+_loader_err = ""
+_dl = None
+try:
+    _dl = importlib.import_module("utils.data_loader")
+except Exception as e:
+    _loader_err = f"{type(e).__name__}: {e}"
+
+def _fn(name, default=None):
+    return getattr(_dl, name, default) if _dl else default
+
+prewarm_all              = _fn("prewarm_all")
+get_backend_info         = _fn("get_backend_info")
+preload_pswide_dataframe = _fn("preload_pswide_dataframe")
+get_last_query_diag      = _fn("get_last_query_diag")
+
+# ── Navigation helper ────────────────────────────────────────────────────────
+def goto(page: str):
+    st.session_state["_nav"] = page
+    st.rerun()
+
+# ── Remove hero background for non-Home pages ────────────────────────────────
+def _clear_bg_css():
     st.markdown("""
         <style>
-            html, body { height: 100%; margin: 0; padding: 0; }
-            .block-container, .block-container * { box-sizing: border-box; }
             .block-container {
-                padding-top: 100px !important;
-                padding-left: 0 !important;
-                padding-bottom: 100px !important;  /* fixed spelling */
-                background-image: url('https://github.com/Martin-Coder-Cloud/PSES---GPT/blob/main/assets/Teams%20Background%20Tablet_EN.png?raw=true');
-                background-size: cover;
-                background-position: center top;
-                background-repeat: no-repeat;
-                background-attachment: fixed;
-                min-height: 100vh;
-                color: white;
-            }
-
-            /* Title centered across the page */
-            .hero-title, .survey-years { text-align: center; width: 100%; }
-            .main-title {
-                font-size: 42px;
-                font-weight: bold;
-                margin-bottom: 12px;
-                color: white;
-                line-height: 1.2;
-            }
-            .survey-years {
-                font-size: 20px;
-                margin-bottom: 28px;
-                color: white;
-            }
-
-            /* Left-centered content column that never crosses mid-screen */
-            .landing-container {
-                /* nudge off the hard left and cap width so it stays in the clear zone */
-                margin-left: 200px;                 /* same offset you liked originally */
-                max-width: 560px;                   /* hard cap: prevents overflow into busy right side */
-            }
-
-            /* Clean, unboxed text wrapper — remove translucent backgrounds to avoid artifacts */
-            .intro-text {
-                font-size: 18px;
-                line-height: 1.6;
-                word-wrap: break-word;
-                overflow-wrap: break-word;
-                margin-bottom: 14px;
-            }
-            .intro-text p { margin: 0 0 14px 0; }
-
-            /* Primary button styling (unchanged label) */
-            div.stButton > button {
-                background: rgba(255, 255, 255, 0.15) !important;
-                color: #ffffff !important;
-                border: 2px solid rgba(255, 255, 255, 0.6) !important;
-                font-size: 22px !important;
-                font-weight: 700 !important;
-                padding: 14px 24px !important;
-                border-radius: 14px !important;
-                box-shadow: 0 6px 18px rgba(0,0,0,0.25) !important;
-                min-width: 260px;
-            }
-            div.stButton > button:hover {
-                background: rgba(255, 255, 255, 0.25) !important;
-                border-color: #ffffff !important;
-                box-shadow: 0 8px 22px rgba(0,0,0,0.35) !important;
-            }
-
-            /* Responsive nudges: keep text left and narrow on smaller screens */
-            @media (max-width: 1100px) {
-                .landing-container { margin-left: 140px; max-width: 540px; }
-            }
-            @media (max-width: 900px) {
-                .landing-container { margin-left: 80px; max-width: 54ch; }
-            }
-            @media (max-width: 700px) {
-                .landing-container { margin-left: 24px; max-width: 56ch; }
+                background-image: none !important;
+                background: none !important;
+                color: inherit !important;
+                padding-top: 1.25rem !important;
+                padding-left: 1.25rem !important;
+                padding-bottom: 2rem !important;
             }
         </style>
     """, unsafe_allow_html=True)
 
-    # ✅ Menu routing logic (unchanged)
-    if "run_menu" in st.session_state:
-        selection = st.session_state.run_menu
-    else:
-        params = st.experimental_get_query_params()
-        selection = params.get("menu", [None])[0]
-        if selection:
-            st.session_state.run_menu = selection
-
-    if "run_menu" in st.session_state:
-        if st.session_state.run_menu == "1":
-            from menu1.main import run_menu1
-            show_return_then_run(run_menu1)
-        elif st.session_state.run_menu == "2":
-            from menu2.main import run_menu2
-            show_return_then_run(run_menu2)
-        elif st.session_state.run_menu == "3":
-            show_return_then_run(lambda: st.info("📊 Analyze Data is under construction."))
-        elif st.session_state.run_menu == "4":
-            show_return_then_run(lambda: st.info("📋 View Questionnaire is under construction."))
-        return
-
-    # ✅ Title centered
-    st.markdown("<div class='hero-title'><div class='main-title'>Welcome to the AI Explorer of the Public Service Employee Survey (PSES)</div></div>", unsafe_allow_html=True)
-    st.markdown("<div class='survey-years'>(2019, 2020, 2022, and 2024)</div>", unsafe_allow_html=True)
-
-    # ✅ Intro text kept to a boxed width and left offset
-    st.markdown("<div class='landing-container'>", unsafe_allow_html=True)
-
-    # (TEXT BELOW IS UNCHANGED — only layout around it is updated)
+# ── Home ─────────────────────────────────────────────────────────────────────
+def render_home():
     st.markdown("""
-        <div class="intro-text">
-          <p>
-            The <strong>PSES AI Explorer</strong> is an interactive tool designed to help users navigate, analyze, and interpret the
-            <a href="https://www.canada.ca/en/treasury-board-secretariat/services/innovation/public-service-employee-survey.html" target="_blank" style="color:#fff; text-decoration: underline;">
-              Public Service Employee Survey (PSES)
-            </a>
-            results from <strong>2019 to 2024</strong>. It combines open data with AI-assisted insights to help identify trends, challenges,
-            and opportunities for action across the federal public service.
-          </p>
-          <p>
-            A key feature of the PSES AI Explorer is its <strong>AI-powered questionnaire search</strong>. Using <strong>semantic search</strong>,
-            the system goes beyond simple keyword matching to understand the meaning and context of a query. It recognizes related concepts and phrasing,
-            helping you find questions that reflect the same ideas even when the wording differs.
-          </p>
-          <p>
-            Once a question is selected, you can explore results by <strong>year</strong> and <strong>demographic group</strong> through a simple, guided interface.
-            Results are presented in a standardized format with summary percentages and a brief AI-generated narrative highlighting the main trends.
-          </p>
-          <p><em>Together, these features make the PSES AI Explorer a powerful, user-friendly platform for transforming survey data into actionable insights.</em></p>
-        </div>
+        <style>
+            .block-container {
+                padding-top: 100px !important;
+                padding-left: 300px !important;
+                padding-bottom: 300px !important;
+                background-image: url('https://github.com/Martin-Coder-Cloud/PSES---GPT/blob/main/assets/Teams%20Background%20Tablet_EN.png?raw=true');
+                background-repeat: no-repeat;
+                background-size: cover;
+                background-position: center top;
+                color: white;
+            }
+            .main-section { margin-left: 200px; max-width: 820px; text-align: left; }
+            .main-title { font-size: 42px; font-weight: 800; margin-bottom: 16px; }
+            .subtitle { font-size: 22px; line-height: 1.4; margin-bottom: 18px; opacity: 0.95; max-width: 700px; }
+            .context { font-size: 18px; line-height: 1.55; margin-top: 8px; margin-bottom: 36px; opacity: 0.95; max-width: 700px; text-align: left; }
+            .single-button { display: flex; flex-direction: column; gap: 16px; }
+            div.stButton > button {
+                background-color: rgba(255,255,255,0.08) !important; color: white !important;
+                border: 2px solid rgba(255, 255, 255, 0.35) !important;
+                font-size: 30px !important; font-weight: 700 !important;
+                padding: 26px 34px !important; width: 420px !important; min-height: 88px !important;
+                border-radius: 14px !important; text-align: left !important; backdrop-filter: blur(2px);
+            }
+            div.stButton > button:hover { border-color: white !important; background-color: rgba(255, 255, 255, 0.14) !important; }
+            .main-section a { color: #fff !important; text-decoration: underline; }
+        </style>
     """, unsafe_allow_html=True)
 
-    if st.button("Start your search", key="start_search"):
-        st.session_state.run_menu = "1"
-        st.experimental_rerun()
+    st.markdown("<div class='main-section'>", unsafe_allow_html=True)
+    st.markdown("<div class='main-title'>Welcome to the AI-powered Explorer of the Public Service Employee Survey (PSES)</div>", unsafe_allow_html=True)
+    st.markdown("<div class='subtitle'>This app provides Public Service-wide survey results and analysis for the previous 4 survey cycles (2019, 2020, 2022, and 2024)</div>", unsafe_allow_html=True)
+    st.markdown(
+        """
+        <div class='context'>
+        <p>
+        The <strong>PSES AI Explorer</strong> is an interactive tool designed to help users navigate, analyze, and interpret the
+        <a href='https://www.canada.ca/en/treasury-board-secretariat/services/innovation/public-service-employee-survey.html' target='_blank'>Public Service Employee Survey (PSES)</a>
+        results from <strong>2019 to 2024</strong>. It combines open data with AI-assisted insights to help identify trends, challenges, and opportunities for action across the federal public service.
+        </p>
+        <p>
+        A key feature of the PSES AI Explorer is its <strong>AI-powered questionnaire search</strong>. Using <strong>semantic search</strong>, the system goes beyond simple keyword matching to understand the meaning and context of a query. It recognizes related concepts and phrasing, helping you find questions that reflect the same ideas even when the wording differs.
+        </p>
+        <p>
+        Once a question is selected, you can explore results by <strong>year</strong> and <strong>demographic group</strong> through a simple, guided interface. Results are presented in a standardized format with summary percentages and a brief AI-generated narrative highlighting the main trends.
+        </p>
+        <p><em>Together, these features make the PSES AI Explorer a powerful, user-friendly platform for transforming survey data into actionable insights.</em></p>
+        </div>
+        """,
+        unsafe_allow_html=True
+    )
 
-    st.markdown("</div>", unsafe_allow_html=True)  # close .landing-container
+    st.markdown("<div class='single-button'>", unsafe_allow_html=True)
+    if st.button("▶️ Start your search", key="menu_start_button"):
+        # Set nonce ONCE at navigation time (no nonce changes inside Menu 1)
+        st.session_state["menu1_mount_nonce"] = time.time()
+        goto("menu1")
+    st.markdown("</div>", unsafe_allow_html=True)
+
+    st.markdown(
+        "<div class='context'>"
+        "<a href='https://www.canada.ca/en/treasury-board-secretariat/services/innovation/public-service-employee-survey.html' target='_blank'>"
+        "Public Service Employee Survey - Canada.ca</a>"
+        "</div>",
+        unsafe_allow_html=True
+    )
+
+# ── Menus ────────────────────────────────────────────────────────────────────
+def render_menu1():
+    _clear_bg_css()
+    try:
+        from menu1.main import run_menu1
+        run_menu1()
+    except Exception as e:
+        st.error(f"Menu 1 is unavailable: {type(e).__name__}: {e}")
+    st.markdown("---")
+    if st.button("🔙 Return to Main Menu"):
+        goto("home")
+
+def render_menu2():
+    _clear_bg_css()
+    try:
+        from menu2.main import run_menu2
+        run_menu2()
+    except Exception as e:
+        st.error(f"Menu 2 is unavailable: {type(e).__name__}: {e}")
+    st.markdown("---")
+    if st.button("🔙 Return to Main Menu", key="back2"):
+        goto("home")
+
+# ── Entry ────────────────────────────────────────────────────────────────────
+def main():
+    if "run_menu" in st.session_state:
+        st.session_state.pop("run_menu")
+
+    if prewarm_all:
+        if not st.session_state.get("_prewarmed", False):
+            with st.spinner("Preparing data backend (one-time)…"):
+                prewarm_all()
+            st.session_state["_prewarmed"] = True
+        else:
+            prewarm_all()
+
+    if "_nav" not in st.session_state:
+        st.session_state["_nav"] = "home"
+
+    page = st.session_state["_nav"]
+    if page == "menu1":
+        render_menu1()
+    elif page == "menu2":
+        render_menu2()
+    else:
+        render_home()
 
 if __name__ == "__main__":
     main()
