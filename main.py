@@ -3,6 +3,7 @@ from __future__ import annotations
 import importlib
 import time
 import streamlit as st
+import streamlit.components.v1 as components  # ← NEW: for scroll-to-top on Home
 
 # ── Make set_page_config idempotent ──────────────────────────────────────────
 if not hasattr(st, "_setpcf_wrapped"):
@@ -36,7 +37,10 @@ get_last_query_diag      = _fn("get_last_query_diag")
 # ── Navigation helper ────────────────────────────────────────────────────────
 def goto(page: str):
     st.session_state["_nav"] = page
-    st.rerun()
+    try:
+        st.rerun()
+    except Exception:
+        st.experimental_rerun()
 
 # ── Remove hero background for non-Home pages ────────────────────────────────
 def _clear_bg_css():
@@ -55,6 +59,18 @@ def _clear_bg_css():
 
 # ── Home ─────────────────────────────────────────────────────────────────────
 def render_home():
+    # Scroll to top exactly once after navigating back from Menu 1
+    if st.session_state.pop("_scroll_top_home", False):
+        components.html(
+            """
+            <script>
+              try { (window.parent || window).scrollTo({ top: 0, left: 0, behavior: 'smooth' }); }
+              catch(e) { window.scrollTo(0,0); }
+            </script>
+            """,
+            height=0, width=0
+        )
+
     st.markdown("""
         <style>
             .block-container {
@@ -69,9 +85,9 @@ def render_home():
             }
             .main-section { margin-left: 200px; max-width: 820px; text-align: left; }
             .main-title { font-size: 42px; font-weight: 800; margin-bottom: 16px; }
-            /* subtitle style left as-is but not used */
+            /* subtitle style retained but not used */
             .subtitle { font-size: 22px; line-height: 1.4; margin-bottom: 18px; opacity: 0.95; max-width: 700px; }
-            /* ↑ Only change here: increase font-size from 18px → 20px for body text */
+            /* Body text larger for readability */
             .context { font-size: 20px; line-height: 1.6; margin-top: 8px; margin-bottom: 36px; opacity: 0.95; max-width: 700px; text-align: left; }
             .single-button { display: flex; flex-direction: column; gap: 16px; }
 
@@ -121,7 +137,6 @@ def render_home():
 
     st.markdown("<div class='single-button'>", unsafe_allow_html=True)
     if st.button("▶️ Start your search", key="menu_start_button"):
-        # Set nonce ONCE at navigation time (no nonce changes inside Menu 1)
         st.session_state["menu1_mount_nonce"] = time.time()
         goto("menu1")
     st.markdown("</div>", unsafe_allow_html=True)
@@ -135,12 +150,13 @@ def render_menu1():
     except Exception as e:
         st.error(f"Menu 1 is unavailable: {type(e).__name__}: {e}")
     st.markdown("---")
-    if st.button("🔙 Return to Main Menu"):
+    # Renamed button + set one-time scroll-to-top flag
+    if st.button("🔙 Return to Home Page", key="back_home_btn"):
+        st.session_state["_scroll_top_home"] = True   # ← ensures we scroll to top when Home renders
         goto("home")
 
 # ── Entry ────────────────────────────────────────────────────────────────────
 def main():
-    # Clean up legacy state key from older builds (multi-menu)
     if "run_menu" in st.session_state:
         st.session_state.pop("run_menu")
 
