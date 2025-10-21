@@ -87,29 +87,16 @@ def render_home():
     st.markdown("<div class='main-section'>", unsafe_allow_html=True)
     st.markdown("<div class='main-title'>Welcome to the AI-powered Explorer of the Public Service Employee Survey (PSES)</div>", unsafe_allow_html=True)
     st.markdown("<div class='subtitle'>This app provides Public Service-wide survey results and analysis for the previous 4 survey cycles (2019, 2020, 2022, and 2024)</div>", unsafe_allow_html=True)
-     # 🔹 New intro + semantic search + results text (PS-wide only)
-    st.markdown("""
-        <div style="font-size:18px; line-height:1.6;">
-          <p>
-            The <strong>PSES AI Explorer</strong> is an interactive tool designed to help users navigate, analyze, and interpret the
-            <strong>Public Service Employee Survey (PSES)</strong> results from <strong>2019 to 2024</strong>.
-            It combines open data with AI-assisted insights to help identify trends, challenges, and opportunities for action across the federal public service.
-          </p>
-
-          <p>
-            A key feature of the PSES AI Explorer is its <strong>AI-powered questionnaire search</strong>. Using <strong>semantic search</strong>,
-            the system goes beyond simple keyword matching to understand the meaning and context of a query. It recognizes related concepts and phrasing,
-            helping you find questions that reflect the same ideas even when the wording differs.
-          </p>
-
-          <p>
-            Once a question is selected, you can explore results by <strong>year</strong> and <strong>demographic group</strong> through a simple, guided interface.
-            Results are presented in a standardized format with summary percentages and a brief AI-generated narrative highlighting the main trends.
-          </p>
-
-          <p><em>Together, these features make the PSES AI Explorer a powerful, user-friendly platform for transforming survey data into actionable insights.</em></p>
+    st.markdown(
+        """
+        <div class='context'>
+        The 2024 Public Service Employee Survey (PSES) helps departments and agencies strengthen people management by highlighting areas such as employee engagement, equity and inclusion, anti-racism, and workplace well-being. It provides employees with a voice to share their experiences, supporting workplace improvements that benefit both public servants and Canadians. Results are tracked over time to guide and refine organizational action plans.
+        <br><br>
+        Each survey cycle combines recurring questions for trend analysis with new ones to reflect emerging priorities. In 2024, Employment Equity demographics were updated to advance diversity and inclusion, and hybrid work questions were streamlined to stay relevant post-pandemic. Statistics Canada, in partnership with the Office of the Chief Human Resources Officer, ran the survey from October 28 to December 31, 2024. The PSES will continue on a two-year cycle.
         </div>
-    """, unsafe_allow_html=True)
+        """,
+        unsafe_allow_html=True
+    )
 
     st.markdown("<div class='single-button'>", unsafe_allow_html=True)
     if st.button("▶️ Start your search", key="menu_start_button"):
