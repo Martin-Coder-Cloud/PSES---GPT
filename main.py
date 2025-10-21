@@ -72,24 +72,34 @@ def render_home():
             .subtitle { font-size: 22px; line-height: 1.4; margin-bottom: 18px; opacity: 0.95; max-width: 700px; }
             .context { font-size: 18px; line-height: 1.55; margin-top: 8px; margin-bottom: 36px; opacity: 0.95; max-width: 700px; text-align: left; }
             .single-button { display: flex; flex-direction: column; gap: 16px; }
+
+            /* Make START button more prominent */
             div.stButton > button {
-                background-color: rgba(255,255,255,0.08) !important; color: white !important;
-                border: 2px solid rgba(255, 255, 255, 0.35) !important;
-                font-size: 30px !important; font-weight: 700 !important;
-                padding: 26px 34px !important; width: 420px !important; min-height: 88px !important;
-                border-radius: 14px !important; text-align: left !important; backdrop-filter: blur(2px);
+                background: linear-gradient(90deg, rgba(255,255,255,0.22), rgba(255,255,255,0.10)) !important;
+                color: #ffffff !important;
+                border: 2px solid rgba(255, 255, 255, 0.8) !important;
+                font-size: 32px !important; font-weight: 800 !important;
+                padding: 28px 36px !important; width: 480px !important; min-height: 92px !important;
+                border-radius: 16px !important; text-align: left !important; backdrop-filter: blur(3px);
+                box-shadow: 0 10px 28px rgba(0,0,0,0.35) !important;
             }
-            div.stButton > button:hover { border-color: white !important; background-color: rgba(255, 255, 255, 0.14) !important; }
-            .main-section a { color: #fff !important; text-decoration: underline; }
+            div.stButton > button:hover {
+                background: rgba(255,255,255,0.28) !important;
+                border-color: #ffffff !important;
+                box-shadow: 0 14px 36px rgba(0,0,0,0.45) !important;
+                transform: translateY(-1px);
+            }
         </style>
     """, unsafe_allow_html=True)
 
     st.markdown("<div class='main-section'>", unsafe_allow_html=True)
     st.markdown("<div class='main-title'>Welcome to the AI-powered Explorer of the Public Service Employee Survey (PSES)</div>", unsafe_allow_html=True)
     st.markdown("<div class='subtitle'>This app provides Public Service-wide survey results and analysis for the previous 4 survey cycles (2019, 2020, 2022, and 2024)</div>", unsafe_allow_html=True)
+
+    # Widened intro text (from 560px → 680px)
     st.markdown(
         """
-        <div class='context' style='max-width:560px; width:100%;'>
+        <div class='context' style='max-width:680px; width:100%;'>
         <p>
         The <strong>PSES AI Explorer</strong> is an interactive tool designed to help users navigate, analyze, and interpret the
         <a href='https://www.canada.ca/en/treasury-board-secretariat/services/innovation/public-service-employee-survey.html' target='_blank'>Public Service Employee Survey (PSES)</a>
@@ -114,15 +124,9 @@ def render_home():
         goto("menu1")
     st.markdown("</div>", unsafe_allow_html=True)
 
-    st.markdown(
-        "<div class='context'>"
-        "<a href='https://www.canada.ca/en/treasury-board-secretariat/services/innovation/public-service-employee-survey.html' target='_blank'>"
-        "Public Service Employee Survey - Canada.ca</a>"
-        "</div>",
-        unsafe_allow_html=True
-    )
+    # (Removed the external link block below the Start button)
 
-# ── Menus ────────────────────────────────────────────────────────────────────
+# ── Menu 1 only ──────────────────────────────────────────────────────────────
 def render_menu1():
     _clear_bg_css()
     try:
@@ -134,19 +138,9 @@ def render_menu1():
     if st.button("🔙 Return to Main Menu"):
         goto("home")
 
-def render_menu2():
-    _clear_bg_css()
-    try:
-        from menu2.main import run_menu2
-        run_menu2()
-    except Exception as e:
-        st.error(f"Menu 2 is unavailable: {type(e).__name__}: {e}")
-    st.markdown("---")
-    if st.button("🔙 Return to Main Menu", key="back2"):
-        goto("home")
-
 # ── Entry ────────────────────────────────────────────────────────────────────
 def main():
+    # Clean up legacy state key from older builds (multi-menu)
     if "run_menu" in st.session_state:
         st.session_state.pop("run_menu")
 
@@ -164,8 +158,6 @@ def main():
     page = st.session_state["_nav"]
     if page == "menu1":
         render_menu1()
-    elif page == "menu2":
-        render_menu2()
     else:
         render_home()
 
