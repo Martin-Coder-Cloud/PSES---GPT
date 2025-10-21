@@ -24,7 +24,7 @@ PARQUET_FLAG = os.path.join(PARQUET_ROOTDIR, "_BUILD_OK")
 # Output schema (normalized)
 OUT_COLS = [
     "year", "question_code", "group_value", "n",
-    "positive_pct", "neutral_pct", "negative_pct",
+    "positive_pct", "neutral_pct", "negative_pct", "agree_pct",
     "answer1", "answer2", "answer3", "answer4", "answer5", "answer6", "answer7",
 ]
 
@@ -36,6 +36,7 @@ DTYPES = {
     "positive_pct": "Float32",
     "neutral_pct": "Float32",
     "negative_pct": "Float32",
+    "agree_pct": "Float32",
     "answer1": "Float32", "answer2": "Float32", "answer3": "Float32",
     "answer4": "Float32", "answer5": "Float32", "answer6": "Float32", "answer7": "Float32",
 }
@@ -44,7 +45,7 @@ DTYPES = {
 CSV_USECOLS = [
     "LEVEL1ID",  # may be missing in some exports; handled defensively
     "SURVEYR", "QUESTION", "DEMCODE",
-    "ANSCOUNT", "POSITIVE", "NEUTRAL", "NEGATIVE",
+    "ANSCOUNT", "POSITIVE", "NEUTRAL", "NEGATIVE", "AGREE",
     "answer1", "answer2", "answer3", "answer4", "answer5", "answer6", "answer7",
 ]
 
@@ -166,7 +167,7 @@ def _normalize_df_types(df: pd.DataFrame) -> pd.DataFrame:
     # year/numeric columns
     df["year"] = pd.to_numeric(df["year"], errors="coerce").astype(DTYPES["year"])
     df["n"]    = pd.to_numeric(df["n"], errors="coerce").astype(DTYPES["n"])
-    for c in ["positive_pct","neutral_pct","negative_pct",
+    for c in ["positive_pct","neutral_pct","negative_pct","agree_pct",
               "answer1","answer2","answer3","answer4","answer5","answer6","answer7"]:
         df[c] = pd.to_numeric(df[c], errors="coerce").astype(DTYPES[c])
 
@@ -210,6 +211,7 @@ def _build_parquet_with_duckdb(csv_path: str) -> None:
           CAST(POSITIVE AS DOUBLE)                                     AS positive_pct,
           CAST(NEUTRAL  AS DOUBLE)                                     AS neutral_pct,
           CAST(NEGATIVE AS DOUBLE)                                     AS negative_pct,
+          CAST(AGREE    AS DOUBLE)                                     AS agree_pct,
           CAST(answer1  AS DOUBLE) AS answer1,
           CAST(answer2  AS DOUBLE) AS answer2,
           CAST(answer3  AS DOUBLE) AS answer3,
@@ -256,6 +258,7 @@ def _build_parquet_with_pandas(csv_path: str) -> None:
         "positive_pct":  pd.to_numeric(df["POSITIVE"], errors="coerce"),
         "neutral_pct":   pd.to_numeric(df["NEUTRAL"],  errors="coerce"),
         "negative_pct":  pd.to_numeric(df["NEGATIVE"], errors="coerce"),
+        "agree_pct":     pd.to_numeric(df.get("AGREE"), errors="coerce"),
         "answer1": pd.to_numeric(df.get("answer1"), errors="coerce"),
         "answer2": pd.to_numeric(df.get("answer2"), errors="coerce"),
         "answer3": pd.to_numeric(df.get("answer3"), errors="coerce"),
@@ -424,6 +427,7 @@ def preload_pswide_dataframe() -> pd.DataFrame:
                 "positive_pct":  pd.to_numeric(sel["POSITIVE"], errors="coerce"),
                 "neutral_pct":   pd.to_numeric(sel["NEUTRAL"],  errors="coerce"),
                 "negative_pct":  pd.to_numeric(sel["NEGATIVE"], errors="coerce"),
+                "agree_pct":     pd.to_numeric(sel.get("AGREE"), errors="coerce"),
                 "answer1": pd.to_numeric(sel.get("answer1"), errors="coerce"),
                 "answer2": pd.to_numeric(sel.get("answer2"), errors="coerce"),
                 "answer3": pd.to_numeric(sel.get("answer3"), errors="coerce"),
@@ -513,6 +517,7 @@ def _csv_stream_filter(
                 "positive_pct":  pd.to_numeric(sel["POSITIVE"], errors="coerce"),
                 "neutral_pct":   pd.to_numeric(sel["NEUTRAL"],  errors="coerce"),
                 "negative_pct":  pd.to_numeric(sel["NEGATIVE"], errors="coerce"),
+                "agree_pct":     pd.to_numeric(sel.get("AGREE"), errors="coerce"),
                 "answer1": pd.to_numeric(sel.get("answer1"), errors="coerce"),
                 "answer2": pd.to_numeric(sel.get("answer2"), errors="coerce"),
                 "answer3": pd.to_numeric(sel.get("answer3"), errors="coerce"),
