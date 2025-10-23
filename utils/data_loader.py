@@ -4,7 +4,7 @@ from __future__ import annotations
 import os
 import time
 import shutil
-from typing import Iterable, Optional
+from typing import Iterable, Optional, Sequence
 
 import pandas as pd
 import streamlit as st
@@ -54,6 +54,7 @@ CSV_USECOLS = [
 # =============================================================================
 _LAST_DIAG: dict = {}
 _LAST_ENGINE: str = "unknown"
+_AGREE_SRC: Optional[str] = None  # detected CSV header used for agree_pct (e.g., "AGREE" or "AGREE_PCT")
 
 def _set_diag(**kwargs):
     _LAST_DIAG.clear()
@@ -103,6 +104,51 @@ def ensure_results2024_local(file_id: Optional[str] = None) -> str:
     return LOCAL_GZ_PATH
 
 # =============================================================================
+# Agree header detection
+# =============================================================================
+def _detect_agree_header(csv_path: str) -> Optional[str]:
+    """
+    Detect the Agree-like column name in the CSV header.
+    Returns the first match among common variants; else None.
+    """
+    try:
+        cols = pd.read_csv(csv_path, compression="gzip", nrows=0).columns.tolist()
+    except Exception:
+        return None
+    # Build a case-insensitive lookup
+    lower_map = {c.lower(): c for c in cols}
+
+    # Preferred matches (first wins)
+    candidates = [
+        "agree", "agree_pct", "agree pct", "agreepercent", "pct_agree"
+    ]
+    for key in candidates:
+        if key in lower_map:
+            return lower_map[key]
+    return None
+
+def _with_agree_in_usecols(base: Sequence[str], csv_path: str) -> list[str]:
+    """
+    Return a copy of base usecols with the detected Agree header added if present.
+    """
+    agree_col = _detect_agree_header(csv_path)
+    # update module-level diagnostic source
+    global _AGREE_SRC
+    _AGREE_SRC = agree_col
+    s = {c for c in base}
+    if agree_col:
+        s.add(agree_col)
+    return list(s)
+
+def _csv_has_level1id(csv_path: str) -> bool:
+    """Peek header to see if LEVEL1ID exists (robust for DuckDB path)."""
+    try:
+        cols = pd.read_csv(csv_path, compression="gzip", nrows=0).columns
+        return "LEVEL1ID" in cols
+    except Exception:
+        return False
+
+# =============================================================================
 # Canonicalization helpers
 # =============================================================================
 def _canon_demcode_series(s: pd.Series) -> pd.Series:
@@ -141,16 +187,8 @@ def _canon_demcode_value(v: Optional[str]) -> Optional[str]:
     return s
 
 # =============================================================================
-# Helpers
+# Type normalization
 # =============================================================================
-def _csv_has_level1id(csv_path: str) -> bool:
-    """Peek header to see if LEVEL1ID exists (robust for DuckDB path)."""
-    try:
-        cols = pd.read_csv(csv_path, compression="gzip", nrows=0).columns
-        return "LEVEL1ID" in cols
-    except Exception:
-        return False
-
 def _normalize_df_types(df: pd.DataFrame) -> pd.DataFrame:
     """
     Final, canonical normalization applied to all code paths:
@@ -191,6 +229,18 @@ def _build_parquet_with_duckdb(csv_path: str) -> None:
     has_lvl1 = _csv_has_level1id(csv_path)
     where_clause = "WHERE CAST(LEVEL1ID AS INT) = 0" if has_lvl1 else ""
 
+    # Detect agree header once
+    agree_col = _detect_agree_header(csv_path)
+    # Update diagnostic
+    global _AGREE_SRC
+    _AGREE_SRC = agree_col
+
+    # Agree projection: either cast detected column or NULL if absent
+    if agree_col:
+        agree_select = f'CAST("{agree_col}" AS DOUBLE)                                     AS agree_pct,'
+    else:
+        agree_select = 'CAST(NULL AS DOUBLE)                                               AS agree_pct,'
+
     # Note: DEMCODE canonicalization is applied via regex_replace in SQL.
     con.execute(f"""
         CREATE OR REPLACE TABLE pses AS
@@ -211,7 +261,7 @@ def _build_parquet_with_duckdb(csv_path: str) -> None:
           CAST(POSITIVE AS DOUBLE)                                     AS positive_pct,
           CAST(NEUTRAL  AS DOUBLE)                                     AS neutral_pct,
           CAST(NEGATIVE AS DOUBLE)                                     AS negative_pct,
-          CAST(AGREE    AS DOUBLE)                                     AS agree_pct,
+          {agree_select}
           CAST(answer1  AS DOUBLE) AS answer1,
           CAST(answer2  AS DOUBLE) AS answer2,
           CAST(answer3  AS DOUBLE) AS answer3,
@@ -233,10 +283,17 @@ def _build_parquet_with_pandas(csv_path: str) -> None:
     import pyarrow as pa
     import pyarrow.parquet as pq
 
-    # Read minimal columns; bring LEVEL1ID if present
-    base_cols = [c for c in CSV_USECOLS if c != "LEVEL1ID"]
-    df = pd.read_csv(csv_path, compression="gzip", usecols=base_cols, low_memory=False)
+    # Detect agree header and build usecols dynamically so we don't drop it
+    agree_col = _detect_agree_header(csv_path)
+    global _AGREE_SRC
+    _AGREE_SRC = agree_col
 
+    base_cols = [c for c in CSV_USECOLS if c != "LEVEL1ID"]
+    usecols = _with_agree_in_usecols(base_cols, csv_path)
+
+    df = pd.read_csv(csv_path, compression="gzip", usecols=usecols, low_memory=False)
+
+    # Bring LEVEL1ID if present (separate small pass)
     try:
         cols = pd.read_csv(csv_path, compression="gzip", nrows=0).columns
         if "LEVEL1ID" in cols:
@@ -258,7 +315,7 @@ def _build_parquet_with_pandas(csv_path: str) -> None:
         "positive_pct":  pd.to_numeric(df["POSITIVE"], errors="coerce"),
         "neutral_pct":   pd.to_numeric(df["NEUTRAL"],  errors="coerce"),
         "negative_pct":  pd.to_numeric(df["NEGATIVE"], errors="coerce"),
-        "agree_pct":     pd.to_numeric(df.get("AGREE"), errors="coerce"),
+        "agree_pct":     pd.to_numeric(df.get(agree_col) if agree_col else None, errors="coerce"),
         "answer1": pd.to_numeric(df.get("answer1"), errors="coerce"),
         "answer2": pd.to_numeric(df.get("answer2"), errors="coerce"),
         "answer3": pd.to_numeric(df.get("answer3"), errors="coerce"),
@@ -294,6 +351,13 @@ def ensure_parquet_dataset() -> str:
     if not _pyarrow_available():
         raise RuntimeError("pyarrow is required for Parquet fast path.")
     csv_path = ensure_results2024_local()
+
+    # Touch detection early for diagnostics
+    try:
+        global _AGREE_SRC
+        _AGREE_SRC = _detect_agree_header(csv_path)
+    except Exception:
+        pass
 
     # If dataset looks ready, validate it's not empty
     if os.path.isdir(PARQUET_ROOTDIR) and os.path.exists(PARQUET_FLAG):
@@ -413,12 +477,14 @@ def preload_pswide_dataframe() -> pd.DataFrame:
     # CSV streaming preload (PS-wide filter if LEVEL1ID present)
     try:
         path = ensure_results2024_local()
+        base_usecols = _with_agree_in_usecols(CSV_USECOLS, path)
         frames: list[pd.DataFrame] = []
-        for chunk in pd.read_csv(path, compression="gzip", usecols=CSV_USECOLS, chunksize=1_500_000, low_memory=True):
+        for chunk in pd.read_csv(path, compression="gzip", usecols=base_usecols, chunksize=1_500_000, low_memory=True):
             if "LEVEL1ID" in chunk.columns:
                 mask_lvl = pd.to_numeric(chunk["LEVEL1ID"], errors="coerce").fillna(0).astype(int).eq(0)
                 chunk = chunk.loc[mask_lvl, :]
             sel = chunk
+            agree_col = _AGREE_SRC  # populated by _with_agree_in_usecols
             out = pd.DataFrame({
                 "year":          pd.to_numeric(sel["SURVEYR"], errors="coerce"),
                 "question_code": sel["QUESTION"].astype("string").str.strip().str.upper(),
@@ -427,7 +493,7 @@ def preload_pswide_dataframe() -> pd.DataFrame:
                 "positive_pct":  pd.to_numeric(sel["POSITIVE"], errors="coerce"),
                 "neutral_pct":   pd.to_numeric(sel["NEUTRAL"],  errors="coerce"),
                 "negative_pct":  pd.to_numeric(sel["NEGATIVE"], errors="coerce"),
-                "agree_pct":     pd.to_numeric(sel.get("AGREE"), errors="coerce"),
+                "agree_pct":     pd.to_numeric(sel.get(agree_col) if agree_col else None, errors="coerce"),
                 "answer1": pd.to_numeric(sel.get("answer1"), errors="coerce"),
                 "answer2": pd.to_numeric(sel.get("answer2"), errors="coerce"),
                 "answer3": pd.to_numeric(sel.get("answer3"), errors="coerce"),
@@ -487,7 +553,8 @@ def _csv_stream_filter(
     gv_target = _canon_demcode_value(group_value)  # canonical form or None (overall)
 
     frames: list[pd.DataFrame] = []
-    for chunk in pd.read_csv(path, compression="gzip", usecols=CSV_USECOLS, chunksize=chunksize, low_memory=True):
+    usecols = _with_agree_in_usecols(CSV_USECOLS, path)
+    for chunk in pd.read_csv(path, compression="gzip", usecols=usecols, chunksize=chunksize, low_memory=True):
         if "LEVEL1ID" in chunk.columns:
             mask_lvl = pd.to_numeric(chunk["LEVEL1ID"], errors="coerce").fillna(0).astype(int).eq(0)
         else:
@@ -509,6 +576,7 @@ def _csv_stream_filter(
 
         if mask.any():
             sel = chunk.loc[mask, :]
+            agree_col = _AGREE_SRC
             out = pd.DataFrame({
                 "year":          pd.to_numeric(sel["SURVEYR"], errors="coerce"),
                 "question_code": sel["QUESTION"].astype("string").str.strip().str.upper(),
@@ -517,7 +585,7 @@ def _csv_stream_filter(
                 "positive_pct":  pd.to_numeric(sel["POSITIVE"], errors="coerce"),
                 "neutral_pct":   pd.to_numeric(sel["NEUTRAL"],  errors="coerce"),
                 "negative_pct":  pd.to_numeric(sel["NEGATIVE"], errors="coerce"),
-                "agree_pct":     pd.to_numeric(sel.get("AGREE"), errors="coerce"),
+                "agree_pct":     pd.to_numeric(sel.get(agree_col) if agree_col else None, errors="coerce"),
                 "answer1": pd.to_numeric(sel.get("answer1"), errors="coerce"),
                 "answer2": pd.to_numeric(sel.get("answer2"), errors="coerce"),
                 "answer3": pd.to_numeric(sel.get("answer3"), errors="coerce"),
@@ -578,6 +646,7 @@ def load_results2024_filtered(
                 parquet_dir=PARQUET_ROOTDIR,
                 csv_path=LOCAL_GZ_PATH,
                 parquet_error=None,
+                agree_src=_AGREE_SRC,
             )
             return df
     except Exception:
@@ -600,6 +669,7 @@ def load_results2024_filtered(
                 parquet_dir=PARQUET_ROOTDIR,
                 csv_path=LOCAL_GZ_PATH,
                 parquet_error=None,
+                agree_src=_AGREE_SRC,
             )
             return df
         except Exception as e:
@@ -620,6 +690,7 @@ def load_results2024_filtered(
         parquet_dir=PARQUET_ROOTDIR,
         csv_path=LOCAL_GZ_PATH,
         parquet_error=parquet_error,
+        agree_src=_AGREE_SRC,
     )
     return df
 
@@ -637,7 +708,7 @@ def _compute_pswide_rowcount_csv() -> int:
         path = ensure_results2024_local()
         rows = 0
         for chunk in pd.read_csv(
-            path, compression="gzip", usecols=CSV_USECOLS, chunksize=2_000_000, low_memory=True
+            path, compression="gzip", usecols=_with_agree_in_usecols(CSV_USECOLS, path), chunksize=2_000_000, low_memory=True
         ):
             if "LEVEL1ID" in chunk.columns:
                 mask = pd.to_numeric(chunk["LEVEL1ID"], errors="coerce").fillna(0).astype(int).eq(0)
@@ -698,6 +769,7 @@ def prewarm_all() -> dict:
         "pswide_only": True,
         "parquet_dir": PARQUET_ROOTDIR,
         "csv_path": LOCAL_GZ_PATH,
+        "agree_src": _AGREE_SRC,
     }
 
 # Back-compat API used by older main.py versions
@@ -720,4 +792,5 @@ def get_backend_info() -> dict:
         "pswide_only": summary.get("pswide_only", True),
         "parquet_dir": PARQUET_ROOTDIR,
         "csv_path": LOCAL_GZ_PATH,
+        "agree_src": summary.get("agree_src", _AGREE_SRC),
     }
