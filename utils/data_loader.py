@@ -18,8 +18,8 @@ GDRIVE_FILE_ID_FALLBACK = ""  # optional placeholder; prefer st.secrets["RESULTS
 LOCAL_GZ_PATH = os.environ.get("PSES_RESULTS_GZ", "/tmp/Results2024.csv.gz")
 
 # Parquet dataset location (directory). Prefer a persistent folder.
-PARQUET_ROOTDIR = os.environ.get("PSES_PARQUET_DIR", "data/parquet/PSES_Results2024")
-PARQUET_FLAG = os.path.join(PARQUET_ROOTDIR, "_BUILD_OK")
+PARQUET_ROOTDIR = os.environ.get("PSES_PARQUET_DIR", "data/parquet/PSES_Results2024_v2")
+PARQUET_FLAG = os.path.join(PARQUET_ROOTDIR, "_BUILD_OK_v2")
 
 # Output schema (normalized)
 OUT_COLS = [
