@@ -22,7 +22,7 @@ except Exception:
 # ---- Column normalization (defensive, does not change values) ---------------
 _OUT_COLS = [
     "year", "question_code", "group_value", "n",
-    "positive_pct", "neutral_pct", "negative_pct",
+    "positive_pct", "neutral_pct", "negative_pct", "agree_pct",
     "answer1", "answer2", "answer3", "answer4", "answer5", "answer6", "answer7",
 ]
 
@@ -90,7 +90,7 @@ def _normalize_columns(df: pd.DataFrame) -> pd.DataFrame:
     out["question_code"] = out["question_code"].astype("string").str.strip().str.upper()
     out["group_value"] = out["group_value"].astype("string").str.strip()
 
-    # ---- NEW: NA-safe numeric normalization (minimal, defensive) ------------
+    # ---- NA-safe numeric normalization (minimal, defensive) ------------------
     # year as nullable integer
     try:
         out["year"] = pd.to_numeric(out["year"], errors="coerce").astype("Int16")
@@ -106,7 +106,7 @@ def _normalize_columns(df: pd.DataFrame) -> pd.DataFrame:
 
     # Measures & distributions: numeric + 9999 sentinel -> NA (so render shows "N/A")
     measure_cols = [
-        "positive_pct", "neutral_pct", "negative_pct",
+        "positive_pct", "neutral_pct", "negative_pct", "agree_pct",
         "answer1", "answer2", "answer3", "answer4", "answer5", "answer6", "answer7",
     ]
     for c in measure_cols:
