@@ -1,0 +1,14 @@
+name: Keep Streamlit App Awake
+
+on:
+  schedule:
+    - cron: "*/10 * * * *"   # Run every 10 minutes
+  workflow_dispatch:         # Allow manual trigger from Actions tab
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Curl Streamlit app
+        run: |
+          curl -L --max-time 20 "https://pses---gpt.streamlit.app/?keepalive=1" || true
