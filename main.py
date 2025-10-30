@@ -5,6 +5,21 @@ import time
 import streamlit as st
 import streamlit.components.v1 as components  # ← NEW: for scroll-to-top on Home
 
+# --- Quick exit for GitHub Action keepalive pings (avoids heavy loading) ---
+def _is_keepalive_ping() -> bool:
+    try:
+        params = st.query_params if hasattr(st, "query_params") else st.experimental_get_query_params()  # type: ignore[attr-defined]
+        raw = params.get("keepalive", ["0"])
+        val = raw[0] if isinstance(raw, list) else raw
+        return str(val).lower() in ("1", "true", "yes")
+    except Exception:
+        return False
+
+if _is_keepalive_ping():
+    st.write("✅ App is awake.")
+    st.stop()
+
+
 # ── Make set_page_config idempotent ──────────────────────────────────────────
 if not hasattr(st, "_setpcf_wrapped"):
     _orig_spc = st.set_page_config
