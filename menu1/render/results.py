@@ -736,15 +736,25 @@ def _insert_first_percent_asterisk(text: str) -> str:
     return text[:end] + "*" + text[end:]
 
 def _compress_labels_for_footnote(labels: List[str]) -> Optional[str]:
-    """Safe compression like (To a small/moderate/large extent/very large extent), else full join."""
+    """
+    Safe compression for footnote display.
+    - If exactly one label, return it directly as "(Label)".
+    - Otherwise, attempt prefix/suffix compression; if that yields anything odd or longer,
+      fall back to the full join "(A/B/...)"
+    """
     if not labels:
         return None
+    # NEW: handle single-label lists safely (prevents duplication like "YesYes")
+    if len(labels) == 1:
+        return f"({labels[0]})"
+
     full = "(" + "/".join(labels) + ")"
     try:
         from os.path import commonprefix
         prefix = commonprefix(labels)
         rev = [s[::-1] for s in labels]
         suffix = commonprefix(rev)[::-1]
+
         parts: List[str] = []
         for i, lab in enumerate(labels):
             core = lab
@@ -752,15 +762,20 @@ def _compress_labels_for_footnote(labels: List[str]) -> Optional[str]:
                 core = core[len(prefix):]
             if suffix and core.endswith(suffix):
                 core = core[: -len(suffix)]
+            # if stripping produced empty, keep original to avoid oddities
             if not core.strip():
                 core = lab
-            if i == 0 and lab.startswith(prefix):
+            # Reattach shared prefix to the first item so meaning remains clear
+            if i == 0 and prefix and lab.startswith(prefix) and not core.startswith(prefix):
                 core = prefix + core
+            # Ensure shared suffix present when appropriate
             if suffix and lab.endswith(suffix) and not core.endswith(suffix):
                 core = core + suffix
             parts.append(core)
+
         compressed = "(" + "/".join(parts) + ")"
-        if all(p.strip() for p in parts) and len(parts) == len(labels):
+        # Only accept compression if it's actually shorter and well-formed
+        if all(p.strip() for p in parts) and len(parts) == len(labels) and len(compressed) < len(full):
             return compressed
         return full
     except Exception:
@@ -932,12 +947,12 @@ def tabs_summary_and_per_q(
                         )
                         lab = _compress_labels_for_footnote(labels) if labels else None
                         if lab:
-                            st.caption(f"\\* Percentages represent respondents’ aggregate answers: {lab}.")
+                            st.caption(f"\* Percentages represent respondents’ aggregate answers: {lab}.")
                             # set first overall lab if not yet set
                             if first_overall_lab is None:
                                 first_overall_lab = lab
                         else:
-                            st.caption("\\* Percentages correspond to the reported metric above.")
+                            st.caption("\* Percentages correspond to the reported metric above.")
 
             if overall_narrative and len(tab_labels) > 1:
                 st.markdown("**Overall**")
@@ -946,7 +961,7 @@ def tabs_summary_and_per_q(
                 st.write(overall_txt_star)
                 # Single overall footnote (use the first available labels captured above)
                 if first_overall_lab:
-                    st.caption(f"\\* Percentages represent respondents’ aggregate answers: {first_overall_lab}.")
+                    st.caption(f"\* Percentages represent respondents’ aggregate answers: {first_overall_lab}.")
 
         else:
             # ---------- per-question AI ----------
@@ -1023,12 +1038,12 @@ def tabs_summary_and_per_q(
                         labels = meaning_labels_ai
                         lab = _compress_labels_for_footnote(labels) if labels else None
                         if lab:
-                            st.caption(f"\\* Percentages represent respondents’ aggregate answers: {lab}.")
+                            st.caption(f"\* Percentages represent respondents’ aggregate answers: {lab}.")
                             # set first overall lab if not yet set
                             if first_overall_lab is None:
                                 first_overall_lab = lab
                         else:
-                            st.caption("\\* Percentages correspond to the reported metric above.")
+                            st.caption("\* Percentages correspond to the reported metric above.")
 
             # ---------- OVERALL ----------
             overall_narrative = None
@@ -1062,7 +1077,7 @@ def tabs_summary_and_per_q(
                     st.write(overall_txt_star)
                     # Single overall footnote (use first available labels from above)
                     if first_overall_lab:
-                        st.caption(f"\\* Percentages represent respondents’ aggregate answers: {first_overall_lab}.")
+                        st.caption(f"\* Percentages represent respondents’ aggregate answers: {first_overall_lab}.")
 
             _ai_cache_put(ai_key, {"per_q": per_q_narratives, "overall": overall_narrative})
             st.session_state["menu1_ai_narr_per_q"] = per_q_narratives
