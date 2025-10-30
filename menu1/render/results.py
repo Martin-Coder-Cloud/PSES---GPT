@@ -79,7 +79,6 @@ def _sanitize_9999(df: pd.DataFrame) -> pd.DataFrame:
     if not isinstance(df, pd.DataFrame) or df.empty:
         return df
     out = df.copy()
-    # columns likely to be survey % values
     num_cols = []
     for c in out.columns:
         lc = str(c).lower().replace(" ", "")
@@ -103,11 +102,12 @@ def _first_existing_path(candidates: List[str]) -> Optional[str]:
 @st.cache_data(show_spinner=False)
 def _load_survey_questions_meta() -> pd.DataFrame:
     """
-    Tries both metadata/ and project root for:
+    Fallback loader if preloaded metadata are not found in session state.
+    Tries:
+      - metadata/Survey Questions.xlsx
+      - ./Survey Questions.xlsx
       - Survey Questions.xlsx
-    Required: code, polarity (POS/NEG/NEU)
-    Optional: positive/negative/agree (indices like "1,2")
-              scale keys: scale / scale_id / scale_name
+    Normalizes key columns to lowercase.
     """
     try:
         path = _first_existing_path([
@@ -143,9 +143,15 @@ def _load_survey_questions_meta() -> pd.DataFrame:
 @st.cache_data(show_spinner=False)
 def _load_survey_scales_meta() -> pd.DataFrame:
     """
-    Tries both metadata/ and project root for:
+    Fallback loader if preloaded metadata are not found in session state.
+    Tries:
+      - metadata/Survey Scales.xlsx
+      - ./Survey Scales.xlsx
       - Survey Scales.xlsx
-    Normalizes to: code (question code OR scale key), value (index), label (text)
+
+    Supports two schemas:
+    1) Tidy/long: (...) columns map to (code, value, label)
+    2) Wide: 'question' (or 'code') + 'answer1'..'answerN' → normalized to tidy
     """
     try:
         path = _first_existing_path([
@@ -154,29 +160,194 @@ def _load_survey_scales_meta() -> pd.DataFrame:
             "Survey Scales.xlsx",
         ])
         if not path:
-            return pd.DataFrame(columns=["code","value","label"])
+            return pd.DataFrame(columns=["code", "value", "label"])
+
         df = pd.read_excel(path)
         df.columns = [c.strip().lower() for c in df.columns]
-        def pick(opts):  # helper
+
+        def pick(opts: List[str]) -> Optional[str]:
             for n in opts:
                 if n in df.columns:
                     return n
             return None
-        c_code  = pick(["code","question","qcode","qid","scale","scale_id","scale_key","scale_name","item"])
-        c_val   = pick(["value","option","index","answer","answer_value","order","position"])
-        c_label = pick(["label","answer_label","option_label","text","desc","description"])
+
+        # Detect wide schema via any 'answerN' col
+        answer_cols = [c for c in df.columns if re.fullmatch(r"answer\s*\d+", c, flags=re.IGNORECASE)]
+        is_wide = bool(answer_cols)
+
+        if is_wide:
+            code_col = pick(["question", "code", "qcode", "scale", "scale_id", "scale_key", "scale_name", "item"])
+            if not code_col:
+                return pd.DataFrame(columns=["code", "value", "label"])
+
+            def ans_index(colname: str) -> Optional[int]:
+                m = re.match(r"answer\s*(\d+)", colname, flags=re.IGNORECASE)
+                return int(m.group(1)) if m else None
+
+            answer_cols_sorted = sorted(
+                [c for c in answer_cols if ans_index(c) is not None],
+                key=lambda c: ans_index(c)  # type: ignore
+            )
+
+            rows: List[Tuple[str, int, str]] = []
+            for _, r in df.iterrows():
+                code_val = str(r.get(code_col, "")).strip().upper()
+                if not code_val:
+                    continue
+                for ac in answer_cols_sorted:
+                    idx = ans_index(ac)
+                    if not idx:
+                        continue
+                    lab = r.get(ac, None)
+                    if pd.isna(lab):
+                        continue
+                    lab_str = str(lab).strip()
+                    if not lab_str:
+                        continue
+                    rows.append((code_val, idx, lab_str))
+
+            if not rows:
+                return pd.DataFrame(columns=["code", "value", "label"])
+            out = pd.DataFrame(rows, columns=["code", "value", "label"])
+            out["value"] = pd.to_numeric(out["value"], errors="coerce").astype("Int64")
+            out = out.dropna(subset=["code", "value", "label"])
+            out["value"] = out["value"].astype(int)
+            return out
+
+        # Tidy schema
+        def pick_tidy(opts: List[str]) -> Optional[str]:
+            for n in opts:
+                if n in df.columns:
+                    return n
+            return None
+
+        c_code  = pick_tidy(["code", "question", "qcode", "qid", "scale", "scale_id", "scale_key", "scale_name", "item"])
+        c_val   = pick_tidy(["value", "option", "index", "answer", "answer_value", "order", "position"])
+        c_label = pick_tidy(["label", "answer_label", "option_label", "text", "desc", "description"])
         if not (c_code and c_val and c_label):
-            return pd.DataFrame(columns=["code","value","label"])
+            return pd.DataFrame(columns=["code", "value", "label"])
+
         out = df[[c_code, c_val, c_label]].copy()
         out.columns = ["code", "value", "label"]
         out["code"] = out["code"].astype(str).str.strip().str.upper()
         out["value"] = pd.to_numeric(out["value"], errors="coerce")
-        out = out.dropna(subset=["code","value","label"])
+        out = out.dropna(subset=["code", "value", "label"])
         out["value"] = out["value"].astype(int)
         out["label"] = out["label"].astype(str).str.strip()
         return out
+
     except Exception:
-        return pd.DataFrame(columns=["code","value","label"])
+        return pd.DataFrame(columns=["code", "value", "label"])
+
+# --------- NEW: use preloaded metadata from session_state when available ---------
+
+def _normalize_scales_df(scales_df: pd.DataFrame) -> pd.DataFrame:
+    """Accepts either tidy or wide Scales DF and returns tidy (code, value, label)."""
+    if not isinstance(scales_df, pd.DataFrame) or scales_df.empty:
+        return pd.DataFrame(columns=["code", "value", "label"])
+
+    df = scales_df.copy()
+    df.columns = [c.strip().lower() for c in df.columns]
+
+    # If already tidy enough
+    if set(["code", "value", "label"]).issubset(df.columns):
+        out = df[["code", "value", "label"]].copy()
+        out["code"] = out["code"].astype(str).str.strip().str.upper()
+        out["value"] = pd.to_numeric(out["value"], errors="coerce")
+        out = out.dropna(subset=["code", "value", "label"])
+        out["value"] = out["value"].astype(int)
+        out["label"] = out["label"].astype(str).str.strip()
+        return out
+
+    # Else detect wide (AnswerN) and normalize
+    answer_cols = [c for c in df.columns if re.fullmatch(r"answer\s*\d+", c, flags=re.IGNORECASE)]
+    if answer_cols:
+        # choose a reasonable code column
+        for cand in ["question", "code", "qcode", "scale", "scale_id", "scale_key", "scale_name", "item"]:
+            if cand in df.columns:
+                code_col = cand
+                break
+        else:
+            return pd.DataFrame(columns=["code", "value", "label"])
+
+        def ans_index(colname: str) -> Optional[int]:
+            m = re.match(r"answer\s*(\d+)", colname, flags=re.IGNORECASE)
+            return int(m.group(1)) if m else None
+
+        answer_cols_sorted = sorted(
+            [c for c in answer_cols if ans_index(c) is not None],
+            key=lambda c: ans_index(c)  # type: ignore
+        )
+
+        rows: List[Tuple[str, int, str]] = []
+        for _, r in df.iterrows():
+            code_val = str(r.get(code_col, "")).strip().upper()
+            if not code_val:
+                continue
+            for ac in answer_cols_sorted:
+                idx = ans_index(ac)
+                if not idx:
+                    continue
+                lab = r.get(ac, None)
+                if pd.isna(lab):
+                    continue
+                lab_str = str(lab).strip()
+                if not lab_str:
+                    continue
+                rows.append((code_val, idx, lab_str))
+
+        if not rows:
+            return pd.DataFrame(columns=["code", "value", "label"])
+        out = pd.DataFrame(rows, columns=["code", "value", "label"])
+        out["value"] = pd.to_numeric(out["value"], errors="coerce").astype("Int64")
+        out = out.dropna(subset=["code", "value", "label"])
+        out["value"] = out["value"].astype(int)
+        return out
+
+    # Unknown format
+    return pd.DataFrame(columns=["code", "value", "label"])
+
+def _get_meta_questions() -> pd.DataFrame:
+    """Prefer preloaded Survey Questions metadata from session_state; fallback to file loader."""
+    # Try a few common keys you might be using in your app
+    candidate_keys = [
+        "meta_survey_questions",
+        "survey_questions_meta",
+        "menu1_meta_questions",
+        "meta_questions",
+        "questions_meta",
+        "SurveyQuestionsMeta",
+    ]
+    for k in candidate_keys:
+        obj = st.session_state.get(k)
+        if isinstance(obj, pd.DataFrame) and not obj.empty:
+            df = obj.copy()
+            # Normalize key columns to expected casing
+            df.columns = [c.strip().lower() for c in df.columns]
+            if "code" in df.columns:
+                df["code"] = df["code"].astype(str).str.strip().str.upper()
+            return df
+    # Fallback
+    return _load_survey_questions_meta()
+
+def _get_meta_scales() -> pd.DataFrame:
+    """Prefer preloaded Survey Scales metadata from session_state; fallback to file loader."""
+    candidate_keys = [
+        "meta_survey_scales",
+        "survey_scales_meta",
+        "menu1_meta_scales",
+        "meta_scales",
+        "scales_meta",
+        "SurveyScalesMeta",
+    ]
+    for k in candidate_keys:
+        obj = st.session_state.get(k)
+        if isinstance(obj, pd.DataFrame) and not obj.empty:
+            return _normalize_scales_df(obj)
+    # Fallback
+    return _load_survey_scales_meta()
+
+# ---------------------- parsing + field inference ----------------------
 
 def _parse_index_list(s: Optional[str]) -> List[int]:
     if not s or not isinstance(s, str):
@@ -202,7 +373,7 @@ def _infer_reporting_field(metric_col: Optional[str]) -> Optional[str]:
     if lc in ("answer1","answer_1"): return "ANSWER1"
     return None
 
-# ----------- canonical scales (fallback) -----------
+# ----------- canonical scales (fallback catalog; not used by literal path) -----------
 
 _CANONICAL_SCALES: Dict[str, List[str]] = {
     "AGREE5": [
@@ -227,7 +398,7 @@ def _pick_fallback_scale(question_text: Optional[str]) -> str:
         return "EXTENT5"
     return "AGREE5"
 
-# ===================== CHANGED: literal meaning label logic =====================
+# ===================== LITERAL meaning-label logic =====================
 
 def _meaning_labels_for_question(
     *,
@@ -262,7 +433,7 @@ def _meaning_labels_for_question(
         raw = row.iloc[0].get(colname, None)
         idxs: List[int] = _parse_index_list(raw if isinstance(raw, str) else None)
         if not idxs:
-            # As a conservative fallback, try parsing labels directly from metric_label
+            # Conservative fallback: parse from metric label, else []
             return _derive_labels_from_metric_label(metric_label or "")
 
         # Map indices to labels via Survey Scales
@@ -291,8 +462,7 @@ def _meaning_labels_for_build(q: str, qtext: str, metric_col: Optional[str], met
                               meta_q: pd.DataFrame, meta_scales: pd.DataFrame) -> List[str]:
     """
     Helper to produce meaning_labels for the exact metric chosen for a question.
-    CHANGED: Select reporting_field strictly by Polarity:
-      POS -> 'positive', NEG -> 'negative', NEU -> 'agree'
+    Uses Polarity → column mapping (POS→'positive', NEG→'negative', NEU→'agree').
     """
     qU = str(q).strip().upper()
     row = meta_q[meta_q["code"] == qU]
@@ -302,16 +472,16 @@ def _meaning_labels_for_build(q: str, qtext: str, metric_col: Optional[str], met
         pol = "POS"
 
     if pol == "NEG":
-        reporting_field = "NEGATIVE"
+        field = "NEGATIVE"
     elif pol == "NEU":
-        reporting_field = "AGREE"
+        field = "AGREE"
     else:
-        reporting_field = "POSITIVE"
+        field = "POSITIVE"
 
     return _meaning_labels_for_question(
         qcode=q,
         question_text=qtext,
-        reporting_field=reporting_field,
+        reporting_field=field,
         metric_label=metric_label or "",
         meta_q=meta_q,
         meta_scales=meta_scales
@@ -319,8 +489,7 @@ def _meaning_labels_for_build(q: str, qtext: str, metric_col: Optional[str], met
 
 # ---- Asterisk and footnote helpers ----
 
-# match "54%", "54 %", and with Unicode thin/non-breaking spaces
-_percent_pat = re.compile(r"(\d{1,3})(?:[ \t\u00A0\u2009\u202F]*)%")
+_percent_pat = re.compile(r"(\d{1,3})(?:[ \t\u00A0\u2009\u202F]*)%")  # "54%", "54 %", etc.
 
 def _insert_first_percent_asterisk(text: str) -> str:
     """Insert a single asterisk immediately after the first percent sign occurrence."""
@@ -334,14 +503,11 @@ def _insert_first_percent_asterisk(text: str) -> str:
         return text
     return text[:end] + "*" + text[end:]
 
-# ===================== CHANGED: literal footnote join =====================
-
 def _compress_labels_for_footnote(labels: List[str]) -> Optional[str]:
     """
     Literal formatting only:
       • one label  -> "(Label)"
       • many labels -> "(A/B/...)"
-    No prefix/suffix compression or normalization.
     """
     if not labels:
         return None
@@ -359,18 +525,15 @@ def _derive_labels_from_metric_label(metric_label: str) -> List[str]:
     parts = [p.strip(" []") for p in re.split(r"\s*/\s*", tail) if p.strip()]
     return parts
 
-# ===================== CHANGED: resolve via metadata, then label parse =====================
-
 def _resolve_footnote_labels(
     *, q: str, qtext: str, metric_col: Optional[str], metric_label: str,
     meta_q: pd.DataFrame, meta_scales: pd.DataFrame
 ) -> List[str]:
-    """Always prefer literal metadata; fallback to '% selecting …' parsing; no canonical fallbacks."""
+    """Literal metadata lookup only; fallback to '% selecting …' parsing; no canonical fallbacks."""
     labels = _meaning_labels_for_build(q, qtext, metric_col, metric_label, meta_q, meta_scales)
     if labels:
         return labels
-    labels = _derive_labels_from_metric_label(metric_label or "")
-    return labels
+    return _derive_labels_from_metric_label(metric_label or "")
 
 # ---------------------- Summary pivot (polarity-aware) ----------------------
 
@@ -759,83 +922,6 @@ def _render_data_validation_subsection(
 
 # ------------------------------ main renderer -------------------------------
 
-def _meaning_labels_for_build(q: str, qtext: str, metric_col: Optional[str], metric_label: str,
-                              meta_q: pd.DataFrame, meta_scales: pd.DataFrame) -> List[str]:
-    """Helper to produce meaning_labels for the exact metric chosen for a question.
-    CHANGED: uses Polarity → column mapping (POS→positive, NEG→negative, NEU→agree)."""
-    qU = str(q).strip().upper()
-    row = meta_q[meta_q["code"] == qU]
-    if not row.empty:
-        pol = str(row.iloc[0].get("polarity", "POS")).upper().strip()
-    else:
-        pol = "POS"
-
-    if pol == "NEG":
-        field = "NEGATIVE"
-    elif pol == "NEU":
-        field = "AGREE"
-    else:
-        field = "POSITIVE"
-
-    return _meaning_labels_for_question(
-        qcode=q,
-        question_text=qtext,
-        reporting_field=field,
-        metric_label=metric_label or "",
-        meta_q=meta_q,
-        meta_scales=meta_scales
-    )
-
-# ---- Asterisk and footnote helpers ----
-
-# match "54%", "54 %", and with Unicode thin/non-breaking spaces
-_percent_pat = re.compile(r"(\d{1,3})(?:[ \t\u00A0\u2009\u202F]*)%")
-
-def _insert_first_percent_asterisk(text: str) -> str:
-    """Insert a single asterisk immediately after the first percent sign occurrence."""
-    if not text:
-        return text
-    m = _percent_pat.search(text)
-    if not m:
-        return text
-    end = m.end()
-    if end < len(text) and text[end] == "*":
-        return text
-    return text[:end] + "*" + text[end:]
-
-def _compress_labels_for_footnote(labels: List[str]) -> Optional[str]:
-    """
-    Literal formatting only:
-      • one label  -> "(Label)"
-      • many labels -> "(A/B/...)"
-    """
-    if not labels:
-        return None
-    if len(labels) == 1:
-        return f"({labels[0]})"
-    return "(" + "/".join(labels) + ")"
-
-def _derive_labels_from_metric_label(metric_label: str) -> List[str]:
-    if not isinstance(metric_label, str):
-        return []
-    m = re.search(r"%\s*selecting\s*(.+)$", metric_label.strip(), flags=re.IGNORECASE)
-    if not m:
-        return []
-    tail = m.group(1).strip()
-    parts = [p.strip(" []") for p in re.split(r"\s*/\s*", tail) if p.strip()]
-    return parts
-
-def _resolve_footnote_labels(
-    *, q: str, qtext: str, metric_col: Optional[str], metric_label: str,
-    meta_q: pd.DataFrame, meta_scales: pd.DataFrame
-) -> List[str]:
-    """Literal metadata lookup only; fallback to metric label if available."""
-    labels = _meaning_labels_for_build(q, qtext, metric_col, metric_label, meta_q, meta_scales)
-    if labels:
-        return labels
-    labels = _derive_labels_from_metric_label(metric_label or "")
-    return labels
-
 def tabs_summary_and_per_q(
     *,
     payload: Dict[str, Any],
@@ -859,9 +945,9 @@ def tabs_summary_and_per_q(
     # Sanitize per-question tables (9999 -> NaN)
     per_q_disp: Dict[str, pd.DataFrame] = {q: _sanitize_9999(df) for q, df in per_q_disp_in.items()}
 
-    # Load metadata (now robust to root paths)
-    meta_q = _load_survey_questions_meta()
-    meta_scales = _load_survey_scales_meta()
+    # NEW: Use preloaded metadata when present
+    meta_q = _get_meta_questions()
+    meta_scales = _get_meta_scales()
 
     # Summary pivot (polarity-aware); exclude D57
     summary_pivot, labels_used = _build_summary_pivot_from_disp(
@@ -970,7 +1056,6 @@ def tabs_summary_and_per_q(
                         lab = _compress_labels_for_footnote(labels) if labels else None
                         if lab:
                             st.caption(f"\* Percentages represent respondents’ aggregate answers: {lab}.")
-                            # set first overall lab if not yet set
                             if first_overall_lab is None:
                                 first_overall_lab = lab
                         else:
@@ -978,10 +1063,8 @@ def tabs_summary_and_per_q(
 
             if overall_narrative and len(tab_labels) > 1:
                 st.markdown("**Overall**")
-                # asterisk after first % ONLY
                 overall_txt_star = _insert_first_percent_asterisk(overall_narrative)
                 st.write(overall_txt_star)
-                # Single overall footnote (use the first available labels captured above)
                 if first_overall_lab:
                     st.caption(f"\* Percentages represent respondents’ aggregate answers: {first_overall_lab}.")
 
@@ -991,7 +1074,6 @@ def tabs_summary_and_per_q(
             q_to_meaning_labels: Dict[str, List[str]] = {}
             q_distribution_only: Dict[str, bool] = {}
 
-            # Track first available labels (non-D57) for the single Overall footnote
             first_overall_lab: Optional[str] = None
 
             for q in tab_labels:
@@ -1015,7 +1097,6 @@ def tabs_summary_and_per_q(
                     reporting_field_ai = _infer_reporting_field(metric_col_ai)
                     category_in_play = ("Demographic" in dfq.columns and dfq["Demographic"].astype(str).nunique(dropna=True) > 1)
 
-                    # meaning labels with robust fallbacks + special NEGATIVE/EXTENT default
                     meaning_labels_ai = _meaning_labels_for_question(
                         qcode=q,
                         question_text=qtext,
@@ -1056,12 +1137,10 @@ def tabs_summary_and_per_q(
                     st.write(txt_star)
 
                     if not _is_d57_exception(q):
-                        # Use the labels we computed for this question
                         labels = meaning_labels_ai
                         lab = _compress_labels_for_footnote(labels) if labels else None
                         if lab:
                             st.caption(f"\* Percentages represent respondents’ aggregate answers: {lab}.")
-                            # set first overall lab if not yet set
                             if first_overall_lab is None:
                                 first_overall_lab = lab
                         else:
@@ -1094,10 +1173,8 @@ def tabs_summary_and_per_q(
 
                 if overall_narrative:
                     st.markdown("**Overall**")
-                    # asterisk after first % ONLY
                     overall_txt_star = _insert_first_percent_asterisk(overall_narrative)
                     st.write(overall_txt_star)
-                    # Single overall footnote (use first available labels from above)
                     if first_overall_lab:
                         st.caption(f"\* Percentages represent respondents’ aggregate answers: {first_overall_lab}.")
 
@@ -1155,7 +1232,7 @@ def tabs_summary_and_per_q(
                         tab_labels=tab_labels,
                         per_q_disp=per_q_disp_ai2,
                         per_q_metric_col={
-                            q: (_pick_metric_for_summary(per_q_disp[q], q, meta_q)[0] or per_q_metric_col_in.get(q))
+                            q: (_pick_metric_for_summary(per_q_disp[q], q, _get_meta_questions())[0] or per_q_metric_col_in.get(q))
                             for q in tab_labels
                         },
                         per_q_metric_label={q: (labels_used.get(q) or per_q_metric_label_in.get(q, "% value")) for q in tab_labels},
