@@ -20,7 +20,7 @@ __all__ = [
 ]
 
 # --------------------------------------------------------------------------------------
-# SYSTEM PROMPT (unchanged)
+# SYSTEM PROMPT (updated: zero-gap guard added; all prior approved rules preserved)
 # --------------------------------------------------------------------------------------
 
 AI_SYSTEM_PROMPT = (
@@ -43,9 +43,10 @@ AI_SYSTEM_PROMPT = (
 "- Latest year = the maximum year present in the payload.\n"
 "- Gaps (latest year): compute absolute gaps between demographic groups and report them in % points "
 "(e.g., “Women (82 %) vs Another gender (72 %): 10 % points gap”). Mention only the largest one or two gaps.\n"
-"- Gap-over-time: for each highlighted gap, compute the gap in each year where both groups have data. "
-"State whether the gap has widened, narrowed, or remained stable since the earliest comparable year (or vs the previous year if only two years exist), "
-"and give the change in % points (e.g., “gap narrowed by 3 % points since 2020”).\n"
+"- Gap-over-time policy:\n"
+"  • When `gap_over_time_policy` is \"earliest_to_latest\", compute the gap in the earliest comparable year and the latest year; report whether the gap widened, narrowed, or remained stable, with the absolute change in % points.\n"
+"  • Only fall back to latest vs previous year when there are exactly two comparable years.\n"
+"  • You may describe direction using signs of adjacent gap deltas (e.g., mostly widening) without creating new numbers beyond allowed differences.\n"
 "- Do NOT compute multi-year averages or rates of change beyond these integer subtractions.\n"
 "- If `distribution_only=true`, describe only the latest-year distribution; never create aggregates.\n\n"
 "Trend rules (per-question; prioritize current year, then context)\n"
@@ -64,10 +65,16 @@ AI_SYSTEM_PROMPT = (
 "- Use numbers sparingly — only YoY and earliest→latest deltas. No new computations.\n\n"
 "Overall synthesis rules (when task = \"overall_synthesis\")\n"
 "- Purpose: summarize themes and implications across all selected questions — not to repeat each narrative.\n"
-"- Identify common patterns (strengths, recurring concerns, areas improving or declining).\n"
-"- Highlight areas of strong results (high positive %, clear improvements) and areas requiring attention "
-"(lower scores, declines, or large demographic gaps).\n"
-"- When useful, group related questions under broader ideas such as career development, work–life balance, inclusion, or leadership.\n"
+"- Respect `overall_controls`:\n"
+"  • If `no_repetition=true`, do NOT restate per-question values or mini-summaries. Synthesize only what is common across the selected questions.\n"
+"  • If `cross_question_only=true`, keep the synthesis strictly inside the selected questions (and their demographic/metric scope). Do NOT introduce topics, entities, or measures that are not part of the selection.\n"
+"  • If `hr_insights_allowed=true`, you may include brief HR-oriented implications **only** when they follow directly from permitted computations (YoY deltas, earliest→latest deltas, gaps and gap-over-time). Use cautious, evidence-linked language such as “remains a relative strength”, “suggests an area to watch”, or “results are broadly similar across groups”.\n"
+"  • If `ban_external_context=true`, do NOT use external benchmarks, causes, policies, or departments unless they are explicitly part of the payload.\n"
+"- Identify common patterns (strengths, recurring concerns, areas improving or declining) using only allowed computations.\n"
+"- Highlight areas of strong results (high positive %, clear improvements) and areas requiring attention (lower scores, declines, or large demographic gaps) **only when such information is derivable from the provided tables**.\n"
+"- When useful, group related questions under broader ideas such as career development, work–life balance, inclusion, or leadership — but only if those ideas are evident from the selected questions.\n"
+"- If signals conflict across questions (some up, some down), describe it as a mixed pattern rather than over-generalizing.\n"
+"- If trend data are insufficient for many items, acknowledge the limitation and avoid trend claims.\n"
 "- Tone: concise, professional, suitable for briefing a director.\n"
 "- Continue to obey all numeric constraints: only use provided numbers or allowable differences.\n\n"
 "Style & output\n"
@@ -100,10 +107,14 @@ AI_SYSTEM_PROMPT = (
 "ADDENDUM — Demographic gaps (latest year) and change-over-time\n"
 "- When the payload indicates `demographic_breakdown_present=true`, you MUST:\n"
 "  • Identify the latest year present in `years_present` and report the largest gap between demographic groups for the reported metric in that year, as an absolute difference in % points. Prefer integrated phrasing within the paragraph.\n"
-"  • If the same two groups also have values in earlier years in the table, state whether that gap has widened, narrowed, or remained stable since the earliest comparable year (or vs the previous year if only two years exist), and include the change in % points.\n"
+"  • Compute gap-over-time from the earliest comparable year to the latest year (or latest vs previous if only two years exist), and state whether it widened, narrowed, or remained stable, with the absolute change in % points.\n"
 "- Use only numbers visible in the table for the relevant groups and years. Do not infer values for missing years or groups.\n"
 "- If fewer than two groups have values in the latest year, omit gap reporting.\n"
-"- In overall synthesis, summarize notable gaps across the selected questions strictly from the provided tables; do not recompute or average.\n\n"
+"- In overall synthesis, summarize notable gaps across the selected questions strictly from the provided tables; do not recompute or average.\n"
+"- **Zero-gap guard (strict phrasing rules):**\n"
+"  • If the absolute gap between groups in the latest year is ≤ 0.4 % points (effectively zero), do **not** describe one group as higher or lower. Instead state that results are identical or indistinguishable (e.g., “72 % each” or “virtually identical”).\n"
+"  • If the absolute gap is between 0.5 and 2.0 % points, use “minimal” or “negligible difference” and avoid “slightly higher/lower”.\n"
+"  • Retain existing magnitude wording for larger gaps (e.g., modest/notable) as already specified below.\n\n"
 "ADDENDUM — Narrative and readability\n"
 "- Express insights in a natural, narrative tone suitable for executive briefing notes.\n"
 "- Vary sentence structure to avoid repetitive phrasing such as “The largest gap is…” or “The difference is…”.\n"
@@ -118,9 +129,9 @@ AI_SYSTEM_PROMPT = (
 "  • “English respondents reported slightly higher negative impacts (37 %) than French respondents (27 %), a 10 % points gap.”\n"
 "  • “A modest 3 % points difference separates English (18 %) and French (21 %) respondents.”\n"
 "- Adjust tone to the size of the difference:\n"
-"  • ≤ 2 % points → “minimal”, “negligible”, “results are similar”. \n"
-"  • 3–6 % points → “modest” or “slightly higher/lower”. \n"
-"  • ≥ 7 % points → “notable” or “considerable”. \n"
+"  • ≤ 2 % points → “minimal”, “negligible”, “results are similar”\n"
+"  • 3–6 % points → “modest”, “slightly higher/lower”\n"
+"  • ≥ 7 % points → “notable”, “considerable”\n"
 "- Integrate demographic commentary smoothly into the narrative rather than as a rigid template.\n"
 "- Avoid repeating identical sentence templates across questions.\n\n"
 "ADDENDUM — Global narrative flexibility (applies to all summaries)\n"
@@ -183,7 +194,7 @@ def call_openai_json(*, system: str, user: str) -> Tuple[Optional[str], Optional
     return fb, f"LLM error: {type(last_err).__name__}"
 
 # --------------------------------------------------------------------------------------
-# Helpers (existing + new normalization helper)
+# Helpers (existing + normalization helper)
 # --------------------------------------------------------------------------------------
 
 def _df_to_records_sanitized(df) -> List[Dict[str, Any]]:
@@ -230,12 +241,10 @@ def _normalize_meaning_labels(
     - Guards against obvious polarity mismatches (e.g., AGREE with 'disagree' labels)
     NOTE: This does not recompute indices; it only sanitizes what the caller provides.
     """
-    # Start from provided labels (string or list); normalize to list[str]
     labels: List[str] = []
     if meaning_labels is None:
         labels = []
     else:
-        # Flatten any accidental single-string concatenations
         flat: List[str] = []
         for item in meaning_labels:
             if item is None:
@@ -243,7 +252,6 @@ def _normalize_meaning_labels(
             s = str(item).strip()
             if not s:
                 continue
-            # split on common separators we might have seen missing
             parts = re.split(r"[\/\|,;]+", s)
             if len(parts) == 1:
                 flat.append(s)
@@ -251,7 +259,6 @@ def _normalize_meaning_labels(
                 flat.extend(p.strip() for p in parts if p.strip())
         labels = flat or []
 
-    # Trim + dedupe while preserving order
     seen = set()
     clean: List[str] = []
     for s in labels:
@@ -260,25 +267,19 @@ def _normalize_meaning_labels(
             seen.add(ss.lower())
             clean.append(ss)
 
-    # Heuristic guardrails: if AGREE but labels look like disagree, or vice-versa
     rf = (reporting_field or "").upper().strip()
     if rf == "AGREE":
-        # If all labels look like disagree variants, try to pick agree-like tokens from df_disp headers
         looks_disagree = all(any(tok in s.lower() for tok in ("disagree", "no")) for s in clean) if clean else False
         if looks_disagree:
-            # Try to recover from the displayed table headers (already renamed by formatter)
             agreeish = []
             if df_disp is not None:
                 for col in df_disp.columns:
                     lc = str(col).lower()
                     if any(key in lc for key in ("agree", "yes")) and not any(bad in lc for bad in ("disagree", "no")):
                         agreeish.append(str(col).strip())
-            # Fallback if nothing found
             clean = agreeish or ["Yes"]
     elif rf == "POSITIVE":
-        # Avoid clearly negative-only labels
         if clean and all("disagree" in s.lower() for s in clean):
-            # Try to find positive-ish labels from df_disp
             posish = []
             if df_disp is not None:
                 for col in df_disp.columns:
@@ -288,7 +289,6 @@ def _normalize_meaning_labels(
                         posish.append(str(col).strip())
             clean = posish or clean
     elif rf == "NEGATIVE":
-        # If all labels look positive-only, try to nudge to negative-ish
         if clean and all(any(key in s.lower() for key in ("agree", "satisfied", "positive")) for s in clean):
             negish = []
             if df_disp is not None:
@@ -298,11 +298,9 @@ def _normalize_meaning_labels(
                         negish.append(str(col).strip())
             clean = negish or clean
 
-    # If after all this we still have nothing, keep whatever was provided or fallback to a single label
     if not clean:
         clean = labels or ["Yes"] if rf == "AGREE" else labels or []
 
-    # Final pass: collapse to unique, readable labels
     final_labels = []
     seen2 = set()
     for s in clean:
@@ -314,7 +312,7 @@ def _normalize_meaning_labels(
     return final_labels
 
 # --------------------------------------------------------------------------------------
-# Prompt builders (unchanged signatures; per-q now normalizes meaning_labels)
+# Prompt builders (same signatures; added zero_gap_guard flag)
 # --------------------------------------------------------------------------------------
 
 def build_per_q_prompt(
@@ -350,6 +348,8 @@ def build_per_q_prompt(
         "distribution_only": bool(distribution_only),
         "allow_trend": allow_trend,
         "years_present": years_present,
+        "gap_over_time_policy": "earliest_to_latest",
+        "zero_gap_guard": True,
         "output_format": {"type": "json", "key": "narrative"},
     }
     return json.dumps(payload, ensure_ascii=False)
@@ -397,9 +397,7 @@ def build_overall_prompt(
                 years_present = sorted(non_null_years)
                 allow_trend = len(non_null_years) >= 2
 
-            # Normalize per-question meaning labels as well (polarity-aware if we know it via metric label)
             raw_labels = list((q_to_meaning_labels or {}).get(q, []))
-            # We don't have reporting_field per question in overall prompt; keep safe normalization only
             safe_labels = _normalize_meaning_labels(raw_labels, reporting_field=None, df_disp=None)
 
             selected_questions.append({
@@ -425,6 +423,12 @@ def build_overall_prompt(
         "task": "overall_synthesis",
         "selected_questions": selected_questions,
         "matrix": {"years": years, "values_by_row": matrix},
+        "overall_controls": {
+            "no_repetition": True,
+            "cross_question_only": True,
+            "hr_insights_allowed": True,
+            "ban_external_context": True
+        },
         "output_format": {"type": "json", "key": "narrative"},
     }
     return json.dumps(payload, ensure_ascii=False)
