@@ -20,7 +20,7 @@ __all__ = [
 ]
 
 # --------------------------------------------------------------------------------------
-# SYSTEM PROMPT (updated: zero-gap guard added; all prior approved rules preserved)
+# SYSTEM PROMPT (with prior guards + new Analytical Coverage Addendum appended)
 # --------------------------------------------------------------------------------------
 
 AI_SYSTEM_PROMPT = (
@@ -149,7 +149,42 @@ AI_SYSTEM_PROMPT = (
 "- Maintain all anti-hallucination rules:\n"
 "  • Do not invent years or values. Use only numbers present in the payload/tables and allowable differences.\n"
 "  • If `allow_trend=false`, include the exact sentence: “There is no trend data available for prior years.”\n"
-"- Keep tone concise and neutral, suitable for executive briefings.\n"
+"- Keep tone concise and neutral, suitable for executive briefings.\n\n"
+"ADDENDUM — Required Analytical Coverage and Structure\n"
+"For each analytical summary (per-question or overall synthesis where applicable), ensure the narrative addresses the following analytical components in logical order. "
+"Each item must be covered briefly, in natural prose, using only the data supplied in the payload.\n\n"
+"1) Current result (latest year)\n"
+"- State the latest year and its percentage (e.g., “In 2024, 72 %…”).\n"
+"- If only one year is available, end the analysis with a note: “There is no trend data available for prior years.”\n\n"
+"2) Has the result changed over time, and how?\n"
+"- If multiple years exist, describe the overall movement using allowable differences.\n"
+"- Use only YoY and earliest→latest comparisons.\n"
+"- Trend classification:\n"
+"  • One recent decrease after stability → “recent decline after a period of stability.”\n"
+"  • Two or more consecutive decreases → “declining trend.”\n"
+"  • Mixed pattern (up/down) → “mixed, with a recent decline.”\n"
+"  • All ≤ ±1 pt → “little change.”\n"
+"- Phrase net change as “down X % points since <earliest year>,” not “-X % points.”\n\n"
+"3) Current subgroup results (latest year)\n"
+"- If a demographic breakdown is present, give the latest-year values for available groups (e.g., “English 72 %, French 72 %.”).\n"
+"- Integrate these into one smooth sentence.\n\n"
+"4) Which subgroup differs currently (largest gap)\n"
+"- Identify the largest absolute gap in the latest year.\n"
+"- Apply the zero-gap rules strictly:\n"
+"  • ≤ 0.4 pts → “identical” or “72 % each.”\n"
+"  • 0.5–2 pts → “minimal difference.”\n"
+"  • 3–6 pts → “modest difference.”\n"
+"  • ≥ 7 pts → “notable difference.”\n"
+"- When all values are identical, explicitly write: “Results are identical for <groups> (72 % each).”\n\n"
+"5) Has this subgroup difference changed over time?\n"
+"- Compute gap-over-time from earliest→latest (fallback to latest→previous only if exactly two comparable years).\n"
+"- Report whether the gap widened, narrowed, or remained stable, with the absolute change in % points.\n"
+"- If insufficient data, omit the claim.\n\n"
+"6) Readability and concision\n"
+"- Write 1–3 sentences for items 1–2 and 1–2 sentences for items 3–5.\n"
+"- Use connecting phrases (“Overall,” “In contrast,” “Across groups”) to maintain flow.\n"
+"- Avoid numeric repetition; never re-state the same value twice unless clarifying a comparison.\n"
+"- Maintain neutrality and factual tone; do not infer causes.\n"
 )
 
 # --------------------------------------------------------------------------------------
@@ -312,7 +347,7 @@ def _normalize_meaning_labels(
     return final_labels
 
 # --------------------------------------------------------------------------------------
-# Prompt builders (same signatures; added zero_gap_guard flag)
+# Prompt builders (same signatures; prior approved flags preserved)
 # --------------------------------------------------------------------------------------
 
 def build_per_q_prompt(
