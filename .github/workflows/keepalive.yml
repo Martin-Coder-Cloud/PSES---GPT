@@ -2,7 +2,8 @@ name: Keepalive
 
 on:
   schedule:
-    - cron: "*/10 * * * *"  # every 10 minutes (UTC)
+    - cron: "*/10 * * * *"   # primary every 10 minutes (UTC)
+    - cron: "*/11 * * * *"   # staggered backup every 11 minutes (UTC)
   workflow_dispatch:
 
 permissions:
@@ -20,14 +21,10 @@ jobs:
       - name: Jitter (avoid thundering herd)
         run: sleep $((RANDOM % 60))
 
-      - name: Ping Streamlit app
+      - name: Ping Streamlit app (keepalive)
         run: |
-          set -euo pipefail
-          urls=(
-            "https://pses-explorer.streamlit.app/"
-          )
-          for u in "${urls[@]}"; do
-            echo "Pinging: $u"
-            curl -sS --fail --max-time 20 --retry 3 --retry-delay 5 "$u" > /dev/null
-            echo "OK"
-          done
+          url="https://pses-explorer.streamlit.app/?keepalive=1"
+          echo "[$(date -u '+%Y-%m-%d %H:%M:%S UTC')] Pinging: $url"
+          status=$(curl -sS -L --max-time 20 --retry 2 --retry-delay 3 \
+                   -o /dev/null -w "%{http_code}" "$url" || true)
+          echo "HTTP $status"
