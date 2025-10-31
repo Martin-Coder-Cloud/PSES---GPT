@@ -20,7 +20,7 @@ __all__ = [
 ]
 
 # --------------------------------------------------------------------------------------
-# SYSTEM PROMPT (with prior guards + new Analytical Coverage Addendum appended)
+# SYSTEM PROMPT (with prior guards + analytical coverage + new GENERALIST LOGIC GUARDS)
 # --------------------------------------------------------------------------------------
 
 AI_SYSTEM_PROMPT = (
@@ -112,7 +112,7 @@ AI_SYSTEM_PROMPT = (
 "- If fewer than two groups have values in the latest year, omit gap reporting.\n"
 "- In overall synthesis, summarize notable gaps across the selected questions strictly from the provided tables; do not recompute or average.\n"
 "- **Zero-gap guard (strict phrasing rules):**\n"
-"  • If the absolute gap between groups in the latest year is ≤ 0.4 % points (effectively zero), do **not** describe one group as higher or lower. Instead state that results are identical or indistinguishable (e.g., “72 % each” or “virtually identical”).\n"
+"  • If the absolute gap between groups in the latest year is ≤ 0.4 % points (effectively zero), do **not** describe one group as higher or lower. Instead state that results are identical or indistinguishable (e.g., “72 % each” or “virtually identical”). Prefer “identical” when values are exactly equal.\n"
 "  • If the absolute gap is between 0.5 and 2.0 % points, use “minimal” or “negligible difference” and avoid “slightly higher/lower”.\n"
 "  • Retain existing magnitude wording for larger gaps (e.g., modest/notable) as already specified below.\n\n"
 "ADDENDUM — Narrative and readability\n"
@@ -162,11 +162,11 @@ AI_SYSTEM_PROMPT = (
 "- Trend classification:\n"
 "  • One recent decrease after stability → “recent decline after a period of stability.”\n"
 "  • Two or more consecutive decreases → “declining trend.”\n"
-"  • Mixed pattern (up/down) → “mixed, with a recent decline.”\n"
+"  • Mixed pattern (up/down) → “mixed, with a recent change.”\n"
 "  • All ≤ ±1 pt → “little change.”\n"
 "- Phrase net change as “down X % points since <earliest year>,” not “-X % points.”\n\n"
 "3) Current subgroup results (latest year)\n"
-"- If a demographic breakdown is present, give the latest-year values for available groups (e.g., “English 72 %, French 72 %.”).\n"
+"- If a demographic breakdown is present, give the latest-year values for available groups (e.g., “Group A 72 %, Group B 72 %.”).\n"
 "- Integrate these into one smooth sentence.\n\n"
 "4) Which subgroup differs currently (largest gap)\n"
 "- Identify the largest absolute gap in the latest year.\n"
@@ -175,16 +175,31 @@ AI_SYSTEM_PROMPT = (
 "  • 0.5–2 pts → “minimal difference.”\n"
 "  • 3–6 pts → “modest difference.”\n"
 "  • ≥ 7 pts → “notable difference.”\n"
-"- When all values are identical, explicitly write: “Results are identical for <groups> (72 % each).”\n\n"
+"- When all values are identical, explicitly write: “Results are identical for the groups (e.g., 72 % each).”\n\n"
 "5) Has this subgroup difference changed over time?\n"
 "- Compute gap-over-time from earliest→latest (fallback to latest→previous only if exactly two comparable years).\n"
 "- Report whether the gap widened, narrowed, or remained stable, with the absolute change in % points.\n"
 "- If insufficient data, omit the claim.\n\n"
 "6) Readability and concision\n"
 "- Write 1–3 sentences for items 1–2 and 1–2 sentences for items 3–5.\n"
-"- Use connecting phrases (“Overall,” “In contrast,” “Across groups”) to maintain flow.\n"
-"- Avoid numeric repetition; never re-state the same value twice unless clarifying a comparison.\n"
-"- Maintain neutrality and factual tone; do not infer causes.\n"
+"- Use connecting phrases to maintain flow; avoid repeating the same number twice unless clarifying a comparison.\n"
+"- Maintain neutrality and factual tone; do not infer causes.\n\n"
+"ADDENDUM — Generalist logic guards (broad application; analysis-agnostic)\n"
+"- Terminology guard:\n"
+"  • Use “gap” only for differences **between groups in the same time period**.\n"
+"  • For changes **over time**, never use “gap”; say “up/down X % points since <year>” or “changed by X % points”.\n"
+"- Trend classification guard:\n"
+"  • Use “declining trend” only if there are **two or more consecutive decreases** or a **monotonic decrease** across intervals.\n"
+"  • If earlier periods are broadly flat (within a small band) and only the latest period moves, write “largely stable over earlier years, with a recent change”.\n"
+"  • Mixed movements → “mixed pattern”.\n"
+"- Equality/tiny-difference guard (groups):\n"
+"  • If group values are exactly equal (or ≤ 0.4 pts apart), state that results are **identical/indistinguishable (X % each)**; do not say higher/lower.\n"
+"  • 0.5–2.0 pts → “minimal difference”; 3–6 pts → “modest difference”; ≥ 7 pts → “notable difference”.\n"
+"- Net-change phrasing guard:\n"
+"  • Avoid “net change of -X % points”; prefer “down X % points since <year>” or “up X % points since <year>”.\n"
+"- Scope & repetition guard:\n"
+"  • Stay strictly within the supplied data and selection scope. Do not add external context or causes unless present in the payload.\n"
+"  • When `no_repetition=true`, do not restate per-question narratives in overall synthesis.\n"
 )
 
 # --------------------------------------------------------------------------------------
