@@ -26,7 +26,8 @@ __all__ = [
 AI_SYSTEM_PROMPT = (
 "You are preparing insights for the Government of Canada's Public Service Employee Survey (PSES).\n\n"
 "Context\n"
-"- All percentages refer to public service respondents across the federal Public Service of Canada.\n"  # ADDED
+"- All percentages refer to public service respondents across the federal Public Service of Canada.\n"
+"- Every analytical summary, whether per-question or overall, must open with a sentence that clearly names the survey population using the phrase “respondents across the public service.” This reference must appear once at the start of each summary (e.g., “In 2024, 72 % of respondents across the public service …”). Do not begin a paragraph without this reference.\n"
 "- The PSES informs improvements to people management in the federal public service.\n"
 "- Results help identify strengths and concerns in areas such as engagement, inclusion, well-being, leadership, and career development.\n"
 "- The survey tracks progress over time to refine departmental and enterprise-wide action plans.\n"
@@ -51,7 +52,6 @@ AI_SYSTEM_PROMPT = (
 "- Do NOT compute multi-year averages or rates of change beyond these integer subtractions.\n"
 "- If `distribution_only=true`, describe only the latest-year distribution; never create aggregates.\n\n"
 "Trend rules (per-question; prioritize current year, then context)\n"
-"- Interpret change as a change between survey cycles, not calendar years. PSES cycles are typically every two years (e.g. 2020 → 2022 → 2024), so prefer “compared with the previous survey cycle” over “year-over-year.”\n"  # ADDED
 "- Start with the latest year vs the previous year only when at least two years are available: report the YoY change in % points "
 "(e.g., “2024: 54 %, down 2 % points vs 2023”).\n"
 "- Then place this YoY in the context of all available years:\n"
@@ -110,7 +110,6 @@ AI_SYSTEM_PROMPT = (
 "- When the payload indicates `demographic_breakdown_present=true`, you MUST:\n"
 "  • Identify the latest year present in `years_present` and report the largest gap between demographic groups for the reported metric in that year, as an absolute difference in % points. Prefer integrated phrasing within the paragraph.\n"
 "  • Compute gap-over-time from the earliest comparable year to the latest year (or latest vs previous if only two years exist), and state whether it widened, narrowed, or remained stable, with the absolute change in % points.\n"
-"- After reporting the numerical gap, you must also qualify its magnitude using the existing thresholds (≤2 pts = minimal, 3–6 pts = modest, ≥7 pts = notable) and state whether the gap has widened, narrowed, or remained stable compared with the previous survey cycle. This ensures every demographic comparison conveys both size and direction of change.\n"  # ADDED
 "- Use only numbers visible in the table for the relevant groups and years. Do not infer values for missing years or groups.\n"
 "- If fewer than two groups have values in the latest year, omit gap reporting.\n"
 "- In overall synthesis, summarize notable gaps across the selected questions strictly from the provided tables; do not recompute or average.\n"
@@ -397,7 +396,6 @@ def build_per_q_prompt(
             "reporting_field": reporting_field,
         },
         "demographic_breakdown_present": bool(category_in_play),
-        "population_label": "public service respondents across the federal Public Service of Canada",
         "meaning_labels": list(norm_labels),
         "distribution_only": bool(distribution_only),
         "allow_trend": allow_trend,
@@ -477,8 +475,6 @@ def build_overall_prompt(
         "task": "overall_synthesis",
         "selected_questions": selected_questions,
         "matrix": {"years": years, "values_by_row": matrix},
-        "demographic_discussion_required": True if len(years) >= 1 else False,
-        "has_multi_years": True if len(years) > 2 else False,
         "overall_controls": {
             "no_repetition": True,
             "cross_question_only": True,
