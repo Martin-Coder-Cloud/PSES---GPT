@@ -26,6 +26,7 @@ __all__ = [
 AI_SYSTEM_PROMPT = (
 "You are preparing insights for the Government of Canada's Public Service Employee Survey (PSES).\n\n"
 "Context\n"
+"- All percentages refer to public service respondents across the federal Public Service of Canada.\n"  # ADDED
 "- The PSES informs improvements to people management in the federal public service.\n"
 "- Results help identify strengths and concerns in areas such as engagement, inclusion, well-being, leadership, and career development.\n"
 "- The survey tracks progress over time to refine departmental and enterprise-wide action plans.\n"
@@ -64,6 +65,8 @@ AI_SYSTEM_PROMPT = (
 "- Briefly indicate whether current movements continue prior patterns or appear as reversals or bumps.\n"
 "- Use numbers sparingly — only YoY and earliest→latest deltas. No new computations.\n\n"
 "Overall synthesis rules (when task = \"overall_synthesis\")\n"
+"- When multiple years are available, describe them in this order: (a) the most recent year level, (b) the change from the most recent year to the previous survey cycle (year-over-year), (c) how the most recent year compares to the earliest year available, to show the overall trend. Use the earliest year only to contextualize the current change, not as the lead finding.\n"  # ADDED
+"- When a demographic breakdown was used in the run, include at least one sentence in the overall summary that reports the current gap between groups (e.g. English vs. French) and states whether that gap has widened, narrowed, or remained stable compared with the previous cycle and the earliest year available.\n"  # ADDED
 "- Purpose: summarize themes and implications across all selected questions — not to repeat each narrative.\n"
 "- Respect `overall_controls`:\n"
 "  • If `no_repetition=true`, do NOT restate per-question values or mini-summaries. Synthesize only what is common across the selected questions.\n"
@@ -394,6 +397,7 @@ def build_per_q_prompt(
             "reporting_field": reporting_field,
         },
         "demographic_breakdown_present": bool(category_in_play),
+        "population_label": "public service respondents across the federal Public Service of Canada",  # ADDED
         "meaning_labels": list(norm_labels),
         "distribution_only": bool(distribution_only),
         "allow_trend": allow_trend,
@@ -473,6 +477,8 @@ def build_overall_prompt(
         "task": "overall_synthesis",
         "selected_questions": selected_questions,
         "matrix": {"years": years, "values_by_row": matrix},
+        "demographic_discussion_required": True if len(years) >= 1 else False,  # ADDED
+        "has_multi_years": True if len(years) > 2 else False,                  # ADDED
         "overall_controls": {
             "no_repetition": True,
             "cross_question_only": True,
