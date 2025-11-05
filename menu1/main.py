@@ -155,14 +155,16 @@ def run() -> None:
 
         # Diagnostics (tabs)
         if show_diag:
-            diagnostics.render_diagnostics_tabs(qdf, sdf, demo_df)
-
-            # --- ADDED: show AI diagnostics captured in results.py ---
-            ai_diag = st.session_state.get("menu1_ai_diag")
-            if ai_diag:
-                st.markdown("#### AI diagnostics")
-                st.json(ai_diag)
-            # --- END ADD ---
+            # show two tabs: existing diagnostics + AI diagnostics
+            diag_tab, ai_diag_tab = st.tabs(["Diagnostics", "AI diagnostics"])
+            with diag_tab:
+                diagnostics.render_diagnostics_tabs(qdf, sdf, demo_df)
+            with ai_diag_tab:
+                ai_diag = st.session_state.get("menu1_ai_diag")
+                if ai_diag:
+                    st.json(ai_diag)
+                else:
+                    st.caption("No AI diagnostics captured yet. Run a search with AI turned on.")
 
         # Controls
         question_codes = controls.question_picker(qdf)  # -> List[str] (codes)
@@ -219,7 +221,6 @@ def run() -> None:
                         sub_selection=sub_selection,
                     )
                     code_to_text = dict(zip(qdf["code"], qdf["text"]))
-
                     state.stash_results({
                         "per_q_disp": per_q_disp,
                         "per_q_metric_col": per_q_metric_col,
