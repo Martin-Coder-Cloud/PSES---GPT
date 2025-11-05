@@ -270,6 +270,7 @@ def _normalize_scales_df(scales_df: pd.DataFrame) -> pd.DataFrame:
         else:
             return pd.DataFrame(columns=["code", "value", "label"])
 
+
         def ans_index(colname: str) -> Optional[int]:
             m = re.match(r"answer\s*(\d+)", colname, flags=re.IGNORECASE)
             return int(m.group(1)) if m else None
@@ -965,6 +966,7 @@ def tabs_summary_and_per_q(
         "metric_labels": {q: per_q_metric_label_in[q] for q in tab_labels},
         "pivot_sig": _hash_key(pivot_from_payload),
         "summary_sig": _hash_key(summary_pivot),
+        "system_sig": _hash_key(AI_SYSTEM_PROMPT),  # ← added so prompt changes bust cache
     }
     ai_key = "menu1_ai_" + _hash_key(ai_sig)
 
@@ -1067,7 +1069,6 @@ def tabs_summary_and_per_q(
                 st.write(overall_txt_star)
                 if first_overall_lab:
                     st.caption(f"\* Percentages represent respondents’ aggregate answers: {first_overall_lab}.")
-
         else:
             # ---------- per-question AI ----------
             per_q_narratives: Dict[str, str] = {}
