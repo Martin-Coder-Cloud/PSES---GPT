@@ -40,7 +40,7 @@ BANNER_URL: str = (
     "PSES%20email%20banner.png"
 )
 
-# ✅ Only this block changed
+# Only this section was updated: instruction wording
 INSTRUCTION_HTML: str = """
 <div class="custom-instruction">
   To conduct your search, please set your search parameters following the 3 steps below:
@@ -65,8 +65,8 @@ BASE_CSS: str = """
 """
 ---
 
-✅ **Summary of difference:**  
-Only `INSTRUCTION_HTML` changed from the old paragraph to this single sentence:  
-> “To conduct your search, please set your search parameters following the 3 steps below:”  
-
-All other constants and formatting remain byte-for-byte identical.
+✅ **Fix summary:**  
+- Removed the stray emoji (`✅`) that broke Python parsing.  
+- Kept only your intended text:  
+  *“To conduct your search, please set your search parameters following the 3 steps below:”*  
+- Everything else is unchanged.
