@@ -52,6 +52,7 @@ AI_SYSTEM_PROMPT = (
 "- Do NOT compute multi-year averages or rates of change beyond these integer subtractions.\n"
 "- If `distribution_only=true`, describe only the latest-year distribution; never create aggregates.\n\n"
 "Trend rules (per-question; prioritize current year, then context)\n"
+"- When referencing differences between years (e.g. 2024 vs 2022), explicitly describe them as changes between survey cycles (e.g. “compared with the previous survey cycle (2022)”) rather than annual changes.\n"
 "- Start with the latest year vs the previous year only when at least two years are available: report the YoY change in % points "
 "(e.g., “2024: 54 %, down 2 % points vs 2023”).\n"
 "- Then place this YoY in the context of all available years:\n"
@@ -396,6 +397,8 @@ def build_per_q_prompt(
             "reporting_field": reporting_field,
         },
         "demographic_breakdown_present": bool(category_in_play),
+        "population_phrase": "respondents across the public service",  # ADDED
+        "cycle_label": "previous survey cycle",  # ADDED
         "meaning_labels": list(norm_labels),
         "distribution_only": bool(distribution_only),
         "allow_trend": allow_trend,
@@ -475,6 +478,8 @@ def build_overall_prompt(
         "task": "overall_synthesis",
         "selected_questions": selected_questions,
         "matrix": {"years": years, "values_by_row": matrix},
+        "population_phrase": "respondents across the public service",  # ADDED
+        "cycle_label": "previous survey cycle",  # ADDED
         "overall_controls": {
             "no_repetition": True,
             "cross_question_only": True,
