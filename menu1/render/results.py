@@ -270,7 +270,6 @@ def _normalize_scales_df(scales_df: pd.DataFrame) -> pd.DataFrame:
         else:
             return pd.DataFrame(columns=["code", "value", "label"])
 
-
         def ans_index(colname: str) -> Optional[int]:
             m = re.match(r"answer\s*(\d+)", colname, flags=re.IGNORECASE)
             return int(m.group(1)) if m else None
@@ -972,8 +971,7 @@ def tabs_summary_and_per_q(
     # ------------------------ UX: header + tabs ------------------------
     st.header("Results")
 
-    # ADD: AI diagnostics tab
-    tab_titles = ["Summary table"] + tab_labels + ["Technical notes", "AI diagnostics"]
+    tab_titles = ["Summary table"] + tab_labels + ["Technical notes"]
     tabs = st.tabs(tab_titles)
 
     # Summary tab
@@ -1012,7 +1010,7 @@ def tabs_summary_and_per_q(
             _source_link_line(source_title, source_url)
 
     # Technical notes
-    tech_tab_index = len(tab_titles) - 2
+    tech_tab_index = len(tab_titles) - 1
     with tabs[tech_tab_index]:
         st.markdown("### Technical notes")
         st.markdown(
@@ -1029,10 +1027,20 @@ def tabs_summary_and_per_q(
         st.markdown("---")
         st.markdown("## AI Summary")
 
+        # we'll collect AI inputs here (only for non-cached run)
+        ai_diag_payload = {
+            "per_q": {},
+            "overall": None,
+            "cached": False,
+        }
+
         cached = _ai_cache_get(ai_key)
         if cached:
             per_q_narratives = cached.get("per_q", {}) or {}
             overall_narrative = cached.get("overall")
+
+            # if we are using cached narratives, mark it
+            ai_diag_payload["cached"] = True
 
             # Track the first available labels (non-D57) for the single Overall footnote
             first_overall_lab: Optional[str] = None
@@ -1069,6 +1077,10 @@ def tabs_summary_and_per_q(
                 st.write(overall_txt_star)
                 if first_overall_lab:
                     st.caption(f"\* Percentages represent respondents’ aggregate answers: {first_overall_lab}.")
+
+            # stash what we have (even if cached, so diagnostics can say "cached")
+            st.session_state["menu1_ai_diag"] = ai_diag_payload
+
         else:
             # ---------- per-question AI ----------
             per_q_narratives: Dict[str, str] = {}
@@ -1110,27 +1122,38 @@ def tabs_summary_and_per_q(
 
                 q_to_meaning_labels[q] = meaning_labels_ai
 
+                # build the user payload once so we can stash it in diagnostics
+                user_payload_for_ai = build_per_q_prompt(
+                    question_code=q,
+                    question_text=qtext,
+                    df_disp=(dfq.copy(deep=True) if isinstance(dfq, pd.DataFrame) else dfq),
+                    metric_col=metric_col_ai,
+                    metric_label=metric_label_ai,
+                    category_in_play=category_in_play,
+                    meaning_labels=meaning_labels_ai,
+                    reporting_field=reporting_field_ai,
+                    distribution_only=_is_d57_exception(q)
+                )
+
                 with st.spinner(f"AI — analyzing {q}…"):
                     try:
                         content, _hint = call_openai_json(
                             system=AI_SYSTEM_PROMPT,
-                            user=build_per_q_prompt(
-                                question_code=q,
-                                question_text=qtext,
-                                df_disp=(dfq.copy(deep=True) if isinstance(dfq, pd.DataFrame) else dfq),
-                                metric_col=metric_col_ai,
-                                metric_label=metric_label_ai,
-                                category_in_play=category_in_play,
-                                meaning_labels=meaning_labels_ai,
-                                reporting_field=reporting_field_ai,
-                                distribution_only=_is_d57_exception(q)
-                            )
+                            user=user_payload_for_ai
                         )
                         j = json.loads(content) if content else {}
                         txt = (j.get("narrative") or "").strip()
                     except Exception as e:
                         txt = ""
                         st.warning(f"AI skipped for {q} due to an internal error ({type(e).__name__}).")
+
+                # stash per-question AI diagnostic payload
+                ai_diag_payload["per_q"][q] = {
+                    "system": AI_SYSTEM_PROMPT,
+                    "user": user_payload_for_ai,
+                    "response": txt,
+                }
+
                 per_q_narratives[q] = txt
                 if txt:
                     st.markdown(f"**{q} — {qtext}**")
@@ -1149,19 +1172,21 @@ def tabs_summary_and_per_q(
 
             # ---------- OVERALL ----------
             overall_narrative = None
+            overall_user_payload = None
             if len(tab_labels) > 1 and summary_pivot is not None and not summary_pivot.empty:
                 with st.spinner("AI — synthesizing overall pattern…"):
                     try:
+                        overall_user_payload = build_overall_prompt(
+                            tab_labels=tab_labels,
+                            pivot_df=summary_pivot.copy(deep=True),
+                            q_to_metric={q: (labels_used.get(q) or per_q_metric_label_in[q]) for q in tab_labels},
+                            code_to_text=code_to_text,
+                            q_to_meaning_labels=q_to_meaning_labels,
+                            q_distribution_only=q_distribution_only
+                        )
                         content, _hint = call_openai_json(
                             system=AI_SYSTEM_PROMPT,
-                            user=build_overall_prompt(
-                                tab_labels=tab_labels,
-                                pivot_df=summary_pivot.copy(deep=True),
-                                q_to_metric={q: (labels_used.get(q) or per_q_metric_label_in[q]) for q in tab_labels},
-                                code_to_text=code_to_text,
-                                q_to_meaning_labels=q_to_meaning_labels,
-                                q_distribution_only=q_distribution_only
-                            )
+                            user=overall_user_payload
                         )
                     except Exception as e:
                         content = None
@@ -1178,6 +1203,19 @@ def tabs_summary_and_per_q(
                     st.write(overall_txt_star)
                     if first_overall_lab:
                         st.caption(f"\* Percentages represent respondents’ aggregate answers: {first_overall_lab}.")
+
+            # stash overall AI diagnostic payload (even if None)
+            ai_diag_payload["overall"] = {
+                "system": AI_SYSTEM_PROMPT,
+                "user": overall_user_payload,
+                "response": overall_narrative,
+            } if overall_user_payload is not None else None
+
+            # also remember we actually called the AI
+            ai_diag_payload["cached"] = False
+
+            # persist diagnostics for the main toggle area
+            st.session_state["menu1_ai_diag"] = ai_diag_payload
 
             _ai_cache_put(ai_key, {"per_q": per_q_narratives, "overall": overall_narrative})
             st.session_state["menu1_ai_narr_per_q"] = per_q_narratives
@@ -1208,35 +1246,6 @@ def tabs_summary_and_per_q(
                         st.caption("Overall: no numeric inconsistencies detected.")
         except Exception:
             st.caption("AI Data Validation is unavailable for this run.")
-
-    # ---------------------- AI diagnostics tab ----------------------
-    with tabs[-1]:
-        st.markdown("### AI diagnostics")
-        st.caption("This shows the data actually passed to the AI per question.")
-        for q in tab_labels:
-            dfq = per_q_disp.get(q)
-            st.markdown(f"**{q}**")
-            if dfq is None or dfq.empty:
-                st.write("No dataframe passed to AI for this question.")
-                continue
-
-            if "Year" in dfq.columns:
-                years_seen = sorted({int(y) for y in pd.to_numeric(dfq["Year"], errors="coerce").dropna().tolist()})
-            else:
-                years_seen = []
-
-            if "Demographic" in dfq.columns:
-                demos_seen = sorted(dfq["Demographic"].astype(str).dropna().unique().tolist())
-            else:
-                demos_seen = []
-
-            st.write(
-                {
-                    "years_seen_by_ai": years_seen,
-                    "demographics_seen_by_ai": demos_seen,
-                    "columns": list(dfq.columns),
-                }
-            )
 
     # ----------------------- Footer: Export + Start new -----------------------
     st.markdown("---")
@@ -1318,7 +1327,7 @@ def tabs_summary_and_per_q(
             except Exception:
                 st.experimental_rerun()
 
-# ------------------- Excel export --------------------
+    # ------------------- Excel export --------------------
 
 def _render_excel_download(
     *,
