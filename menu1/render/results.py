@@ -966,14 +966,14 @@ def tabs_summary_and_per_q(
         "metric_labels": {q: per_q_metric_label_in[q] for q in tab_labels},
         "pivot_sig": _hash_key(pivot_from_payload),
         "summary_sig": _hash_key(summary_pivot),
-        "system_sig": _hash_key(AI_SYSTEM_PROMPT),  # ← added so prompt changes bust cache
     }
     ai_key = "menu1_ai_" + _hash_key(ai_sig)
 
     # ------------------------ UX: header + tabs ------------------------
     st.header("Results")
 
-    tab_titles = ["Summary table"] + tab_labels + ["Technical notes"]
+    # ADD: AI diagnostics tab
+    tab_titles = ["Summary table"] + tab_labels + ["Technical notes", "AI diagnostics"]
     tabs = st.tabs(tab_titles)
 
     # Summary tab
@@ -1012,7 +1012,7 @@ def tabs_summary_and_per_q(
             _source_link_line(source_title, source_url)
 
     # Technical notes
-    tech_tab_index = len(tab_titles) - 1
+    tech_tab_index = len(tab_titles) - 2
     with tabs[tech_tab_index]:
         st.markdown("### Technical notes")
         st.markdown(
@@ -1208,6 +1208,35 @@ def tabs_summary_and_per_q(
                         st.caption("Overall: no numeric inconsistencies detected.")
         except Exception:
             st.caption("AI Data Validation is unavailable for this run.")
+
+    # ---------------------- AI diagnostics tab ----------------------
+    with tabs[-1]:
+        st.markdown("### AI diagnostics")
+        st.caption("This shows the data actually passed to the AI per question.")
+        for q in tab_labels:
+            dfq = per_q_disp.get(q)
+            st.markdown(f"**{q}**")
+            if dfq is None or dfq.empty:
+                st.write("No dataframe passed to AI for this question.")
+                continue
+
+            if "Year" in dfq.columns:
+                years_seen = sorted({int(y) for y in pd.to_numeric(dfq["Year"], errors="coerce").dropna().tolist()})
+            else:
+                years_seen = []
+
+            if "Demographic" in dfq.columns:
+                demos_seen = sorted(dfq["Demographic"].astype(str).dropna().unique().tolist())
+            else:
+                demos_seen = []
+
+            st.write(
+                {
+                    "years_seen_by_ai": years_seen,
+                    "demographics_seen_by_ai": demos_seen,
+                    "columns": list(dfq.columns),
+                }
+            )
 
     # ----------------------- Footer: Export + Start new -----------------------
     st.markdown("---")
