@@ -22,8 +22,8 @@ DEFAULT_OPENAI_MODEL: str = "gpt-4o-mini"
 # --- Analysis thresholds (points) ---
 # Trend classification when comparing latest vs. earliest year.
 TREND_THRESHOLDS = {
-    "stable": 1,   # ≤ 1 point
-    "slight": 2,   # >1–2 points
+    "stable": 1,  # ≤ 1 point
+    "slight": 2,  # >1–2 points
     "notable": 999  # > 2 points (upper bound acts as "everything above")
 }
 
@@ -40,9 +40,8 @@ BANNER_URL: str = (
     "PSES%20email%20banner.png"
 )
 
-# Updated to appear as a prominent subtitle (bigger and bold)
 INSTRUCTION_HTML: str = """
-<div class="custom-instruction" style="font-size:22px; font-weight:800; text-align:center; color:#222; margin-top:1rem; margin-bottom:1.2rem;">
+<div class="custom-instruction">
   To conduct your search, please set your search parameters following the 3 steps below:
 </div>
 """
@@ -54,7 +53,17 @@ BASE_CSS: str = """
   .block-container { padding-top: 1rem !important; }
   .menu-banner { width: 100%; height: auto; display: block; margin-top: 0px; margin-bottom: 20px; }
   .custom-header { font-size: 30px !important; font-weight: 700; margin-bottom: 6px; }
-  .custom-instruction { font-size: 16px !important; line-height: 1.4; margin-bottom: 10px; color: #333; }
+
+  /* Updated to make instruction line act as subtitle */
+  .custom-instruction {
+    font-size: 22px !important;
+    font-weight: 800 !important;
+    text-align: center !important;
+    color: #222 !important;
+    margin-top: 1rem !important;
+    margin-bottom: 1.2rem !important;
+  }
+
   .field-label { font-size: 18px !important; font-weight: 600 !important; margin-top: 12px !important; margin-bottom: 2px !important; color: #222 !important; }
   .action-row { display:flex; gap:10px; align-items:center; }
   [data-testid="stSwitch"] div[role="switch"][aria-checked="true"] { background-color: #e03131 !important; }
@@ -65,4 +74,5 @@ BASE_CSS: str = """
 """
 ---
 
-This will render your instruction line directly beneath the main title as a **bold, centered subtitle** with larger text and proper spacing above and below.
+✅ **Now the result:**  
+Your instruction text will render as a **subtitle** — large, bold, centered, dark gray/black, right beneath the main title and toggles.
