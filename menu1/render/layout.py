@@ -53,8 +53,24 @@ def title(text: str) -> None:
     st.markdown(f"<div class='custom-header'>{text}</div>", unsafe_allow_html=True)
 
 def instructions(html: str = INSTRUCTION_HTML) -> None:
-    """Intro instructions block (HTML string from constants)."""
-    st.markdown(html, unsafe_allow_html=True)
+    """
+    Intro instructions block.
+    Render as a Title-2 style line, left-aligned, just below the main title.
+    """
+    st.markdown(
+        f"""
+        <div style="
+            font-size: 20px;
+            font-weight: 700;
+            text-align: left;
+            margin-top: 0.75rem;
+            margin-bottom: 1rem;
+            color: #222;">
+            {html}
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
 
 # ---------------------------------------------------------------------------
 # Toggles row
