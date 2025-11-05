@@ -10,11 +10,11 @@ SOURCE_TITLE: str = "Public Service Employee Survey Results – Open Government 
 
 # --- UI defaults ---
 PAGE_TITLE: str = "PSES Explorer Search"
-CENTER_COLUMNS: list[int] = [1, 3, 1]         # layout for left, center, right
-MAX_QUESTIONS: int = 5                        # cap for multi-select
+CENTER_COLUMNS: list[int] = [1, 3, 1]  # layout for left, center, right
+MAX_QUESTIONS: int = 5  # cap for multi-select
 DEFAULT_YEARS: list[int] = [2024, 2022, 2020, 2019]
-DEFAULT_AI_TOGGLE: bool = True                # AI on by default
-DEFAULT_DIAG_TOGGLE: bool = False             # Diagnostics off by default
+DEFAULT_AI_TOGGLE: bool = True  # AI on by default
+DEFAULT_DIAG_TOGGLE: bool = False  # Diagnostics off by default
 
 # --- AI / Model settings (non-secret; key stays in st.secrets or env) ---
 DEFAULT_OPENAI_MODEL: str = "gpt-4o-mini"
@@ -24,7 +24,7 @@ DEFAULT_OPENAI_MODEL: str = "gpt-4o-mini"
 TREND_THRESHOLDS = {
     "stable": 1,   # ≤ 1 point
     "slight": 2,   # >1–2 points
-    "notable": 999 # > 2 points (upper bound acts as "everything above")
+    "notable": 999  # > 2 points (upper bound acts as "everything above")
 }
 
 # Demographic gap classification (absolute point differences).
@@ -40,7 +40,6 @@ BANNER_URL: str = (
     "PSES%20email%20banner.png"
 )
 
-# Only this section was updated: instruction wording
 INSTRUCTION_HTML: str = """
 <div class="custom-instruction">
   To conduct your search, please set your search parameters following the 3 steps below:
@@ -63,10 +62,3 @@ BASE_CSS: str = """
   .diag-box { background: #fafafa; border: 1px solid #eee; border-radius: 8px; padding: 10px 12px; }
 </style>
 """
----
-
-✅ **Fix summary:**  
-- Removed the stray emoji (`✅`) that broke Python parsing.  
-- Kept only your intended text:  
-  *“To conduct your search, please set your search parameters following the 3 steps below:”*  
-- Everything else is unchanged.
