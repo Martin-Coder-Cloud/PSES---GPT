@@ -72,7 +72,3 @@ BASE_CSS: str = """
   .diag-box { background: #fafafa; border: 1px solid #eee; border-radius: 8px; padding: 10px 12px; }
 </style>
 """
----
-
-✅ **Now the result:**  
-Your instruction text will render as a **subtitle** — large, bold, centered, dark gray/black, right beneath the main title and toggles.
