@@ -20,21 +20,19 @@ DEFAULT_DIAG_TOGGLE: bool = False  # Diagnostics off by default
 DEFAULT_OPENAI_MODEL: str = "gpt-4o-mini"
 
 # --- Analysis thresholds (points) ---
-# Trend classification when comparing latest vs. earliest year.
 TREND_THRESHOLDS = {
-    "stable": 1,  # ≤ 1 point
-    "slight": 2,  # >1–2 points
-    "notable": 999  # > 2 points (upper bound acts as "everything above")
+    "stable": 1,
+    "slight": 2,
+    "notable": 999
 }
 
-# Demographic gap classification (absolute point differences).
 GAP_THRESHOLDS = {
-    "minimal": 2,  # ≤ 2 points
-    "notable": 5,  # >2–5 points
+    "minimal": 2,
+    "notable": 5,
     "important": 999
 }
 
-# --- Text/UI strings (keep here to avoid scattering copy) ---
+# --- Text/UI strings ---
 BANNER_URL: str = (
     "https://raw.githubusercontent.com/Martin-Coder-Cloud/PSES---GPT/refs/heads/main/"
     "PSES%20email%20banner.png"
@@ -46,24 +44,22 @@ INSTRUCTION_HTML: str = """
 </div>
 """
 
-# CSS injected at page load (kept minimal; anything bigger should move to a separate module if needed).
+# --- Base CSS ---
 BASE_CSS: str = """
 <style>
   body { background-image: none !important; background-color: white !important; }
   .block-container { padding-top: 1rem !important; }
   .menu-banner { width: 100%; height: auto; display: block; margin-top: 0px; margin-bottom: 20px; }
   .custom-header { font-size: 30px !important; font-weight: 700; margin-bottom: 6px; }
-
-  /* Updated to make instruction line act as subtitle */
   .custom-instruction {
     font-size: 22px !important;
-    font-weight: 800 !important;
-    text-align: center !important;
+    font-weight: 700 !important;
+    text-align: left !important;
+    margin-left: 4px !important;
     color: #222 !important;
     margin-top: 1rem !important;
-    margin-bottom: 1.2rem !important;
+    margin-bottom: 1rem !important;
   }
-
   .field-label { font-size: 18px !important; font-weight: 600 !important; margin-top: 12px !important; margin-bottom: 2px !important; color: #222 !important; }
   .action-row { display:flex; gap:10px; align-items:center; }
   [data-testid="stSwitch"] div[role="switch"][aria-checked="true"] { background-color: #e03131 !important; }
@@ -72,3 +68,6 @@ BASE_CSS: str = """
   .diag-box { background: #fafafa; border: 1px solid #eee; border-radius: 8px; padding: 10px 12px; }
 </style>
 """
+---
+
+That will keep your subtitle **bold, larger, and visually aligned** with the rest of the content under the header.
