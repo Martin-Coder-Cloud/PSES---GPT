@@ -40,8 +40,9 @@ BANNER_URL: str = (
     "PSES%20email%20banner.png"
 )
 
+# Updated to appear as a prominent subtitle (bigger and bold)
 INSTRUCTION_HTML: str = """
-<div class="custom-instruction">
+<div class="custom-instruction" style="font-size:22px; font-weight:800; text-align:center; color:#222; margin-top:1rem; margin-bottom:1.2rem;">
   To conduct your search, please set your search parameters following the 3 steps below:
 </div>
 """
@@ -62,3 +63,6 @@ BASE_CSS: str = """
   .diag-box { background: #fafafa; border: 1px solid #eee; border-radius: 8px; padding: 10px 12px; }
 </style>
 """
+---
+
+This will render your instruction line directly beneath the main title as a **bold, centered subtitle** with larger text and proper spacing above and below.
