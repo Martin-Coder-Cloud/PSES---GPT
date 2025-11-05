@@ -111,6 +111,7 @@ AI_SYSTEM_PROMPT = (
 "- When the payload indicates `demographic_breakdown_present=true`, you MUST:\n"
 "  • Identify the latest year present in `years_present` and report the largest gap between demographic groups for the reported metric in that year, as an absolute difference in % points. Prefer integrated phrasing within the paragraph.\n"
 "  • Compute gap-over-time from the earliest comparable year to the latest year (or latest vs previous if only two years exist), and state whether it widened, narrowed, or remained stable, with the absolute change in % points.\n"
+"- When `demographic_breakdown_present=true` and `allow_trend=true` and at least two years are listed in `years_present`, you must not write “There is no trend data available for prior years.” for the demographic portion; instead, state whether the demographic gap remained stable, widened, or narrowed over the available survey cycles.\n"
 "- Use only numbers visible in the table for the relevant groups and years. Do not infer values for missing years or groups.\n"
 "- If fewer than two groups have values in the latest year, omit gap reporting.\n"
 "- In overall synthesis, summarize notable gaps across the selected questions strictly from the provided tables; do not recompute or average.\n"
@@ -397,13 +398,14 @@ def build_per_q_prompt(
             "reporting_field": reporting_field,
         },
         "demographic_breakdown_present": bool(category_in_play),
-        "population_phrase": "respondents across the public service",  # ADDED
-        "cycle_label": "previous survey cycle",  # ADDED
+        "population_phrase": "respondents across the public service",
+        "cycle_label": "previous survey cycle",
         "meaning_labels": list(norm_labels),
         "distribution_only": bool(distribution_only),
         "allow_trend": allow_trend,
         "years_present": years_present,
         "gap_over_time_policy": "earliest_to_latest",
+        "demographic_gap_trend_required": bool(category_in_play and allow_trend and len(years_present) >= 2),
         "zero_gap_guard": True,
         "output_format": {"type": "json", "key": "narrative"},
     }
@@ -478,14 +480,8 @@ def build_overall_prompt(
         "task": "overall_synthesis",
         "selected_questions": selected_questions,
         "matrix": {"years": years, "values_by_row": matrix},
-        "population_phrase": "respondents across the public service",  # ADDED
-        "cycle_label": "previous survey cycle",  # ADDED
-        "overall_controls": {
-            "no_repetition": True,
-            "cross_question_only": True,
-            "hr_insights_allowed": True,
-            "ban_external_context": True
-        },
+        "population_phrase": "respondents across the public service",
+        "cycle_label": "previous survey cycle",
         "output_format": {"type": "json", "key": "narrative"},
     }
     return json.dumps(payload, ensure_ascii=False)
