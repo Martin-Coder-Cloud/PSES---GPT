@@ -157,6 +157,13 @@ def run() -> None:
         if show_diag:
             diagnostics.render_diagnostics_tabs(qdf, sdf, demo_df)
 
+            # --- ADDED: show AI diagnostics captured in results.py ---
+            ai_diag = st.session_state.get("menu1_ai_diag")
+            if ai_diag:
+                st.markdown("#### AI diagnostics")
+                st.json(ai_diag)
+            # --- END ADD ---
+
         # Controls
         question_codes = controls.question_picker(qdf)  # -> List[str] (codes)
         years = controls.year_picker()                  # -> List[int]
@@ -212,6 +219,7 @@ def run() -> None:
                         sub_selection=sub_selection,
                     )
                     code_to_text = dict(zip(qdf["code"], qdf["text"]))
+
                     state.stash_results({
                         "per_q_disp": per_q_disp,
                         "per_q_metric_col": per_q_metric_col,
