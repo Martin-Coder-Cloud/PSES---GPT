@@ -40,11 +40,10 @@ BANNER_URL: str = (
     "PSES%20email%20banner.png"
 )
 
+# ✅ Only this block changed
 INSTRUCTION_HTML: str = """
 <div class="custom-instruction">
-  Please use this menu to explore the survey results by questions.<br>
-  You may select from the drop down menu below up to five questions or find questions via the keyword/theme search.
-  Select year(s) and optionally a demographic category and subgroup.
+  To conduct your search, please set your search parameters following the 3 steps below:
 </div>
 """
 
@@ -64,3 +63,10 @@ BASE_CSS: str = """
   .diag-box { background: #fafafa; border: 1px solid #eee; border-radius: 8px; padding: 10px 12px; }
 </style>
 """
+---
+
+✅ **Summary of difference:**  
+Only `INSTRUCTION_HTML` changed from the old paragraph to this single sentence:  
+> “To conduct your search, please set your search parameters following the 3 steps below:”  
+
+All other constants and formatting remain byte-for-byte identical.
