@@ -10,36 +10,40 @@ SOURCE_TITLE: str = "Public Service Employee Survey Results – Open Government 
 
 # --- UI defaults ---
 PAGE_TITLE: str = "PSES Explorer Search"
-CENTER_COLUMNS: list[int] = [1, 3, 1]
-MAX_QUESTIONS: int = 5
+CENTER_COLUMNS: list[int] = [1, 3, 1]  # layout for left, center, right
+MAX_QUESTIONS: int = 5  # cap for multi-select
 DEFAULT_YEARS: list[int] = [2024, 2022, 2020, 2019]
-DEFAULT_AI_TOGGLE: bool = True
-DEFAULT_DIAG_TOGGLE: bool = False
+DEFAULT_AI_TOGGLE: bool = True  # AI on by default
+DEFAULT_DIAG_TOGGLE: bool = False  # Diagnostics off by default
 
-# --- AI / Model settings ---
+# --- AI / Model settings (non-secret; key stays in st.secrets or env) ---
 DEFAULT_OPENAI_MODEL: str = "gpt-4o-mini"
 
-# --- Analysis thresholds ---
+# --- Analysis thresholds (points) ---
+# Trend classification when comparing latest vs. earliest year.
 TREND_THRESHOLDS = {
-    "stable": 1,
-    "slight": 2,
-    "notable": 999
+    "stable": 1,   # ≤ 1 point
+    "slight": 2,   # >1–2 points
+    "notable": 999  # > 2 points (upper bound acts as "everything above")
 }
 
+# Demographic gap classification (absolute point differences).
 GAP_THRESHOLDS = {
-    "minimal": 2,
-    "notable": 5,
+    "minimal": 2,  # ≤ 2 points
+    "notable": 5,  # >2–5 points
     "important": 999
 }
 
-# --- Text/UI strings ---
+# --- Text/UI strings (keep here to avoid scattering copy) ---
 BANNER_URL: str = (
     "https://raw.githubusercontent.com/Martin-Coder-Cloud/PSES---GPT/refs/heads/main/"
     "PSES%20email%20banner.png"
 )
 
+# plain text, rendered in layout.py as a subtitle
 INSTRUCTION_HTML: str = "To conduct your search, please follow the 3 steps below:"
 
+# CSS injected at page load (kept minimal; anything bigger should move to a separate module if needed).
 BASE_CSS: str = """
 <style>
   body { background-image: none !important; background-color: white !important; }
@@ -54,11 +58,11 @@ BASE_CSS: str = """
   .tiny-note { font-size: 13px; color: #444; margin-bottom: 6px; }
   .diag-box { background: #fafafa; border: 1px solid #eee; border-radius: 8px; padding: 10px 12px; }
 
-  /* Step 1 buttons: make them red with white text */
+  /* Step 1 buttons on Menu 1: make them stand out */
   #menu1-step1-search-btn .stButton > button,
   #menu1-step1-clear-btn .stButton > button {
-    background-color: #e03131 !important;
-    color: #ffffff !important;
+    background-color: #e03131 !important;   /* red */
+    color: #ffffff !important;              /* white text */
     border: 1px solid #c92a2a !important;
     font-weight: 700 !important;
   }
