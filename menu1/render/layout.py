@@ -32,8 +32,6 @@ def centered_page(columns: List[int] | None = None, *, with_css: bool = True):
     """
     Returns a (left, center, right) 3-column layout.
     Use the 'center' column as the primary content area to keep widths consistent.
-
-    Note: Kept compatible with older Streamlit versions (no vertical_alignment arg).
     """
     if with_css:
         inject_base_css()
@@ -54,23 +52,10 @@ def title(text: str) -> None:
 
 def instructions(html: str = INSTRUCTION_HTML) -> None:
     """
-    Intro instructions block.
-    Render as a Title-2 style line, left-aligned, just below the main title.
+    Render the instruction as a Title-2-like line, left aligned, no box.
     """
-    st.markdown(
-        f"""
-        <div style="
-            font-size: 20px;
-            font-weight: 700;
-            text-align: left;
-            margin-top: 0.75rem;
-            margin-bottom: 1rem;
-            color: #222;">
-            {html}
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
+    # use markdown heading level 3 to keep it simple and left aligned
+    st.markdown(f"### {html}")
 
 # ---------------------------------------------------------------------------
 # Toggles row
