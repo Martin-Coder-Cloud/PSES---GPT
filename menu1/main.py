@@ -172,7 +172,6 @@ def run() -> None:
         st.session_state["_menu1_scroll_target"] = "menu1-part3-ai"
 
         # then call your existing AI builder (whatever you have)
-        # I’m calling a hypothetical function on results module:
         ai_summary = results.render_ai_summary(
             question_label=params.get("question_label"),
             results_df=results_df,
@@ -186,6 +185,10 @@ def run() -> None:
     layout.footer()
 
 
-# classic streamlit pattern
-if __name__ == "__main__":
+# keep your existing entry point, but add the name your app expects
+def run_menu1() -> None:
     run()
+
+
+if __name__ == "__main__":
+    run_menu1()
