@@ -52,9 +52,13 @@ def title(text: str) -> None:
 
 def instructions(html: str = INSTRUCTION_HTML) -> None:
     """
-    Render the instruction as a slightly smaller, left-aligned heading (Title 2 style).
+    Render the instruction as a left-aligned subtitle (Title 2),
+    smaller than the main title but distinct from step titles.
     """
-    st.markdown(f"#### {html}")   # <- reduced one level from ### to ####
+    st.markdown(
+        f"<div style='font-size:18px; font-weight:600; text-align:left; margin-top:0.25rem; margin-bottom:0.75rem;'>{html}</div>",
+        unsafe_allow_html=True,
+    )
 
 # ---------------------------------------------------------------------------
 # Toggles row
