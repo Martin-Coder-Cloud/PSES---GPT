@@ -20,14 +20,12 @@ DEFAULT_DIAG_TOGGLE: bool = False  # Diagnostics off by default
 DEFAULT_OPENAI_MODEL: str = "gpt-4o-mini"
 
 # --- Analysis thresholds (points) ---
-# Trend classification when comparing latest vs. earliest year.
 TREND_THRESHOLDS = {
     "stable": 1,   # ≤ 1 point
     "slight": 2,   # >1–2 points
-    "notable": 999  # > 2 points (upper bound acts as "everything above")
+    "notable": 999  # >2 points and above
 }
 
-# Demographic gap classification (absolute point differences).
 GAP_THRESHOLDS = {
     "minimal": 2,  # ≤ 2 points
     "notable": 5,  # >2–5 points
@@ -40,10 +38,10 @@ BANNER_URL: str = (
     "PSES%20email%20banner.png"
 )
 
-# plain text, rendered in layout.py as a subtitle
+# Plain text, rendered in layout.py as a subtitle
 INSTRUCTION_HTML: str = "To conduct your search, please follow the 3 steps below:"
 
-# CSS injected at page load (kept minimal; anything bigger should move to a separate module if needed).
+# --- CSS Styling ---
 BASE_CSS: str = """
 <style>
   body { background-image: none !important; background-color: white !important; }
@@ -58,18 +56,25 @@ BASE_CSS: str = """
   .tiny-note { font-size: 13px; color: #444; margin-bottom: 6px; }
   .diag-box { background: #fafafa; border: 1px solid #eee; border-radius: 8px; padding: 10px 12px; }
 
-  /* Step 1 buttons on Menu 1: make them stand out */
+  /* --- Step 1 buttons on Menu 1 --- */
   #menu1-step1-search-btn .stButton > button,
   #menu1-step1-clear-btn .stButton > button {
-    background-color: #e03131 !important;   /* red */
+    background-color: #e03131 !important;   /* bright red */
     color: #ffffff !important;              /* white text */
     border: 1px solid #c92a2a !important;
     font-weight: 700 !important;
   }
   #menu1-step1-search-btn .stButton > button:hover,
   #menu1-step1-clear-btn .stButton > button:hover {
-    background-color: #c92a2a !important;
+    background-color: #c92a2a !important;   /* darker red on hover */
     border-color: #a61e1e !important;
+    color: #ffffff !important;
+  }
+  #menu1-step1-search-btn .stButton > button:active,
+  #menu1-step1-clear-btn .stButton > button:active {
+    background-color: #a61e1e !important;   /* deepest red on click */
+    border-color: #8c1a1a !important;
+    color: #ffffff !important;
   }
 </style>
 """
