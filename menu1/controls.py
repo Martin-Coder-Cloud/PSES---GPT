@@ -109,6 +109,7 @@ def _maybe_auto_reset_on_mount():
 
 # ---- Main controls ----------------------------------------------------------
 def question_picker(qdf: pd.DataFrame) -> List[str]:
+    # seed session
     st.session_state.setdefault(K_MULTI_QUESTIONS, [])
     st.session_state.setdefault(K_SELECTED_CODES, [])
     st.session_state.setdefault(K_KW_QUERY, "")
@@ -125,13 +126,14 @@ def question_picker(qdf: pd.DataFrame) -> List[str]:
     st.session_state.setdefault(K_SCROLL_TO_STEP2, False)
     st.session_state.setdefault(K_GLOBAL_HITS_SELECTED, {})
 
+    # deferred clear
     if st.session_state.get(K_DO_CLEAR, False):
         _clear_menu1_state()
         st.session_state[K_DO_CLEAR] = False
 
     _maybe_auto_reset_on_mount()
 
-    # map for display
+    # display mapping
     code_to_display = dict(zip(qdf["code"], qdf["display"]))
 
     # ---------- Step 1 ----------
@@ -140,19 +142,15 @@ def question_picker(qdf: pd.DataFrame) -> List[str]:
         unsafe_allow_html=True,
     )
 
-    # open indent wrapper
+    # indent
     st.markdown("<div id='menu1_indent' style='margin-left:8%'>", unsafe_allow_html=True)
 
-    # CSS to tighten *all* elements inside step 1
+    # tighten general spacing in this block
     st.markdown(
         """
         <style>
-          #menu1_indent p {
-            margin-bottom: 0.25rem !important;
-          }
-          #menu1_indent div[data-testid="stMarkdown"] p {
-            margin-bottom: 0.25rem !important;
-          }
+          #menu1_indent p { margin-bottom: 0.25rem !important; }
+          #menu1_indent div[data-testid="stMarkdown"] p { margin-bottom: 0.25rem !important; }
           #menu1_indent div[data-testid="stCheckbox"] { margin-bottom: 0.25rem; }
           #menu1_indent div[data-testid="stCheckbox"] label { line-height: 1.15; }
         </style>
@@ -160,22 +158,41 @@ def question_picker(qdf: pd.DataFrame) -> List[str]:
         unsafe_allow_html=True,
     )
 
-    # subheading
+    # subheading (we make sure its gap is small via the wrapper we'll add below)
     st.markdown("**Search questionnaire by question number, keywords or theme**")
 
-    # tighten label of the text input itself
+    # wrap the text input in its own div so we can force tiny margin there only
     st.markdown(
-        "<style>div[data-testid='stTextInput'] label { margin-bottom: -0.25rem !important; }</style>",
+        """
+        <div id="menu1-step1-searchbox" style="margin-top:0.15rem;">
+        """,
+        unsafe_allow_html=True,
+    )
+    # CSS just for THIS input
+    st.markdown(
+        """
+        <style>
+          #menu1-step1-searchbox div[data-testid="stTextInput"] {
+            margin-top: 0.15rem !important;
+            margin-bottom: 0.35rem !important;
+          }
+          #menu1-step1-searchbox div[data-testid="stTextInput"] label {
+            margin-bottom: -0.25rem !important;
+          }
+        </style>
+        """,
         unsafe_allow_html=True,
     )
 
-    # search box
     query = st.text_input(
         "Enter keywords (e.g., harassment, recognition, onboarding)",
         key=K_KW_QUERY,
         label_visibility="collapsed",
         placeholder='Type keywords like “career advancement”, “harassment”, “recognition”…',
     )
+
+    # close wrapper
+    st.markdown("</div>", unsafe_allow_html=True)
 
     # buttons row
     bcol1, bcol2 = st.columns([0.5, 0.5])
@@ -220,9 +237,7 @@ def question_picker(qdf: pd.DataFrame) -> List[str]:
                         "results_lex": int(metrics.get("count_lex", 0)),
                         "results_sem": int(metrics.get("count_sem", 0)),
                         "t_total_ms": int(
-                            metrics.get(
-                                "t_total_ms", (time.time() - t0) * 1000
-                            )
+                            metrics.get("t_total_ms", (time.time() - t0) * 1000)
                         ),
                         "semantic_active": bool(metrics.get("semantic_active", False)),
                         "sem_floor": metrics.get("sem_floor"),
@@ -242,7 +257,7 @@ def question_picker(qdf: pd.DataFrame) -> List[str]:
             st.session_state[K_DO_CLEAR] = True
             st.experimental_rerun()
 
-    # feedback
+    # feedback under search
     if st.session_state.get(K_SEARCH_DONE, False):
         n_total = len(st.session_state.get(K_HITS, []) or [])
         if n_total > 0:
@@ -256,7 +271,7 @@ def question_picker(qdf: pd.DataFrame) -> List[str]:
                 "or search by a question code like “Q01”."
             )
 
-    # results (tabs)
+    # show results tabs if any
     hits = st.session_state.get(K_HITS, [])
     if st.session_state.get(K_SEARCH_DONE, False) and hits:
         lex_hits = [r for r in hits if r.get("origin", "lex") == "lex"]
@@ -264,7 +279,7 @@ def question_picker(qdf: pd.DataFrame) -> List[str]:
 
         tabs = st.tabs(["Lexical matches", "Other matches (semantic)"])
 
-        # lexical tab
+        # lexical
         with tabs[0]:
             total = len(lex_hits)
             page = int(st.session_state.get(K_HITS_PAGE_LEX, 0)) or 0
@@ -314,7 +329,7 @@ def question_picker(qdf: pd.DataFrame) -> List[str]:
                         ),
                     )
 
-        # semantic tab
+        # semantic
         with tabs[1]:
             total = len(sem_hits)
             page = int(st.session_state.get(K_HITS_PAGE_SEM, 0)) or 0
@@ -365,11 +380,12 @@ def question_picker(qdf: pd.DataFrame) -> List[str]:
                         ),
                     )
 
-    # close step 1 wrapper
+    # close indent
     st.markdown("</div>", unsafe_allow_html=True)
 
     # finalize selected codes
     combined_order: List[str] = []
+
     gmap_all = st.session_state.get(K_GLOBAL_HITS_SELECTED, {})
     for rec in st.session_state.get(K_HITS, []):
         code = rec["code"]
@@ -379,6 +395,7 @@ def question_picker(qdf: pd.DataFrame) -> List[str]:
     if len(combined_order) > 5:
         combined_order = combined_order[:5]
         st.warning("Limit is 5 questions; extra selections were ignored.")
+
     st.session_state[K_SELECTED_CODES] = combined_order
 
     if st.session_state[K_SELECTED_CODES]:
@@ -441,7 +458,6 @@ def year_picker() -> List[int]:
             if st.session_state.get(f"year_{yr}", False):
                 selected_years.append(yr)
 
-    # separator
     st.markdown("<hr style='margin-top:1rem;margin-bottom:1rem;'>", unsafe_allow_html=True)
 
     return sorted(selected_years)
