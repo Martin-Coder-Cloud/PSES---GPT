@@ -10,40 +10,38 @@ try:
     from utils.hybrid_search import hybrid_question_search, get_embedding_status, get_last_search_metrics  # type: ignore
 except Exception:
     hybrid_question_search = None  # type: ignore
-    def get_embedding_status(): return {}
-    def get_last_search_metrics(): return {}
+
+    def get_embedding_status():
+        return {}
+
+    def get_last_search_metrics():
+        return {}
+
 
 # ---- Session-state keys -----------------------------------------------------
 K_MULTI_QUESTIONS = "menu1_multi_questions"
-K_SELECTED_CODES  = "menu1_selected_codes"
-K_KW_QUERY        = "menu1_kw_query"
-K_HITS            = "menu1_hits"                  # list[dict] with 'origin'
-K_FIND_HITS_BTN   = "menu1_find_hits"
-K_SEARCH_DONE     = "menu1_search_done"
-K_LAST_QUERY      = "menu1_last_search_query"
-K_HITS_PAGE_LEX   = "menu1_hits_page_lex"         # pagination per tab
-K_HITS_PAGE_SEM   = "menu1_hits_page_sem"
-K_SEEN_NONCE      = "menu1_seen_nonce"            # remember last mount nonce
+K_SELECTED_CODES = "menu1_selected_codes"
+K_KW_QUERY = "menu1_kw_query"
+K_HITS = "menu1_hits"
+K_FIND_HITS_BTN = "menu1_find_hits"
+K_SEARCH_DONE = "menu1_search_done"
+K_LAST_QUERY = "menu1_last_search_query"
+K_HITS_PAGE_LEX = "menu1_hits_page_lex"
+K_HITS_PAGE_SEM = "menu1_hits_page_sem"
+K_SEEN_NONCE = "menu1_seen_nonce"
 
-# NEW: global persistence for hit selections across pages/tabs
-K_GLOBAL_HITS_SELECTED = "menu1_global_hits_selected"  # Dict[str,bool]
+K_GLOBAL_HITS_SELECTED = "menu1_global_hits_selected"
 
-# Diagnostics snapshots (optional consumers: Diagnostics tab)
-K_AI_ENGINE       = "menu1_ai_engine"
-K_AI_METRICS      = "menu1_ai_metrics"
+K_AI_ENGINE = "menu1_ai_engine"
+K_AI_METRICS = "menu1_ai_metrics"
 
-# Deferred actions to avoid "cannot be modified after widget is instantiated"
-K_DO_CLEAR        = "menu1_do_clear"              # bool: clear everything next run
-K_SYNC_MULTI      = "menu1_sync_multi"            # List[str]: display labels to set for multiselect next run
-
-# One-time scroll trigger to reveal Step 2 after selection from list
+K_DO_CLEAR = "menu1_do_clear"
+K_SYNC_MULTI = "menu1_sync_multi"
 K_SCROLL_TO_STEP2 = "menu1_scroll_to_step2"
 
-# Years
 DEFAULT_YEARS = [2024, 2022, 2020, 2019]
 K_SELECT_ALL_YEARS = "select_all_years"
 
-# Thresholds / paging
 MIN_SCORE = 0.40
 PAGE_SIZE = 10
 
@@ -59,7 +57,9 @@ def _dedupe_hits(df: pd.DataFrame) -> pd.DataFrame:
     if "origin" not in out.columns:
         out["origin"] = "lex"
     out["code"] = out["code"].astype(str)
-    out = out.sort_values("score", ascending=False).drop_duplicates(subset=["code"], keep="first")
+    out = out.sort_values("score", ascending=False).drop_duplicates(
+        subset=["code"], keep="first"
+    )
     try:
         out = out[out["score"] > MIN_SCORE]
     except Exception:
@@ -70,7 +70,9 @@ def _dedupe_hits(df: pd.DataFrame) -> pd.DataFrame:
 def _run_keyword_search(qdf: pd.DataFrame, query: str, top_k: int = 120) -> pd.DataFrame:
     if callable(hybrid_question_search):
         try:
-            hits_df = hybrid_question_search(qdf, query, top_k=top_k, min_score=MIN_SCORE)  # type: ignore
+            hits_df = hybrid_question_search(
+                qdf, query, top_k=top_k, min_score=MIN_SCORE
+            )  # type: ignore
             if isinstance(hits_df, pd.DataFrame) and not hits_df.empty:
                 return _dedupe_hits(hits_df).head(top_k)
         except Exception:
@@ -79,15 +81,14 @@ def _run_keyword_search(qdf: pd.DataFrame, query: str, top_k: int = 120) -> pd.D
 
 
 def _clear_menu1_state():
-    """Reset Menu 1 selections and search artifacts (do not alter SYNC/flags here)."""
     st.session_state[K_MULTI_QUESTIONS] = []
-    st.session_state[K_SELECTED_CODES]  = []
-    st.session_state[K_KW_QUERY]        = ""
-    st.session_state[K_HITS]            = []
-    st.session_state[K_SEARCH_DONE]     = False
-    st.session_state[K_LAST_QUERY]      = ""
-    st.session_state[K_HITS_PAGE_LEX]   = 0
-    st.session_state[K_HITS_PAGE_SEM]   = 0
+    st.session_state[K_SELECTED_CODES] = []
+    st.session_state[K_KW_QUERY] = ""
+    st.session_state[K_HITS] = []
+    st.session_state[K_SEARCH_DONE] = False
+    st.session_state[K_LAST_QUERY] = ""
+    st.session_state[K_HITS_PAGE_LEX] = 0
+    st.session_state[K_HITS_PAGE_SEM] = 0
     st.session_state[K_GLOBAL_HITS_SELECTED] = {}
 
     for k in list(st.session_state.keys()):
@@ -99,9 +100,8 @@ def _clear_menu1_state():
 
 
 def _maybe_auto_reset_on_mount():
-    """If router set 'menu1_mount_nonce', clear once (no rerun to avoid loops)."""
     nonce = st.session_state.get("menu1_mount_nonce", None)
-    seen  = st.session_state.get(K_SEEN_NONCE, None)
+    seen = st.session_state.get(K_SEEN_NONCE, None)
     if nonce is not None and nonce != seen:
         _clear_menu1_state()
         st.session_state[K_SEEN_NONCE] = nonce
@@ -131,21 +131,28 @@ def question_picker(qdf: pd.DataFrame) -> List[str]:
 
     _maybe_auto_reset_on_mount()
 
-    if st.session_state.get(K_SYNC_MULTI) is not None:
-        st.session_state[K_MULTI_QUESTIONS] = list(st.session_state[K_SYNC_MULTI])  # type: ignore
-        st.session_state[K_SYNC_MULTI] = None
-
+    # map for display
     code_to_display = dict(zip(qdf["code"], qdf["display"]))
-    display_to_code = {v: k for k, v in code_to_display.items()}
 
     # ---------- Step 1 ----------
-    st.markdown('<div class="field-label">Step 1: Select a survey question (Max. 5):</div>', unsafe_allow_html=True)
+    st.markdown(
+        '<div class="field-label">Step 1: Select a survey question (Max. 5):</div>',
+        unsafe_allow_html=True,
+    )
 
+    # open indent wrapper
     st.markdown("<div id='menu1_indent' style='margin-left:8%'>", unsafe_allow_html=True)
 
+    # CSS to tighten *all* elements inside step 1
     st.markdown(
         """
         <style>
+          #menu1_indent p {
+            margin-bottom: 0.25rem !important;
+          }
+          #menu1_indent div[data-testid="stMarkdown"] p {
+            margin-bottom: 0.25rem !important;
+          }
           #menu1_indent div[data-testid="stCheckbox"] { margin-bottom: 0.25rem; }
           #menu1_indent div[data-testid="stCheckbox"] label { line-height: 1.15; }
         </style>
@@ -153,15 +160,16 @@ def question_picker(qdf: pd.DataFrame) -> List[str]:
         unsafe_allow_html=True,
     )
 
-    # ---- Keywords/theme Search (no expander) --------------------------------
+    # subheading
     st.markdown("**Search questionnaire by question number, keywords or theme**")
 
-    # ✅ Added CSS to tighten space above text input
+    # tighten label of the text input itself
     st.markdown(
         "<style>div[data-testid='stTextInput'] label { margin-bottom: -0.25rem !important; }</style>",
         unsafe_allow_html=True,
     )
 
+    # search box
     query = st.text_input(
         "Enter keywords (e.g., harassment, recognition, onboarding)",
         key=K_KW_QUERY,
@@ -169,6 +177,7 @@ def question_picker(qdf: pd.DataFrame) -> List[str]:
         placeholder='Type keywords like “career advancement”, “harassment”, “recognition”…',
     )
 
+    # buttons row
     bcol1, bcol2 = st.columns([0.5, 0.5])
     with bcol1:
         if st.button("Search the questionnaire", key=K_FIND_HITS_BTN):
@@ -184,32 +193,47 @@ def question_picker(qdf: pd.DataFrame) -> List[str]:
                 t0 = time.time()
                 hits_df = _run_keyword_search(qdf, q, top_k=120)
 
-                st.session_state[K_AI_ENGINE]  = get_embedding_status()
+                st.session_state[K_AI_ENGINE] = get_embedding_status()
                 st.session_state[K_AI_METRICS] = get_last_search_metrics()
 
                 st.session_state[K_SEARCH_DONE] = True
                 st.session_state[K_LAST_QUERY] = q
                 if isinstance(hits_df, pd.DataFrame) and not hits_df.empty:
-                    st.session_state[K_HITS] = hits_df[["code", "text", "display", "score", "origin"]].to_dict(orient="records")
+                    st.session_state[K_HITS] = hits_df[
+                        ["code", "text", "display", "score", "origin"]
+                    ].to_dict(orient="records")
                 else:
                     st.session_state[K_HITS] = []
                 st.session_state[K_HITS_PAGE_LEX] = 0
                 st.session_state[K_HITS_PAGE_SEM] = 0
 
+                # best-effort diagnostics
                 try:
                     from .diagnostics import mark_last_query  # type: ignore
+
                     metrics = st.session_state[K_AI_METRICS] or {}
                     extra = {
                         "query": q,
-                        "results_total": int(metrics.get("total", len(st.session_state[K_HITS]) or 0)),
+                        "results_total": int(
+                            metrics.get("total", len(st.session_state[K_HITS]) or 0)
+                        ),
                         "results_lex": int(metrics.get("count_lex", 0)),
                         "results_sem": int(metrics.get("count_sem", 0)),
-                        "t_total_ms": int(metrics.get("t_total_ms", (time.time() - t0) * 1000)),
+                        "t_total_ms": int(
+                            metrics.get(
+                                "t_total_ms", (time.time() - t0) * 1000
+                            )
+                        ),
                         "semantic_active": bool(metrics.get("semantic_active", False)),
                         "sem_floor": metrics.get("sem_floor"),
                         "jaccard_cutoff": metrics.get("jaccard_cutoff"),
                     }
-                    mark_last_query(started_ts=t0, finished_ts=time.time(), engine="hybrid_search", extra=extra)
+                    mark_last_query(
+                        started_ts=t0,
+                        finished_ts=time.time(),
+                        engine="hybrid_search",
+                        extra=extra,
+                    )
                 except Exception:
                     pass
 
@@ -218,6 +242,7 @@ def question_picker(qdf: pd.DataFrame) -> List[str]:
             st.session_state[K_DO_CLEAR] = True
             st.experimental_rerun()
 
+    # feedback
     if st.session_state.get(K_SEARCH_DONE, False):
         n_total = len(st.session_state.get(K_HITS, []) or [])
         if n_total > 0:
@@ -227,34 +252,38 @@ def question_picker(qdf: pd.DataFrame) -> List[str]:
             safe_q = last_q if last_q else "your search"
             st.warning(
                 f'No questions matched “{safe_q}”. '
-                'Try broader/different keywords (e.g., synonyms), split phrases, '
-                'or search by a question code like “Q01”.'
+                "Try broader/different keywords (e.g., synonyms), split phrases, "
+                "or search by a question code like “Q01”."
             )
 
+    # results (tabs)
     hits = st.session_state.get(K_HITS, [])
     if st.session_state.get(K_SEARCH_DONE, False) and hits:
-        lex_hits = [r for r in hits if r.get("origin","lex") == "lex"]
-        sem_hits = [r for r in hits if r.get("origin","lex") == "sem"]
+        lex_hits = [r for r in hits if r.get("origin", "lex") == "lex"]
+        sem_hits = [r for r in hits if r.get("origin", "lex") == "sem"]
 
         tabs = st.tabs(["Lexical matches", "Other matches (semantic)"])
 
-        # Lexical tab
+        # lexical tab
         with tabs[0]:
             total = len(lex_hits)
-            page  = int(st.session_state.get(K_HITS_PAGE_LEX, 0)) or 0
+            page = int(st.session_state.get(K_HITS_PAGE_LEX, 0)) or 0
             max_page = max(0, (total - 1) // PAGE_SIZE) if total else 0
             page = max(0, min(page, max_page))
             start = page * PAGE_SIZE
-            end   = min(total, start + PAGE_SIZE)
+            end = min(total, start + PAGE_SIZE)
 
             if total == 0:
                 st.warning("No lexical matches.")
             else:
-                st.write(f"Results {start + 1}–{end} of {total} lexical matches meeting the quality threshold:")
+                st.write(
+                    f"Results {start + 1}–{end} of {total} lexical matches meeting the quality threshold:"
+                )
 
                 gmap = dict(st.session_state.get(K_GLOBAL_HITS_SELECTED, {}))
                 for rec in lex_hits[start:end]:
-                    code = rec["code"]; text = rec["text"]
+                    code = rec["code"]
+                    text = rec["text"]
                     key = f"kwhit_{code}"
                     label = f"{code} — {text}"
                     if key in st.session_state:
@@ -267,29 +296,45 @@ def question_picker(qdf: pd.DataFrame) -> List[str]:
 
                 pcol, ncol = st.columns([0.5, 0.5])
                 with pcol:
-                    st.button("Prev", disabled=(page <= 0), key="menu1_hits_prev_lex",
-                              on_click=lambda: st.session_state.update({K_HITS_PAGE_LEX: max(0, page - 1)}))
+                    st.button(
+                        "Prev",
+                        disabled=(page <= 0),
+                        key="menu1_hits_prev_lex",
+                        on_click=lambda: st.session_state.update(
+                            {K_HITS_PAGE_LEX: max(0, page - 1)}
+                        ),
+                    )
                 with ncol:
-                    st.button("Next", disabled=(page >= max_page), key="menu1_hits_next_lex",
-                              on_click=lambda: st.session_state.update({K_HITS_PAGE_LEX: min(max_page, page + 1)}))
+                    st.button(
+                        "Next",
+                        disabled=(page >= max_page),
+                        key="menu1_hits_next_lex",
+                        on_click=lambda: st.session_state.update(
+                            {K_HITS_PAGE_LEX: min(max_page, page + 1)}
+                        ),
+                    )
 
-        # Semantic tab
+        # semantic tab
         with tabs[1]:
             total = len(sem_hits)
-            page  = int(st.session_state.get(K_HITS_PAGE_SEM, 0)) or 0
+            page = int(st.session_state.get(K_HITS_PAGE_SEM, 0)) or 0
             max_page = max(0, (total - 1) // PAGE_SIZE) if total else 0
             page = max(0, min(page, max_page))
             start = page * PAGE_SIZE
-            end   = min(total, start + PAGE_SIZE)
+            end = min(total, start + PAGE_SIZE)
 
             if total == 0:
                 st.warning("No other (semantic) matches.")
             else:
-                st.write(f"Results {start + 1}–{end} of {total} other (semantic) matches meeting the quality threshold:")
+                st.write(
+                    f"Results {start + 1}–{end} of {total} other (semantic) matches meeting the quality threshold:"
+                )
 
                 gmap = dict(st.session_state.get(K_GLOBAL_HITS_SELECTED, {}))
                 for rec in sem_hits[start:end]:
-                    code = rec["code"]; text = rec["text"]; score = rec.get("score", 0.0)
+                    code = rec["code"]
+                    text = rec["text"]
+                    score = rec.get("score", 0.0)
                     label = f"{code} — {text}  _(score: {score:.2f})_"
                     key = f"kwhit_{code}"
                     if key in st.session_state:
@@ -302,14 +347,28 @@ def question_picker(qdf: pd.DataFrame) -> List[str]:
 
                 pcol, ncol = st.columns([0.5, 0.5])
                 with pcol:
-                    st.button("Prev", disabled=(page <= 0), key="menu1_hits_prev_sem",
-                              on_click=lambda: st.session_state.update({K_HITS_PAGE_SEM: max(0, page - 1)}))
+                    st.button(
+                        "Prev",
+                        disabled=(page <= 0),
+                        key="menu1_hits_prev_sem",
+                        on_click=lambda: st.session_state.update(
+                            {K_HITS_PAGE_SEM: max(0, page - 1)}
+                        ),
+                    )
                 with ncol:
-                    st.button("Next", disabled=(page >= max_page), key="menu1_hits_next_sem",
-                              on_click=lambda: st.session_state.update({K_HITS_PAGE_SEM: min(max_page, page + 1)}))
+                    st.button(
+                        "Next",
+                        disabled=(page >= max_page),
+                        key="menu1_hits_next_sem",
+                        on_click=lambda: st.session_state.update(
+                            {K_HITS_PAGE_SEM: min(max_page, page + 1)}
+                        ),
+                    )
 
+    # close step 1 wrapper
     st.markdown("</div>", unsafe_allow_html=True)
 
+    # finalize selected codes
     combined_order: List[str] = []
     gmap_all = st.session_state.get(K_GLOBAL_HITS_SELECTED, {})
     for rec in st.session_state.get(K_HITS, []):
@@ -317,20 +376,17 @@ def question_picker(qdf: pd.DataFrame) -> List[str]:
         if gmap_all.get(code, False) and code not in combined_order:
             combined_order.append(code)
 
-    for d in st.session_state.get(K_MULTI_QUESTIONS, []):
-        c = display_to_code.get(d)
-        if c and c not in combined_order:
-            combined_order.append(c)
-
     if len(combined_order) > 5:
         combined_order = combined_order[:5]
         st.warning("Limit is 5 questions; extra selections were ignored.")
     st.session_state[K_SELECTED_CODES] = combined_order
 
     if st.session_state[K_SELECTED_CODES]:
-        st.markdown('<div class="field-label">Selected questions:</div>', unsafe_allow_html=True)
+        st.markdown(
+            '<div class="field-label">Selected questions:</div>',
+            unsafe_allow_html=True,
+        )
         updated = list(st.session_state[K_SELECTED_CODES])
-
         for code in list(updated):
             label = code_to_display.get(code, code)
             keep = st.checkbox(label, value=True, key=f"sel_{code}")
@@ -343,15 +399,6 @@ def question_picker(qdf: pd.DataFrame) -> List[str]:
                 if code in gmap:
                     gmap[code] = False
                     st.session_state[K_GLOBAL_HITS_SELECTED] = gmap
-                disp = code_to_display.get(code)
-                if disp:
-                    current_displays = list(st.session_state.get(K_MULTI_QUESTIONS, []))
-                    if disp in current_displays:
-                        current_displays = [d for d in current_displays if d != disp]
-                        st.session_state[K_SYNC_MULTI] = current_displays
-                        st.session_state[K_SELECTED_CODES] = updated
-                        st.experimental_rerun()
-
         if updated != st.session_state[K_SELECTED_CODES]:
             st.session_state[K_SELECTED_CODES] = updated
 
@@ -387,4 +434,106 @@ def year_picker() -> List[int]:
             st.session_state[f"year_{yr}"] = False
 
     selected_years: List[int] = []
-    cols = st
+    cols = st.columns(len(DEFAULT_YEARS))
+    for i, yr in enumerate(DEFAULT_YEARS):
+        with cols[i]:
+            st.checkbox(str(yr), key=f"year_{yr}")
+            if st.session_state.get(f"year_{yr}", False):
+                selected_years.append(yr)
+
+    # separator
+    st.markdown("<hr style='margin-top:1rem;margin-bottom:1rem;'>", unsafe_allow_html=True)
+
+    return sorted(selected_years)
+
+
+# ---- Demographics -----------------------------------------------------------
+def demographic_picker(demo_df: pd.DataFrame):
+    st.markdown(
+        '<div class="field-label">Step 3: Select a demographic category (optional):</div>',
+        unsafe_allow_html=True,
+    )
+
+    DEMO_CAT_COL = "DEMCODE Category"
+    LABEL_COL = "DESCRIP_E"
+
+    demo_categories = ["All respondents"] + sorted(
+        demo_df[DEMO_CAT_COL].dropna().astype(str).unique().tolist()
+    )
+    st.session_state.setdefault("demo_main", "All respondents")
+    demo_selection = st.selectbox(
+        "Demographic category",
+        demo_categories,
+        key="demo_main",
+        label_visibility="collapsed",
+    )
+
+    sub_selection: Optional[str] = None
+    if demo_selection != "All respondents":
+        st.markdown(
+            f'<div class="field-label">Subgroup ({demo_selection}) (optional):</div>',
+            unsafe_allow_html=True,
+        )
+        sub_items = (
+            demo_df.loc[demo_df[DEMO_CAT_COL] == demo_selection, LABEL_COL]
+            .dropna()
+            .astype(str)
+            .unique()
+            .tolist()
+        )
+        sub_items = sorted(sub_items)
+        sub_key = f"sub_{demo_selection.replace(' ', '_')}"
+        sub_selection = st.selectbox(
+            "(leave blank to include all subgroups in this category)",
+            [""] + sub_items,
+            key=sub_key,
+            label_visibility="collapsed",
+        )
+        if sub_selection == "":
+            sub_selection = None
+
+    if not demo_selection or demo_selection == "All respondents":
+        return demo_selection, sub_selection, [None], {None: "All respondents"}, False
+
+    # narrow to category
+    if "DEMCODE Category" in demo_df.columns:
+        df_cat = demo_df[demo_df["DEMCODE Category"] == demo_selection]
+    else:
+        df_cat = demo_df.copy()
+
+    if df_cat.empty:
+        return demo_selection, sub_selection, [None], {None: "All respondents"}, False
+
+    # figure out code column
+    code_col = None
+    for c in ["DEMCODE", "DemCode", "CODE", "Code", "CODE_E", "Demographic code"]:
+        if c in demo_df.columns:
+            code_col = c
+            break
+
+    if sub_selection:
+        if code_col and LABEL_COL in df_cat.columns:
+            r = df_cat[df_cat[LABEL_COL] == sub_selection]
+            if not r.empty:
+                code = str(r.iloc[0][code_col])
+                return demo_selection, sub_selection, [code], {code: sub_selection}, True
+        return demo_selection, sub_selection, [sub_selection], {sub_selection: sub_selection}, True
+
+    if code_col and LABEL_COL in df_cat.columns:
+        codes = df_cat[code_col].astype(str).tolist()
+        labels = df_cat[LABEL_COL].astype(str).tolist()
+        keep = [(c, l) for c, l in zip(codes, labels) if str(c).strip() != ""]
+        codes = [c for c, _ in keep]
+        disp_map = {c: l for c, l in keep}
+        return demo_selection, sub_selection, codes, disp_map, True
+
+    if LABEL_COL in df_cat.columns:
+        labels = df_cat[LABEL_COL].astype(str).tolist()
+        return demo_selection, sub_selection, labels, {l: l for l in labels}, True
+
+    return demo_selection, sub_selection, [None], {None: "All respondents"}, False
+
+
+# ---- Enable search? ---------------------------------------------------------
+def search_button_enabled(question_codes: List[str], years: List[int]) -> bool:
+    return bool(question_codes) and bool(years)
