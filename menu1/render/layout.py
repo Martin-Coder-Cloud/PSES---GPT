@@ -52,10 +52,9 @@ def title(text: str) -> None:
 
 def instructions(html: str = INSTRUCTION_HTML) -> None:
     """
-    Render the instruction as a Title-2-like line, left aligned, no box.
+    Render the instruction as a slightly smaller, left-aligned heading (Title 2 style).
     """
-    # use markdown heading level 3 to keep it simple and left aligned
-    st.markdown(f"### {html}")
+    st.markdown(f"#### {html}")   # <- reduced one level from ### to ####
 
 # ---------------------------------------------------------------------------
 # Toggles row
@@ -64,9 +63,7 @@ def toggles() -> Tuple[bool, bool]:
     """
     Renders the AI and Diagnostics toggles in a single row and
     returns their ON/OFF states as (ai_on, show_diag).
-    Keys are defined in state.py to keep names consistent.
     """
-    # Ensure defaults before rendering widgets: AI ON, Diagnostics OFF
     st.session_state.setdefault(K_AI_TOGGLE, True)
     st.session_state.setdefault(K_DIAG_TOGGLE, False)
 
