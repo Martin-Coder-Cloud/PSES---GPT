@@ -29,7 +29,12 @@ def _build_summary_pivot(
     demo_selection: Optional[str],
     sub_selection: Optional[str],
 ) -> pd.DataFrame:
-    """Create the Summary tabulation."""
+    """
+    Create the Summary tabulation:
+      - Row index: Question code only (or Question×Demographic if a category is selected without a specific subgroup)
+      - Columns: selected years
+      - Values: detected metric per question (mean across demo rows when needed)
+    """
     if not per_q_disp:
         return pd.DataFrame()
 
@@ -40,7 +45,7 @@ def _build_summary_pivot(
             continue
 
         t = df_disp.copy()
-        t["QuestionLabel"] = qcode
+        t["QuestionLabel"] = qcode  # code only
         t["Year"] = pd.to_numeric(t["Year"], errors="coerce").astype("Int64")
         if "Demographic" not in t.columns:
             t["Demographic"] = None
@@ -53,18 +58,13 @@ def _build_summary_pivot(
 
     long_df = pd.concat(long_rows, ignore_index=True)
 
-    if (
-        (demo_selection is not None)
-        and (demo_selection != "All respondents")
-        and (sub_selection is None)
-        and long_df["Demographic"].notna().any()
-    ):
+    if (demo_selection is not None) and (demo_selection != "All respondents") and (sub_selection is None) and long_df["Demographic"].notna().any():
         idx_cols = ["QuestionLabel", "Demographic"]
     else:
         idx_cols = ["QuestionLabel"]
 
     pivot = long_df.pivot_table(index=idx_cols, columns="Year", values="Value", aggfunc="mean")
-    pivot = pivot.reindex(years, axis=1)
+    pivot = pivot.reindex(years, axis=1)  # ensure column order matches selected years
     return pivot
 
 
@@ -77,6 +77,7 @@ def _clear_keyword_search_state() -> None:
         "menu1_kw_query",
     ]:
         st.session_state.pop(k, None)
+    # Clear dynamic checkbox keys from previous hits and selections
     for k in list(st.session_state.keys()):
         if k.startswith("kwhit_") or k.startswith("sel_"):
             st.session_state.pop(k, None)
@@ -86,40 +87,42 @@ def run() -> None:
     # NOTE: st.set_page_config() is intentionally NOT called here
     # to avoid double-calling it (root main.py calls it once).
 
-    # Scoped CSS: BOTH bottom action buttons (Search / Clear) red & white
+    # Scoped CSS: make ONLY the bottom action buttons red/white.
+    # Use very simple selectors so Streamlit theme cannot dodge it.
     st.markdown(
         """
         <style>
           .action-row { margin-top: .25rem; margin-bottom: .35rem; }
 
-          /* Solid red for Search and Clear buttons at the bottom */
-          [data-testid="stAppViewContainer"] .block-container #menu1-run-btn .stButton > button,
-          [data-testid="stAppViewContainer"] .block-container #menu1-reset-btn .stButton > button {
-            background-color: #e03131 !important;  /* bright red */
-            color: #ffffff !important;              /* white text */
+          /* Red + white for the two bottom action buttons */
+          #menu1-run-btn button,
+          #menu1-reset-btn button {
+            background-color: #e03131 !important;
+            color: #ffffff !important;
             border: 1px solid #c92a2a !important;
             font-weight: 700 !important;
           }
-          [data-testid="stAppViewContainer"] .block-container #menu1-run-btn .stButton > button:hover,
-          [data-testid="stAppViewContainer"] .block-container #menu1-reset-btn .stButton > button:hover {
-            background-color: #c92a2a !important;   /* darker on hover */
+          #menu1-run-btn button:hover,
+          #menu1-reset-btn button:hover {
+            background-color: #c92a2a !important;
             border-color: #a61e1e !important;
             color: #ffffff !important;
           }
-          [data-testid="stAppViewContainer"] .block-container #menu1-run-btn .stButton > button:active,
-          [data-testid="stAppViewContainer"] .block-container #menu1-reset-btn .stButton > button:active {
-            background-color: #a61e1e !important;   /* deepest red on click */
+          #menu1-run-btn button:active,
+          #menu1-reset-btn button:active {
+            background-color: #a61e1e !important;
             border-color: #8c1a1a !important;
             color: #ffffff !important;
           }
-          [data-testid="stAppViewContainer"] .block-container #menu1-run-btn .stButton > button:disabled {
+          #menu1-run-btn button:disabled {
             opacity: 0.50 !important;
             filter: saturate(0.85);
-            color: #ffffff !important;
             background-color: #e03131 !important;
             border-color: #c92a2a !important;
+            color: #ffffff !important;
           }
 
+          /* Keep the reset/clear button left-aligned; use default layout */
           #menu1-reset-btn { text-align: left; }
         </style>
         """,
@@ -133,11 +136,13 @@ def run() -> None:
         layout.title("PSES Explorer Search")
         ai_on, show_diag = layout.toggles()
 
+        # [AI-toggle gate] Track toggle changes without triggering rebuilds
         _prev_ai = st.session_state.get("menu1_ai_prev", ai_on)
         if _prev_ai != ai_on:
             st.session_state["menu1_ai_prev"] = ai_on
             st.session_state["menu1_ai_toggle_dirty"] = True
         else:
+            # initialize on first load
             if "menu1_ai_prev" not in st.session_state:
                 st.session_state["menu1_ai_prev"] = ai_on
 
@@ -146,16 +151,18 @@ def run() -> None:
         # Reset when arriving fresh from another menu
         if state.get_last_active_menu() != "menu1":
             state.reset_menu1_state()
-            _clear_keyword_search_state()
+            _clear_keyword_search_state()  # also clear keyword UI state on first arrival
         state.set_last_active_menu("menu1")
-        state.set_defaults()
+        state.set_defaults()  # idempotent
 
+        # Metadata (cached)
         qdf = load_questions()
         sdf = load_scales()
         demo_df = load_demographics()
 
         # Diagnostics (tabs)
         if show_diag:
+            # show two tabs: existing diagnostics + AI diagnostics
             diag_tab, ai_diag_tab = st.tabs(["Diagnostics", "AI diagnostics"])
             with diag_tab:
                 diagnostics.render_diagnostics_tabs(qdf, sdf, demo_df)
@@ -167,11 +174,11 @@ def run() -> None:
                     st.caption("No AI diagnostics captured yet. Run a search with AI turned on.")
 
         # Controls
-        question_codes = controls.question_picker(qdf)
-        years = controls.year_picker()
+        question_codes = controls.question_picker(qdf)  # -> List[str] (codes)
+        years = controls.year_picker()                  # -> List[int]
         demo_selection, sub_selection, demcodes, disp_map, category_in_play = controls.demographic_picker(demo_df)
 
-        # Action row: Search / Clear (side-by-side)
+        # Action row: Search / Clear (side-by-side, aligned left)
         st.markdown("<div class='action-row'>", unsafe_allow_html=True)
         colA, colB = st.columns([1, 1], gap="small")
 
@@ -187,6 +194,7 @@ def run() -> None:
                 per_q_metric_col: Dict[str, str] = {}
                 per_q_metric_label: Dict[str, str] = {}
 
+                # Build per-question display tables
                 for qcode in question_codes:
                     df_all = fetch_per_question(qcode, years, demcodes)
                     if df_all is None or df_all.empty:
@@ -210,6 +218,7 @@ def run() -> None:
                     per_q_metric_col[qcode] = det["metric_col"]
                     per_q_metric_label[qcode] = det["metric_label"]
 
+                # Build pivot & stash results for centered rendering
                 if per_q_disp:
                     pivot = _build_summary_pivot(
                         per_q_disp=per_q_disp,
@@ -219,6 +228,7 @@ def run() -> None:
                         sub_selection=sub_selection,
                     )
                     code_to_text = dict(zip(qdf["code"], qdf["text"]))
+
                     state.stash_results({
                         "per_q_disp": per_q_disp,
                         "per_q_metric_col": per_q_metric_col,
@@ -231,22 +241,31 @@ def run() -> None:
                         "code_to_text": code_to_text,
                     })
 
+                # Mark diagnostics timing
                 diagnostics.mark_last_query(
                     started_ts=t0,
                     finished_ts=time.time(),
                     extra={"notes": "Menu 1 query run"},
                 )
+
+                # [AI-toggle gate] A fresh Search clears the dirty flag
                 st.session_state["menu1_ai_toggle_dirty"] = False
 
         with colB:
             st.markdown("<div id='menu1-reset-btn'>", unsafe_allow_html=True)
+            # Label per your UX spec (“Clear parameters” beside Search)
             if st.button("Clear parameters", key="menu1_reset_all"):
+                # Reset core menu state
                 state.reset_menu1_state()
+                # Also clear keyword-search UI state so no stale "No questions matched…" persists
                 _clear_keyword_search_state()
+                # Clear AI caches (to prevent reruns from showing stale narratives)
                 st.session_state.pop("menu1_ai_cache", None)
                 st.session_state.pop("menu1_ai_narr_per_q", None)
                 st.session_state.pop("menu1_ai_narr_overall", None)
+                # [AI-toggle gate] Clearing parameters also clears the dirty flag
                 st.session_state.pop("menu1_ai_toggle_dirty", None)
+                # Rerun
                 try:
                     st.rerun()
                 except Exception:
@@ -255,7 +274,9 @@ def run() -> None:
 
         st.markdown("</div>", unsafe_allow_html=True)
 
+        # Results (center area)
         if state.has_results():
+            # [AI-toggle gate] If the AI toggle changed since last Search, do not render results
             if st.session_state.get("menu1_ai_toggle_dirty", False):
                 st.info("AI setting changed — click **Search** to refresh results.")
             else:
@@ -263,9 +284,9 @@ def run() -> None:
                 results.tabs_summary_and_per_q(
                     payload=payload,
                     ai_on=ai_on,
-                    build_overall_prompt=build_overall_prompt,
-                    build_per_q_prompt=build_per_q_prompt,
-                    call_openai_json=call_openai_json,
+                    build_overall_prompt=build_overall_prompt,  # pass directly
+                    build_per_q_prompt=build_per_q_prompt,      # pass directly
+                    call_openai_json=call_openai_json,          # pass directly
                     source_url=SOURCE_URL,
                     source_title=SOURCE_TITLE,
                 )
@@ -274,5 +295,7 @@ def run() -> None:
 if __name__ == "__main__":
     run()
 
+# --- keep this at the end of menu1/main.py ---
 def run_menu1():
+    # backward-compat alias for older loaders that expect run_menu1
     return run()
