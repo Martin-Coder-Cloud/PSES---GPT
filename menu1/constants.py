@@ -40,12 +40,8 @@ BANNER_URL: str = (
     "PSES%20email%20banner.png"
 )
 
-# This is the instruction line you wanted to show under the title
-INSTRUCTION_HTML: str = """
-<div class="custom-instruction">
-  To conduct your search, please set your search parameters following the 3 steps below:
-</div>
-"""
+# plain text, no <div>, this will be rendered as a heading in layout.py
+INSTRUCTION_HTML: str = "To conduct your search, please follow the 3 steps below:"
 
 # CSS injected at page load (kept minimal; anything bigger should move to a separate module if needed).
 BASE_CSS: str = """
