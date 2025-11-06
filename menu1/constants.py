@@ -10,40 +10,36 @@ SOURCE_TITLE: str = "Public Service Employee Survey Results – Open Government 
 
 # --- UI defaults ---
 PAGE_TITLE: str = "PSES Explorer Search"
-CENTER_COLUMNS: list[int] = [1, 3, 1]  # layout for left, center, right
-MAX_QUESTIONS: int = 5  # cap for multi-select
+CENTER_COLUMNS: list[int] = [1, 3, 1]
+MAX_QUESTIONS: int = 5
 DEFAULT_YEARS: list[int] = [2024, 2022, 2020, 2019]
-DEFAULT_AI_TOGGLE: bool = True  # AI on by default
-DEFAULT_DIAG_TOGGLE: bool = False  # Diagnostics off by default
+DEFAULT_AI_TOGGLE: bool = True
+DEFAULT_DIAG_TOGGLE: bool = False
 
-# --- AI / Model settings (non-secret; key stays in st.secrets or env) ---
+# --- AI / Model settings ---
 DEFAULT_OPENAI_MODEL: str = "gpt-4o-mini"
 
-# --- Analysis thresholds (points) ---
-# Trend classification when comparing latest vs. earliest year.
+# --- Analysis thresholds ---
 TREND_THRESHOLDS = {
-    "stable": 1,   # ≤ 1 point
-    "slight": 2,   # >1–2 points
-    "notable": 999  # > 2 points (upper bound acts as "everything above")
+    "stable": 1,
+    "slight": 2,
+    "notable": 999
 }
 
-# Demographic gap classification (absolute point differences).
 GAP_THRESHOLDS = {
-    "minimal": 2,  # ≤ 2 points
-    "notable": 5,  # >2–5 points
+    "minimal": 2,
+    "notable": 5,
     "important": 999
 }
 
-# --- Text/UI strings (keep here to avoid scattering copy) ---
+# --- Text/UI strings ---
 BANNER_URL: str = (
     "https://raw.githubusercontent.com/Martin-Coder-Cloud/PSES---GPT/refs/heads/main/"
     "PSES%20email%20banner.png"
 )
 
-# plain text, no <div>, this will be rendered as a heading in layout.py
 INSTRUCTION_HTML: str = "To conduct your search, please follow the 3 steps below:"
 
-# CSS injected at page load (kept minimal; anything bigger should move to a separate module if needed).
 BASE_CSS: str = """
 <style>
   body { background-image: none !important; background-color: white !important; }
@@ -57,5 +53,19 @@ BASE_CSS: str = """
   [data-testid="stSwitch"] div[role="switch"] { box-shadow: inset 0 0 0 1px rgba(0,0,0,0.1); }
   .tiny-note { font-size: 13px; color: #444; margin-bottom: 6px; }
   .diag-box { background: #fafafa; border: 1px solid #eee; border-radius: 8px; padding: 10px 12px; }
+
+  /* Step 1 buttons: make them red with white text */
+  #menu1-step1-search-btn .stButton > button,
+  #menu1-step1-clear-btn .stButton > button {
+    background-color: #e03131 !important;
+    color: #ffffff !important;
+    border: 1px solid #c92a2a !important;
+    font-weight: 700 !important;
+  }
+  #menu1-step1-search-btn .stButton > button:hover,
+  #menu1-step1-clear-btn .stButton > button:hover {
+    background-color: #c92a2a !important;
+    border-color: #a61e1e !important;
+  }
 </style>
 """
