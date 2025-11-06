@@ -4,7 +4,7 @@ import re
 import time
 import pandas as pd
 import streamlit as st
-import streamlit.components.v1 as components  # for a tiny one-time scrollIntoView
+import streamlit.components.v1 as components  # for scrollIntoView on Step 2
 
 try:
     from utils.hybrid_search import hybrid_question_search, get_embedding_status, get_last_search_metrics  # type: ignore
@@ -18,41 +18,40 @@ except Exception:
         return {}
 
 
-# ---- Session-state keys -----------------------------------------------------
-K_MULTI_QUESTIONS = "menu1_multi_questions"
+# ---------------------------------------------------------------------------
+# Session-state keys
+# ---------------------------------------------------------------------------
 K_SELECTED_CODES = "menu1_selected_codes"
 K_KW_QUERY = "menu1_kw_query"
 K_HITS = "menu1_hits"
-K_FIND_HITS_BTN = "menu1_find_hits"
 K_SEARCH_DONE = "menu1_search_done"
 K_LAST_QUERY = "menu1_last_search_query"
 K_HITS_PAGE_LEX = "menu1_hits_page_lex"
 K_HITS_PAGE_SEM = "menu1_hits_page_sem"
-K_SEEN_NONCE = "menu1_seen_nonce"
-
-# global persistence for hit selections across pages/tabs
 K_GLOBAL_HITS_SELECTED = "menu1_global_hits_selected"
+K_FIND_HITS_BTN = "menu1_find_hits"
+K_DO_CLEAR = "menu1_do_clear"
+K_SEEN_NONCE = "menu1_seen_nonce"
+K_SCROLL_TO_STEP2 = "menu1_scroll_to_step2"
 
-# Diagnostics
+# diagnostics
 K_AI_ENGINE = "menu1_ai_engine"
 K_AI_METRICS = "menu1_ai_metrics"
 
-# Deferred actions
-K_DO_CLEAR = "menu1_do_clear"
-K_SYNC_MULTI = "menu1_sync_multi"
-K_SCROLL_TO_STEP2 = "menu1_scroll_to_step2"
-
-# Years
+# years
 DEFAULT_YEARS = [2024, 2022, 2020, 2019]
 K_SELECT_ALL_YEARS = "select_all_years"
 
-# Thresholds / paging
+# search paging
 MIN_SCORE = 0.40
 PAGE_SIZE = 10
 
 _word_re = re.compile(r"[a-z0-9']+")
 
 
+# ---------------------------------------------------------------------------
+# helpers
+# ---------------------------------------------------------------------------
 def _dedupe_hits(df: pd.DataFrame) -> pd.DataFrame:
     if not isinstance(df, pd.DataFrame) or df.empty:
         return pd.DataFrame(columns=["code", "text", "display", "score", "origin"])
@@ -62,9 +61,7 @@ def _dedupe_hits(df: pd.DataFrame) -> pd.DataFrame:
     if "origin" not in out.columns:
         out["origin"] = "lex"
     out["code"] = out["code"].astype(str)
-    out = out.sort_values("score", ascending=False).drop_duplicates(
-        subset=["code"], keep="first"
-    )
+    out = out.sort_values("score", ascending=False).drop_duplicates(subset=["code"], keep="first")
     try:
         out = out[out["score"] > MIN_SCORE]
     except Exception:
@@ -73,11 +70,10 @@ def _dedupe_hits(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def _run_keyword_search(qdf: pd.DataFrame, query: str, top_k: int = 120) -> pd.DataFrame:
+    """Use hybrid search if available; otherwise return empty."""
     if callable(hybrid_question_search):
         try:
-            hits_df = hybrid_question_search(
-                qdf, query, top_k=top_k, min_score=MIN_SCORE
-            )  # type: ignore
+            hits_df = hybrid_question_search(qdf, query, top_k=top_k, min_score=MIN_SCORE)  # type: ignore
             if isinstance(hits_df, pd.DataFrame) and not hits_df.empty:
                 return _dedupe_hits(hits_df).head(top_k)
         except Exception:
@@ -85,9 +81,8 @@ def _run_keyword_search(qdf: pd.DataFrame, query: str, top_k: int = 120) -> pd.D
     return pd.DataFrame(columns=["code", "text", "display", "score", "origin"])
 
 
-def _clear_menu1_state():
-    """Reset Menu 1 selections and search artifacts."""
-    st.session_state[K_MULTI_QUESTIONS] = []
+def _clear_all_step1_state():
+    """Clear all Step 1 selection/search state."""
     st.session_state[K_SELECTED_CODES] = []
     st.session_state[K_KW_QUERY] = ""
     st.session_state[K_HITS] = []
@@ -96,7 +91,7 @@ def _clear_menu1_state():
     st.session_state[K_HITS_PAGE_LEX] = 0
     st.session_state[K_HITS_PAGE_SEM] = 0
     st.session_state[K_GLOBAL_HITS_SELECTED] = {}
-
+    # also clear dynamic checkboxes
     for k in list(st.session_state.keys()):
         if k.startswith("kwhit_") or k.startswith("sel_"):
             try:
@@ -106,18 +101,19 @@ def _clear_menu1_state():
 
 
 def _maybe_auto_reset_on_mount():
-    """If router set 'menu1_mount_nonce', clear once."""
-    nonce = st.session_state.get("menu1_mount_nonce", None)
-    seen = st.session_state.get(K_SEEN_NONCE, None)
+    """Router-driven one-time reset."""
+    nonce = st.session_state.get("menu1_mount_nonce")
+    seen = st.session_state.get(K_SEEN_NONCE)
     if nonce is not None and nonce != seen:
-        _clear_menu1_state()
+        _clear_all_step1_state()
         st.session_state[K_SEEN_NONCE] = nonce
 
 
-# ---- Main controls ----------------------------------------------------------
+# ---------------------------------------------------------------------------
+# Step 1 – now in the same style as Step 2/3
+# ---------------------------------------------------------------------------
 def question_picker(qdf: pd.DataFrame) -> List[str]:
-    # seed session
-    st.session_state.setdefault(K_MULTI_QUESTIONS, [])
+    # ensure keys exist
     st.session_state.setdefault(K_SELECTED_CODES, [])
     st.session_state.setdefault(K_KW_QUERY, "")
     st.session_state.setdefault(K_HITS, [])
@@ -125,68 +121,42 @@ def question_picker(qdf: pd.DataFrame) -> List[str]:
     st.session_state.setdefault(K_LAST_QUERY, "")
     st.session_state.setdefault(K_HITS_PAGE_LEX, 0)
     st.session_state.setdefault(K_HITS_PAGE_SEM, 0)
-    st.session_state.setdefault(K_SEEN_NONCE, None)
+    st.session_state.setdefault(K_GLOBAL_HITS_SELECTED, {})
     st.session_state.setdefault(K_DO_CLEAR, False)
-    st.session_state.setdefault(K_SYNC_MULTI, None)
+    st.session_state.setdefault(K_SEEN_NONCE, None)
     st.session_state.setdefault(K_AI_ENGINE, {})
     st.session_state.setdefault(K_AI_METRICS, {})
     st.session_state.setdefault(K_SCROLL_TO_STEP2, False)
-    st.session_state.setdefault(K_GLOBAL_HITS_SELECTED, {})
 
     # deferred clear
     if st.session_state.get(K_DO_CLEAR, False):
-        _clear_menu1_state()
+        _clear_all_step1_state()
         st.session_state[K_DO_CLEAR] = False
 
     _maybe_auto_reset_on_mount()
 
-    # display mapping
-    code_to_display = dict(zip(qdf["code"], qdf["display"]))
+    # 1) Title, like Step 2 / Step 3
+    st.markdown('<div class="field-label">Step 1: Select a survey question (Max. 5):</div>', unsafe_allow_html=True)
 
-    # ---------- Step 1 ----------
-    st.markdown(
-        '<div class="field-label">Step 1: Select a survey question (Max. 5):</div>',
-        unsafe_allow_html=True,
-    )
-
-    # indent wrapper
-    st.markdown("<div id='menu1_indent' style='margin-left:8%'>", unsafe_allow_html=True)
-
-    # tighten checkbox spacing inside step 1 (kept from earlier version)
-    st.markdown(
-        """
-        <style>
-          #menu1_indent div[data-testid="stCheckbox"] { margin-bottom: 0.25rem; }
-          #menu1_indent div[data-testid="stCheckbox"] label { line-height: 1.15; }
-        </style>
-        """,
-        unsafe_allow_html=True,
-    )
-
-    # title above search box
+    # 2) Sub-label (just text, no extra wrapper)
     st.markdown("**Search questionnaire by question number, keywords or theme**")
 
-    # ✅ surgical change: reduce the gap above the text input
-    st.markdown(
-        "<style>div[data-testid='stTextInput'] label { margin-bottom: -0.3rem !important; }</style>",
-        unsafe_allow_html=True,
-    )
-
-    # search box
+    # 3) Search box directly under — no extra divs
     query = st.text_input(
-        "Enter keywords (e.g., harassment, recognition, onboarding)",
+        "Enter keywords",
         key=K_KW_QUERY,
         label_visibility="collapsed",
-        placeholder='Type keywords like “career advancement”, “harassment”, “recognition”…',
+        placeholder='e.g. “harassment”, “recognition”, “Q01”, “onboarding”',
     )
 
-    # buttons row
-    bcol1, bcol2 = st.columns([0.5, 0.5])
-    with bcol1:
+    # 4) Buttons
+    c1, c2 = st.columns([0.5, 0.5])
+    with c1:
         if st.button("Search the questionnaire", key=K_FIND_HITS_BTN):
             q = (query or "").strip()
             st.session_state[K_GLOBAL_HITS_SELECTED] = {}
             if not q:
+                # empty search → show warning state
                 st.session_state[K_SEARCH_DONE] = True
                 st.session_state[K_LAST_QUERY] = ""
                 st.session_state[K_HITS] = []
@@ -196,6 +166,7 @@ def question_picker(qdf: pd.DataFrame) -> List[str]:
                 t0 = time.time()
                 hits_df = _run_keyword_search(qdf, q, top_k=120)
 
+                # diagnostics
                 st.session_state[K_AI_ENGINE] = get_embedding_status()
                 st.session_state[K_AI_METRICS] = get_last_search_metrics()
 
@@ -210,26 +181,18 @@ def question_picker(qdf: pd.DataFrame) -> List[str]:
                 st.session_state[K_HITS_PAGE_LEX] = 0
                 st.session_state[K_HITS_PAGE_SEM] = 0
 
-                # best-effort diagnostics
+                # best-effort diag log
                 try:
                     from .diagnostics import mark_last_query  # type: ignore
 
                     metrics = st.session_state[K_AI_METRICS] or {}
                     extra = {
                         "query": q,
-                        "results_total": int(
-                            metrics.get("total", len(st.session_state[K_HITS]) or 0)
-                        ),
+                        "results_total": int(metrics.get("total", len(st.session_state[K_HITS]) or 0)),
                         "results_lex": int(metrics.get("count_lex", 0)),
                         "results_sem": int(metrics.get("count_sem", 0)),
-                        "t_total_ms": int(
-                            metrics.get(
-                                "t_total_ms", (time.time() - t0) * 1000
-                            )
-                        ),
-                        "semantic_active": bool(
-                            metrics.get("semantic_active", False)
-                        ),
+                        "t_total_ms": int(metrics.get("t_total_ms", (time.time() - t0) * 1000)),
+                        "semantic_active": bool(metrics.get("semantic_active", False)),
                         "sem_floor": metrics.get("sem_floor"),
                         "jaccard_cutoff": metrics.get("jaccard_cutoff"),
                     }
@@ -242,26 +205,25 @@ def question_picker(qdf: pd.DataFrame) -> List[str]:
                 except Exception:
                     pass
 
-    with bcol2:
+    with c2:
         if st.button("Clear search & selections", key="menu1_clear_all"):
             st.session_state[K_DO_CLEAR] = True
             st.experimental_rerun()
 
-    # feedback
+    # 5) Feedback (same logic as before)
     if st.session_state.get(K_SEARCH_DONE, False):
-        n_total = len(st.session_state.get(K_HITS, []) or [])
-        if n_total > 0:
-            st.info(f"Found {n_total} total matches meeting the quality threshold.")
+        hits = st.session_state.get(K_HITS, []) or []
+        if hits:
+            st.info(f"Found {len(hits)} total matches meeting the quality threshold.")
         else:
             last_q = (st.session_state.get(K_LAST_QUERY) or "").strip()
             safe_q = last_q if last_q else "your search"
             st.warning(
                 f'No questions matched “{safe_q}”. '
-                "Try broader/different keywords (e.g., synonyms), split phrases, "
-                "or search by a question code like “Q01”."
+                "Try different keywords, synonyms, or a question code like “Q01”."
             )
 
-    # results
+    # 6) Results tabs (kept as-is)
     hits = st.session_state.get(K_HITS, [])
     if st.session_state.get(K_SEARCH_DONE, False) and hits:
         lex_hits = [r for r in hits if r.get("origin", "lex") == "lex"]
@@ -281,9 +243,7 @@ def question_picker(qdf: pd.DataFrame) -> List[str]:
             if total == 0:
                 st.warning("No lexical matches.")
             else:
-                st.write(
-                    f"Results {start + 1}–{end} of {total} lexical matches meeting the quality threshold:"
-                )
+                st.write(f"Results {start + 1}–{end} of {total} lexical matches meeting the quality threshold:")
 
                 gmap = dict(st.session_state.get(K_GLOBAL_HITS_SELECTED, {}))
                 for rec in lex_hits[start:end]:
@@ -299,24 +259,20 @@ def question_picker(qdf: pd.DataFrame) -> List[str]:
                     gmap[code] = bool(checked)
                 st.session_state[K_GLOBAL_HITS_SELECTED] = gmap
 
-                pcol, ncol = st.columns([0.5, 0.5])
-                with pcol:
+                pc, nc = st.columns(2)
+                with pc:
                     st.button(
                         "Prev",
                         disabled=(page <= 0),
                         key="menu1_hits_prev_lex",
-                        on_click=lambda: st.session_state.update(
-                            {K_HITS_PAGE_LEX: max(0, page - 1)}
-                        ),
+                        on_click=lambda: st.session_state.update({K_HITS_PAGE_LEX: max(0, page - 1)}),
                     )
-                with ncol:
+                with nc:
                     st.button(
                         "Next",
                         disabled=(page >= max_page),
                         key="menu1_hits_next_lex",
-                        on_click=lambda: st.session_state.update(
-                            {K_HITS_PAGE_LEX: min(max_page, page + 1)}
-                        ),
+                        on_click=lambda: st.session_state.update({K_HITS_PAGE_LEX: min(max_page, page + 1)}),
                     )
 
         # semantic tab
@@ -331,9 +287,7 @@ def question_picker(qdf: pd.DataFrame) -> List[str]:
             if total == 0:
                 st.warning("No other (semantic) matches.")
             else:
-                st.write(
-                    f"Results {start + 1}–{end} of {total} other (semantic) matches meeting the quality threshold:"
-                )
+                st.write(f"Results {start + 1}–{end} of {total} other (semantic) matches meeting the quality threshold:")
 
                 gmap = dict(st.session_state.get(K_GLOBAL_HITS_SELECTED, {}))
                 for rec in sem_hits[start:end]:
@@ -350,73 +304,60 @@ def question_picker(qdf: pd.DataFrame) -> List[str]:
                     gmap[code] = bool(checked)
                 st.session_state[K_GLOBAL_HITS_SELECTED] = gmap
 
-                pcol, ncol = st.columns([0.5, 0.5])
-                with pcol:
+                pc, nc = st.columns(2)
+                with pc:
                     st.button(
                         "Prev",
                         disabled=(page <= 0),
                         key="menu1_hits_prev_sem",
-                        on_click=lambda: st.session_state.update(
-                            {K_HITS_PAGE_SEM: max(0, page - 1)}
-                        ),
+                        on_click=lambda: st.session_state.update({K_HITS_PAGE_SEM: max(0, page - 1)}),
                     )
-                with ncol:
+                with nc:
                     st.button(
                         "Next",
                         disabled=(page >= max_page),
                         key="menu1_hits_next_sem",
-                        on_click=lambda: st.session_state.update(
-                            {K_HITS_PAGE_SEM: min(max_page, page + 1)}
-                        ),
+                        on_click=lambda: st.session_state.update({K_HITS_PAGE_SEM: min(max_page, page + 1)}),
                     )
 
-    # close step 1 wrapper
-    st.markdown("</div>", unsafe_allow_html=True)
-
-    # merge selections (from hits) into final list, cap 5
-    combined_order: List[str] = []
+    # 7) final selected list — from the checkboxes in search results
+    selected_codes: List[str] = []
     gmap_all = st.session_state.get(K_GLOBAL_HITS_SELECTED, {})
     for rec in st.session_state.get(K_HITS, []):
         code = rec["code"]
-        if gmap_all.get(code, False) and code not in combined_order:
-            combined_order.append(code)
+        if gmap_all.get(code, False) and code not in selected_codes:
+            selected_codes.append(code)
 
-    if len(combined_order) > 5:
-        combined_order = combined_order[:5]
+    if len(selected_codes) > 5:
+        selected_codes = selected_codes[:5]
         st.warning("Limit is 5 questions; extra selections were ignored.")
 
-    st.session_state[K_SELECTED_CODES] = combined_order
+    st.session_state[K_SELECTED_CODES] = selected_codes
 
-    # show selected questions
-    if st.session_state[K_SELECTED_CODES]:
-        st.markdown(
-            '<div class="field-label">Selected questions:</div>',
-            unsafe_allow_html=True,
-        )
-        updated = list(st.session_state[K_SELECTED_CODES])
+    if selected_codes:
+        st.markdown('<div class="field-label">Selected questions:</div>', unsafe_allow_html=True)
+        updated = list(selected_codes)
         for code in list(updated):
-            label = code_to_display.get(code, code)
-            keep = st.checkbox(label, value=True, key=f"sel_{code}")
+            keep = st.checkbox(code, value=True, key=f"sel_{code}")
             if not keep:
                 updated = [c for c in updated if c != code]
-                # uncheck corresponding hit checkbox if present
                 hk = f"kwhit_{code}"
                 if hk in st.session_state:
                     st.session_state[hk] = False
-                # also update global map
                 gmap = dict(st.session_state.get(K_GLOBAL_HITS_SELECTED, {}))
                 if code in gmap:
                     gmap[code] = False
                     st.session_state[K_GLOBAL_HITS_SELECTED] = gmap
-        if updated != st.session_state[K_SELECTED_CODES]:
-            st.session_state[K_SELECTED_CODES] = updated
+        st.session_state[K_SELECTED_CODES] = updated
 
     return st.session_state[K_SELECTED_CODES]
 
 
-# ---- Years ------------------------------------------------------------------
+# ---------------------------------------------------------------------------
+# Step 2 – years (unchanged)
+# ---------------------------------------------------------------------------
 def year_picker() -> List[int]:
-    # anchor for smooth scroll (kept)
+    # anchor for scroll
     st.markdown('<div id="step2_anchor"></div>', unsafe_allow_html=True)
 
     if st.session_state.get(K_SCROLL_TO_STEP2, False):
@@ -451,19 +392,20 @@ def year_picker() -> List[int]:
             if st.session_state.get(f"year_{yr}", False):
                 selected_years.append(yr)
 
-    # separator before step 3
+    # separator like you wanted
     st.markdown("<hr style='margin-top:1rem;margin-bottom:1rem;'>", unsafe_allow_html=True)
 
     return sorted(selected_years)
 
 
-# ---- Demographics -----------------------------------------------------------
+# ---------------------------------------------------------------------------
+# Step 3 – demographics (unchanged)
+# ---------------------------------------------------------------------------
 def demographic_picker(demo_df: pd.DataFrame):
     st.markdown(
         '<div class="field-label">Step 3: Select a demographic category (optional):</div>',
         unsafe_allow_html=True,
     )
-
     DEMO_CAT_COL = "DEMCODE Category"
     LABEL_COL = "DESCRIP_E"
 
@@ -472,10 +414,7 @@ def demographic_picker(demo_df: pd.DataFrame):
     )
     st.session_state.setdefault("demo_main", "All respondents")
     demo_selection = st.selectbox(
-        "Demographic category",
-        demo_categories,
-        key="demo_main",
-        label_visibility="collapsed",
+        "Demographic category", demo_categories, key="demo_main", label_visibility="collapsed"
     )
 
     sub_selection: Optional[str] = None
@@ -505,7 +444,7 @@ def demographic_picker(demo_df: pd.DataFrame):
     if not demo_selection or demo_selection == "All respondents":
         return demo_selection, sub_selection, [None], {None: "All respondents"}, False
 
-    # narrow dataset to selected category
+    # narrow to selected category
     if "DEMCODE Category" in demo_df.columns:
         df_cat = demo_df[demo_df["DEMCODE Category"] == demo_selection]
     else:
@@ -514,24 +453,21 @@ def demographic_picker(demo_df: pd.DataFrame):
     if df_cat.empty:
         return demo_selection, sub_selection, [None], {None: "All respondents"}, False
 
-    # identify code column if present
+    # try to get code column
     code_col = None
     for c in ["DEMCODE", "DemCode", "CODE", "Code", "CODE_E", "Demographic code"]:
         if c in demo_df.columns:
             code_col = c
             break
 
-    # if user picked a single subgroup
     if sub_selection:
         if code_col and LABEL_COL in df_cat.columns:
             r = df_cat[df_cat[LABEL_COL] == sub_selection]
             if not r.empty:
                 code = str(r.iloc[0][code_col])
                 return demo_selection, sub_selection, [code], {code: sub_selection}, True
-        # fallback
         return demo_selection, sub_selection, [sub_selection], {sub_selection: sub_selection}, True
 
-    # otherwise return all subgroups in that category
     if code_col and LABEL_COL in df_cat.columns:
         codes = df_cat[code_col].astype(str).tolist()
         labels = df_cat[LABEL_COL].astype(str).tolist()
@@ -544,10 +480,11 @@ def demographic_picker(demo_df: pd.DataFrame):
         labels = df_cat[LABEL_COL].astype(str).tolist()
         return demo_selection, sub_selection, labels, {l: l for l in labels}, True
 
-    # fallback
     return demo_selection, sub_selection, [None], {None: "All respondents"}, False
 
 
-# ---- Enable search? ---------------------------------------------------------
+# ---------------------------------------------------------------------------
+# Search button enablement
+# ---------------------------------------------------------------------------
 def search_button_enabled(question_codes: List[str], years: List[int]) -> bool:
     return bool(question_codes) and bool(years)
