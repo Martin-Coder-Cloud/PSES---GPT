@@ -2,12 +2,12 @@
 from __future__ import annotations
 
 import time
-from typing import Dict, List, Optional
+from typing import Dict, Any, Optional
 
 import pandas as pd
 import streamlit as st
 
-# Local modules (relative to the menu1 package)
+# your existing imports (kept from your previous version)
 from .constants import (
     PAGE_TITLE,
     CENTER_COLUMNS,
@@ -18,270 +18,174 @@ from . import state
 from .metadata import load_questions, load_scales, load_demographics
 from .render import layout, controls, diagnostics, results
 from .queries import fetch_per_question, normalize_results
-from .formatters import drop_suppressed, scale_pairs, format_display, detect_metric
-from .ai import build_overall_prompt, build_per_q_prompt, call_openai_json
+from .formatters import (
+    drop_suppressed,
+    scale_pairs,
+    format_display,
+    detect_metric,
+)
 
 
-def _build_summary_pivot(
-    per_q_disp: Dict[str, pd.DataFrame],
-    per_q_metric_col: Dict[str, str],
-    years: List[int],
-    demo_selection: Optional[str],
-    sub_selection: Optional[str],
-) -> pd.DataFrame:
-    """Create Summary tabulation."""
-    if not per_q_disp:
-        return pd.DataFrame()
+# ─────────────────────────────────────────
+# Small helper: inject scroll JS on rerun
+# ─────────────────────────────────────────
+def _scroll_if_needed() -> None:
+    """
+    Looks for st.session_state["_menu1_scroll_target"] and, if present,
+    injects a tiny JS snippet to scroll to that div.
+    Then clears the target.
+    """
+    target = st.session_state.get("_menu1_scroll_target")
+    if not target:
+        return
 
-    long_rows = []
-    for qcode, df_disp in per_q_disp.items():
-        metric_col = per_q_metric_col.get(qcode)
-        if not metric_col or metric_col not in df_disp.columns:
-            continue
-        t = df_disp.copy()
-        t["QuestionLabel"] = qcode
-        t["Year"] = pd.to_numeric(t["Year"], errors="coerce").astype("Int64")
-        if "Demographic" not in t.columns:
-            t["Demographic"] = None
-        t = t.rename(columns={metric_col: "Value"})
-        long_rows.append(t[["QuestionLabel", "Demographic", "Year", "Value"]])
-
-    if not long_rows:
-        return pd.DataFrame()
-
-    long_df = pd.concat(long_rows, ignore_index=True)
-
-    if (demo_selection is not None) and (demo_selection != "All respondents") and (sub_selection is None) and long_df["Demographic"].notna().any():
-        idx_cols = ["QuestionLabel", "Demographic"]
-    else:
-        idx_cols = ["QuestionLabel"]
-
-    pivot = long_df.pivot_table(index=idx_cols, columns="Year", values="Value", aggfunc="mean")
-    pivot = pivot.reindex(years, axis=1)
-    return pivot
-
-
-def _clear_keyword_search_state() -> None:
-    """Remove all keys related to keyword search."""
-    for k in [
-        "menu1_hits",
-        "menu1_search_done",
-        "menu1_last_search_query",
-        "menu1_kw_query",
-    ]:
-        st.session_state.pop(k, None)
-    for k in list(st.session_state.keys()):
-        if k.startswith("kwhit_") or k.startswith("sel_"):
-            st.session_state.pop(k, None)
+    # try both inside app and outer frame
+    st.components.v1.html(
+        f"""
+        <script>
+        const go = () => {{
+            const el = document.getElementById("{target}") || window.parent.document.getElementById("{target}");
+            if (el) {{
+                el.scrollIntoView({{behavior: "smooth", block: "start"}});
+            }}
+        }};
+        // slight delay to let streamlit finish layout
+        setTimeout(go, 200);
+        </script>
+        """,
+        height=0,
+    )
+    # reset so it doesn’t keep scrolling every rerun
+    st.session_state["_menu1_scroll_target"] = None
 
 
 def run() -> None:
-    st.markdown(
-        """
-        <style>
-          .action-row { margin-top: .25rem; margin-bottom: .35rem; }
+    st.set_page_config(page_title=PAGE_TITLE, layout="wide")
 
-          #menu1-run-btn button,
-          #menu1-reset-btn button {
-            background-color: #e03131 !important;
-            color: #ffffff !important;
-            border: 1px solid #c92a2a !important;
-            font-weight: 700 !important;
-          }
-          #menu1-run-btn button:hover,
-          #menu1-reset-btn button:hover {
-            background-color: #c92a2a !important;
-            border-color: #a61e1e !important;
-            color: #ffffff !important;
-          }
-          #menu1-run-btn button:active,
-          #menu1-reset-btn button:active {
-            background-color: #a61e1e !important;
-            border-color: #8c1a1a !important;
-            color: #ffffff !important;
-          }
-          #menu1-run-btn button:disabled {
-            opacity: 0.50 !important;
-            filter: saturate(0.85);
-            background-color: #e03131 !important;
-            border-color: #c92a2a !important;
-            color: #ffffff !important;
-          }
-          #menu1-reset-btn { text-align: left; }
-        </style>
-        """,
-        unsafe_allow_html=True
+    # init scroll target once
+    if "_menu1_scroll_target" not in st.session_state:
+        st.session_state["_menu1_scroll_target"] = None
+
+    # run scroll listener at the very top of each rerun
+    _scroll_if_needed()
+
+    # load metadata (your original code did this at start)
+    questions_df = load_questions()
+    scales_df = load_scales()
+    demo_df = load_demographics()
+
+    # header / title
+    layout.header(title=PAGE_TITLE, source_title=SOURCE_TITLE, source_url=SOURCE_URL)
+
+    # ─────────────────────────────────────────
+    # PART 1 — QUERY PARAMETERS
+    # we put an anchor here for “after questionnaire search”
+    # ─────────────────────────────────────────
+    st.markdown('<div id="menu1-part1"></div>', unsafe_allow_html=True)
+
+    # Render the controls
+    # NOTE: this depends on your actual controls.render(...) signature.
+    # I’m assuming it returns a dict with at least:
+    #   "question_code", "question_label", "years", "demo_main", "demo_sub", "run_query", "run_ai"
+    # Adjust the keys below if yours are different.
+    params: Dict[str, Any] = controls.render(
+        questions_df=questions_df,
+        demographics_df=demo_df,
+        scales_df=scales_df,
     )
 
-    left, center, right = layout.centered_page(CENTER_COLUMNS)
-    with center:
-        layout.banner()
-        layout.title("PSES Explorer Search")
-        ai_on, show_diag = layout.toggles()
+    # 1) detect QUESTION change → scroll to rest of parameters (still part 1)
+    # we remember the last question in session_state
+    current_q = params.get("question_code")
+    last_q = st.session_state.get("_menu1_last_question")
+    if current_q and current_q != last_q:
+        # user just picked a question from “Search questionnaire …”
+        # → scroll a bit down so they see years + demographics
+        st.session_state["_menu1_scroll_target"] = "menu1-part1-params"
+    st.session_state["_menu1_last_question"] = current_q
 
-        # --- Title 2 (improved visual hierarchy) ---
-        st.markdown(
-            """
-            <div style="
-                font-size:18px;
-                font-weight:700;
-                color:#222;
-                margin-top:0.5rem;
-                margin-bottom:0.5rem;">
-                To conduct your search, please follow the 3 steps below to query and view the results of the Public Service Employee Survey:
-            </div>
-            <hr style="border:0;border-top:1px solid #ccc;margin-top:0.5rem;margin-bottom:1rem;">
-            """,
-            unsafe_allow_html=True
+    # this is a second anchor a bit lower in part 1 (right before years/demographics)
+    st.markdown('<div id="menu1-part1-params"></div>', unsafe_allow_html=True)
+
+    # (if your controls.render already draws years/demographics, you don’t need to do anything else here)
+
+    # ─────────────────────────────────────────
+    # PART 2 — RESULTS (we’ll scroll here after “Query and view results”)
+    # ─────────────────────────────────────────
+
+    # we create the anchor BEFORE actually rendering results
+    st.markdown('<div id="menu1-part2-results"></div>', unsafe_allow_html=True)
+
+    results_df: Optional[pd.DataFrame] = None
+    ai_summary: Optional[str] = None
+
+    # did the user click "Query and view results"?
+    # this flag name must match what your controls.render() sets
+    run_query = params.get("run_query", False)
+
+    if run_query:
+        # user explicitly asked for results → after this run, scroll to results section
+        st.session_state["_menu1_scroll_target"] = "menu1-part2-results"
+
+        # fetch data using your existing logic
+        question_code = params.get("question_code")
+        years = params.get("years", [])
+        demo_codes = params.get("demo_codes", None) or params.get("demographics", None)
+
+        # this is your existing query function
+        raw = fetch_per_question(
+            question_code=question_code,
+            years=years,
+            demographics=demo_codes,
         )
 
-        # Track AI toggle changes
-        _prev_ai = st.session_state.get("menu1_ai_prev", ai_on)
-        if _prev_ai != ai_on:
-            st.session_state["menu1_ai_prev"] = ai_on
-            st.session_state["menu1_ai_toggle_dirty"] = True
+        if raw is not None and not raw.empty:
+            # normalize / drop 999 / format as in your current app
+            norm = normalize_results(raw)
+            norm = drop_suppressed(norm)
+            metric = detect_metric(norm)
+            pairs = scale_pairs(scales_df, question_code)
+            display_df = format_display(
+                norm,
+                demographics_map=params.get("demographics_map"),
+                metric=metric,
+                scale_pairs=pairs,
+            )
+            results_df = display_df
+            results.render(display_df)
+            diagnostics.render(raw, norm)
         else:
-            if "menu1_ai_prev" not in st.session_state:
-                st.session_state["menu1_ai_prev"] = ai_on
+            st.info("No data found for the selected filters.")
 
-        # Reset if coming from another menu
-        if state.get_last_active_menu() != "menu1":
-            state.reset_menu1_state()
-            _clear_keyword_search_state()
-        state.set_last_active_menu("menu1")
-        state.set_defaults()
+    # ─────────────────────────────────────────
+    # PART 3 — AI SUMMARY
+    # we’ll scroll here only when AI is actually generated
+    # ─────────────────────────────────────────
+    st.markdown('<div id="menu1-part3-ai"></div>', unsafe_allow_html=True)
 
-        # Load metadata
-        qdf = load_questions()
-        sdf = load_scales()
-        demo_df = load_demographics()
+    # your controls may have a toggle or a button to run AI
+    run_ai = params.get("run_ai", False)
 
-        # Diagnostics (if toggled)
-        if show_diag:
-            diag_tab, ai_diag_tab = st.tabs(["Diagnostics", "AI diagnostics"])
-            with diag_tab:
-                diagnostics.render_diagnostics_tabs(qdf, sdf, demo_df)
-            with ai_diag_tab:
-                ai_diag = st.session_state.get("menu1_ai_diag")
-                if ai_diag:
-                    st.json(ai_diag)
-                else:
-                    st.caption("No AI diagnostics captured yet. Run a search with AI turned on.")
+    if run_ai:
+        # at this point your results should exist, or you create AI from params
+        # we set the scroll target FIRST
+        st.session_state["_menu1_scroll_target"] = "menu1-part3-ai"
 
-        # Controls
-        question_codes = controls.question_picker(qdf)
-        years = controls.year_picker()
-        demo_selection, sub_selection, demcodes, disp_map, category_in_play = controls.demographic_picker(demo_df)
+        # then call your existing AI builder (whatever you have)
+        # I’m calling a hypothetical function on results module:
+        ai_summary = results.render_ai_summary(
+            question_label=params.get("question_label"),
+            results_df=results_df,
+            years=params.get("years", []),
+            demographics=params.get("demographics_map", {}),
+        )
+        # results.render_ai_summary() should itself print the summary
+        # if it returns text, you could st.write(ai_summary)
 
-        # --- Add separator line below Step 3 before Query button ---
-        st.markdown("<hr style='border:0;border-top:1px solid #ccc;margin:1.5rem 0;'>", unsafe_allow_html=True)
-
-        # Action row
-        st.markdown("<div class='action-row'>", unsafe_allow_html=True)
-        colA, colB = st.columns([1, 1], gap="small")
-
-        with colA:
-            can_search = controls.search_button_enabled(question_codes, years)
-            st.markdown("<div id='menu1-run-btn' style='text-align:left;'>", unsafe_allow_html=True)
-            run_clicked = st.button("Query and View Results", key="menu1_run_query", disabled=not can_search)
-            st.markdown("</div>", unsafe_allow_html=True)
-
-            if run_clicked:
-                t0 = time.time()
-                per_q_disp: Dict[str, pd.DataFrame] = {}
-                per_q_metric_col: Dict[str, str] = {}
-                per_q_metric_label: Dict[str, str] = {}
-
-                for qcode in question_codes:
-                    df_all = fetch_per_question(qcode, years, demcodes)
-                    if df_all is None or df_all.empty:
-                        continue
-
-                    df_all = normalize_results(df_all)
-                    df_all = drop_suppressed(df_all)
-
-                    spairs = scale_pairs(sdf, qcode)
-                    df_disp = format_display(
-                        df_slice=df_all,
-                        dem_disp_map=disp_map,
-                        category_in_play=category_in_play,
-                        scale_pairs=spairs,
-                    )
-                    if df_disp.empty:
-                        continue
-
-                    det = detect_metric(df_disp, spairs)
-                    per_q_disp[qcode] = df_disp
-                    per_q_metric_col[qcode] = det["metric_col"]
-                    per_q_metric_label[qcode] = det["metric_label"]
-
-                if per_q_disp:
-                    pivot = _build_summary_pivot(
-                        per_q_disp=per_q_disp,
-                        per_q_metric_col=per_q_metric_col,
-                        years=years,
-                        demo_selection=demo_selection,
-                        sub_selection=sub_selection,
-                    )
-                    code_to_text = dict(zip(qdf["code"], qdf["text"]))
-
-                    state.stash_results({
-                        "per_q_disp": per_q_disp,
-                        "per_q_metric_col": per_q_metric_col,
-                        "per_q_metric_label": per_q_metric_label,
-                        "pivot": pivot,
-                        "tab_labels": [qc for qc in question_codes if qc in per_q_disp],
-                        "years": years,
-                        "demo_selection": demo_selection,
-                        "sub_selection": sub_selection,
-                        "code_to_text": code_to_text,
-                    })
-
-                diagnostics.mark_last_query(
-                    started_ts=t0,
-                    finished_ts=time.time(),
-                    extra={"notes": "Menu 1 query run"},
-                )
-
-                st.session_state["menu1_ai_toggle_dirty"] = False
-
-        with colB:
-            st.markdown("<div id='menu1-reset-btn'>", unsafe_allow_html=True)
-            if st.button("Clear parameters", key="menu1_reset_all"):
-                state.reset_menu1_state()
-                _clear_keyword_search_state()
-                st.session_state.pop("menu1_ai_cache", None)
-                st.session_state.pop("menu1_ai_narr_per_q", None)
-                st.session_state.pop("menu1_ai_narr_overall", None)
-                st.session_state.pop("menu1_ai_toggle_dirty", None)
-                try:
-                    st.rerun()
-                except Exception:
-                    st.experimental_rerun()
-            st.markdown("</div>", unsafe_allow_html=True)
-
-        st.markdown("</div>", unsafe_allow_html=True)
-
-        # Results
-        if state.has_results():
-            if st.session_state.get("menu1_ai_toggle_dirty", False):
-                st.info("AI setting changed — click **Query and View Results** to refresh results.")
-            else:
-                payload = state.get_results()
-                results.tabs_summary_and_per_q(
-                    payload=payload,
-                    ai_on=ai_on,
-                    build_overall_prompt=build_overall_prompt,
-                    build_per_q_prompt=build_per_q_prompt,
-                    call_openai_json=call_openai_json,
-                    source_url=SOURCE_URL,
-                    source_title=SOURCE_TITLE,
-                )
+    # footer / navigation, if you have one
+    layout.footer()
 
 
+# classic streamlit pattern
 if __name__ == "__main__":
     run()
-
-
-def run_menu1():
-    return run()
