@@ -7,7 +7,6 @@ from typing import Dict, List, Optional
 import pandas as pd
 import streamlit as st
 
-# Local modules (relative to the menu1 package)
 from .constants import (
     PAGE_TITLE,
     CENTER_COLUMNS,
@@ -29,11 +28,10 @@ def _build_summary_pivot(
     demo_selection: Optional[str],
     sub_selection: Optional[str],
 ) -> pd.DataFrame:
-    """Create Summary tabulation."""
     if not per_q_disp:
         return pd.DataFrame()
 
-    long_rows = []
+    rows = []
     for qcode, df_disp in per_q_disp.items():
         metric_col = per_q_metric_col.get(qcode)
         if not metric_col or metric_col not in df_disp.columns:
@@ -44,25 +42,23 @@ def _build_summary_pivot(
         if "Demographic" not in t.columns:
             t["Demographic"] = None
         t = t.rename(columns={metric_col: "Value"})
-        long_rows.append(t[["QuestionLabel", "Demographic", "Year", "Value"]])
+        rows.append(t[["QuestionLabel", "Demographic", "Year", "Value"]])
 
-    if not long_rows:
+    if not rows:
         return pd.DataFrame()
 
-    long_df = pd.concat(long_rows, ignore_index=True)
-
-    if (demo_selection is not None) and (demo_selection != "All respondents") and (sub_selection is None) and long_df["Demographic"].notna().any():
+    df = pd.concat(rows, ignore_index=True)
+    if (demo_selection and demo_selection != "All respondents") and (sub_selection is None) and df["Demographic"].notna().any():
         idx_cols = ["QuestionLabel", "Demographic"]
     else:
         idx_cols = ["QuestionLabel"]
 
-    pivot = long_df.pivot_table(index=idx_cols, columns="Year", values="Value", aggfunc="mean")
+    pivot = df.pivot_table(index=idx_cols, columns="Year", values="Value", aggfunc="mean")
     pivot = pivot.reindex(years, axis=1)
     return pivot
 
 
 def _clear_keyword_search_state() -> None:
-    """Remove all keys related to keyword search."""
     for k in [
         "menu1_hits",
         "menu1_search_done",
@@ -141,7 +137,7 @@ def run() -> None:
             unsafe_allow_html=True
         )
 
-        # AI toggle tracking
+        # Track AI toggle changes
         _prev_ai = st.session_state.get("menu1_ai_prev", ai_on)
         if _prev_ai != ai_on:
             st.session_state["menu1_ai_prev"] = ai_on
@@ -171,19 +167,26 @@ def run() -> None:
                 else:
                     st.caption("No AI diagnostics captured yet. Run a search with AI turned on.")
 
-        # --- Step 1 label updated here ---
+        # Step 1: use JS injection to rename dynamically rendered header text
+        question_codes = controls.question_picker(qdf)
         st.markdown(
-            "<div style='font-size:16px;font-weight:600;color:#222;margin-top:1rem;margin-bottom:0.3rem;'>"
-            "Step 1: Select survey question(s) - Max. 5"
-            "</div>",
+            """
+            <script>
+            const headers = Array.from(window.parent.document.querySelectorAll('div, p, span'));
+            headers.forEach(el => {
+              if (el.innerText && el.innerText.trim().startsWith('Step 1:')) {
+                el.innerText = 'Step 1: Select survey question(s) – up to 5';
+              }
+            });
+            </script>
+            """,
             unsafe_allow_html=True
         )
 
-        question_codes = controls.question_picker(qdf)
         years = controls.year_picker()
         demo_selection, sub_selection, demcodes, disp_map, category_in_play = controls.demographic_picker(demo_df)
 
-        # Separator before action buttons
+        # Separator
         st.markdown("<hr style='border:0;border-top:1px solid #ccc;margin:1.5rem 0 1rem 0;'>", unsafe_allow_html=True)
 
         # Action buttons
@@ -234,7 +237,6 @@ def run() -> None:
                         sub_selection=sub_selection,
                     )
                     code_to_text = dict(zip(qdf["code"], qdf["text"]))
-
                     state.stash_results({
                         "per_q_disp": per_q_disp,
                         "per_q_metric_col": per_q_metric_col,
@@ -252,7 +254,6 @@ def run() -> None:
                     finished_ts=time.time(),
                     extra={"notes": "Menu 1 query run"},
                 )
-
                 st.session_state["menu1_ai_toggle_dirty"] = False
 
         with colB:
