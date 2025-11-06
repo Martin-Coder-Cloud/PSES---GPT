@@ -1,301 +1,373 @@
-# menu1/main.py
-from __future__ import annotations
+# Menu1/main.py  — PSES AI Explorer (Menu 1: Search by Question)
+# Robust to either original raw column names (SURVEYR/DEMCODE/QUESTION/POSITIVE/etc.)
+# or normalized columns (year/group_value/question_code/positive_pct/etc.).
 
-import time
-from typing import Dict, List, Optional
+import io
+from datetime import datetime
 
 import pandas as pd
 import streamlit as st
 
-# Local modules (relative to the menu1 package)
-from .constants import (
-    PAGE_TITLE,          # kept for parity with your imports (not used directly here)
-    CENTER_COLUMNS,
-    SOURCE_URL,
-    SOURCE_TITLE,
-)
-from . import state
-from .metadata import load_questions, load_scales, load_demographics
-from .render import layout, controls, diagnostics, results
-from .queries import fetch_per_question, normalize_results
-from .formatters import drop_suppressed, scale_pairs, format_display, detect_metric
-from .ai import build_overall_prompt, build_per_q_prompt, call_openai_json  # direct imports
+# Loader: reads Drive .csv.gz in chunks and filters on QUESTION/YEAR/DEMCODE
+from utils.data_loader import load_results2024_filtered
 
 
-def _build_summary_pivot(
-    per_q_disp: Dict[str, pd.DataFrame],
-    per_q_metric_col: Dict[str, str],
-    years: List[int],
-    demo_selection: Optional[str],
-    sub_selection: Optional[str],
-) -> pd.DataFrame:
-    """
-    Create the Summary tabulation:
-      - Row index: Question code only (or Question×Demographic if a category is selected without a specific subgroup)
-      - Columns: selected years
-      - Values: detected metric per question (mean across demo rows when needed)
-    """
-    if not per_q_disp:
-        return pd.DataFrame()
+# ─────────────────────────────
+# Metadata loaders (cached)
+# ─────────────────────────────
+@st.cache_data(show_spinner=False)
+def load_demographics_metadata() -> pd.DataFrame:
+    df = pd.read_excel("metadata/Demographics.xlsx")
+    df.columns = [c.strip() for c in df.columns]
+    return df
 
-    long_rows = []
-    for qcode, df_disp in per_q_disp.items():
-        metric_col = per_q_metric_col.get(qcode)
-        if not metric_col or metric_col not in df_disp.columns:
-            continue
+@st.cache_data(show_spinner=False)
+def load_questions_metadata() -> pd.DataFrame:
+    qdf = pd.read_excel("metadata/Survey Questions.xlsx")
+    qdf.columns = [c.strip().lower() for c in qdf.columns]
+    if "question" in qdf.columns and "english" in qdf.columns:
+        qdf = qdf.rename(columns={"question": "code", "english": "text"})
+    qdf["qnum"] = qdf["code"].astype(str).str.extract(r'Q?(\d+)', expand=False)
+    with pd.option_context("mode.chained_assignment", None):
+        qdf["qnum"] = pd.to_numeric(qdf["qnum"], errors="coerce")
+    qdf = qdf.sort_values(["qnum", "code"], na_position="last")
+    qdf["display"] = qdf["code"].astype(str) + " – " + qdf["text"].astype(str)
+    return qdf[["code", "text", "display"]]
 
-        t = df_disp.copy()
-        t["QuestionLabel"] = qcode  # code only
-        t["Year"] = pd.to_numeric(t["Year"], errors="coerce").astype("Int64")
-        if "Demographic" not in t.columns:
-            t["Demographic"] = None
-
-        t = t.rename(columns={metric_col: "Value"})
-        long_rows.append(t[["QuestionLabel", "Demographic", "Year", "Value"]])
-
-    if not long_rows:
-        return pd.DataFrame()
-
-    long_df = pd.concat(long_rows, ignore_index=True)
-
-    if (demo_selection is not None) and (demo_selection != "All respondents") and (sub_selection is None) and long_df["Demographic"].notna().any():
-        idx_cols = ["QuestionLabel", "Demographic"]
-    else:
-        idx_cols = ["QuestionLabel"]
-
-    pivot = long_df.pivot_table(index=idx_cols, columns="Year", values="Value", aggfunc="mean")
-    pivot = pivot.reindex(years, axis=1)  # ensure column order matches selected years
-    return pivot
+@st.cache_data(show_spinner=False)
+def load_scales_metadata() -> pd.DataFrame:
+    sdf = pd.read_excel("metadata/Survey Scales.xlsx")
+    sdf.columns = [c.strip().lower() for c in sdf.columns]
+    return sdf
 
 
-def _clear_keyword_search_state() -> None:
-    """Remove all keys related to the keyword search so no stale warnings remain."""
-    for k in [
-        "menu1_hits",
-        "menu1_search_done",
-        "menu1_last_search_query",
-        "menu1_kw_query",
-    ]:
-        st.session_state.pop(k, None)
-    # Clear dynamic checkbox keys from previous hits and selections
-    for k in list(st.session_state.keys()):
-        if k.startswith("kwhit_") or k.startswith("sel_"):
-            st.session_state.pop(k, None)
+# ─────────────────────────────
+# Helpers
+# ─────────────────────────────
+def resolve_demographic_codes(demo_df, category_label, subgroup_label):
+    DEMO_CAT_COL = "DEMCODE Category"
+    LABEL_COL = "DESCRIP_E"
+
+    code_col = None
+    for c in ["DEMCODE", "DemCode", "CODE", "Code", "CODE_E", "Demographic code"]:
+        if c in demo_df.columns:
+            code_col = c
+            break
+
+    if not category_label or category_label == "All respondents":
+        return [None], {None: "All respondents"}, False
+
+    df_cat = demo_df[demo_df[DEMO_CAT_COL] == category_label] if DEMO_CAT_COL in demo_df.columns else demo_df.copy()
+    if df_cat.empty:
+        return [None], {None: "All respondents"}, False
+
+    if subgroup_label:
+        if code_col and LABEL_COL in df_cat.columns:
+            row = df_cat[df_cat[LABEL_COL] == subgroup_label]
+            if not row.empty:
+                code = str(row.iloc[0][code_col])
+                return [code], {code: subgroup_label}, True
+        return [subgroup_label], {subgroup_label: subgroup_label}, True
+
+    if code_col and LABEL_COL in df_cat.columns:
+        codes = df_cat[code_col].astype(str).tolist()
+        labels = df_cat[LABEL_COL].astype(str).tolist()
+        keep = [(c, l) for c, l in zip(codes, labels) if str(c).strip() != ""]
+        codes = [c for c, _ in keep]
+        disp_map = {c: l for c, l in keep}
+        return codes, disp_map, True
+
+    if LABEL_COL in df_cat.columns:
+        labels = df_cat[LABEL_COL].astype(str).tolist()
+        disp_map = {l: l for l in labels}
+        return labels, disp_map, True
+
+    return [None], {None: "All respondents"}, False
 
 
-def run() -> None:
-    # NOTE: st.set_page_config() is intentionally NOT called here
-    # to avoid double-calling it (root main.py calls it once).
+def get_scale_labels(scales_df, question_code):
+    sdf = scales_df.copy()
+    candidates = pd.DataFrame()
+    for key in ["code", "question"]:
+        if key in sdf.columns:
+            candidates = sdf[sdf[key].astype(str).str.upper() == str(question_code).upper()]
+            if not candidates.empty:
+                break
+    labels = []
+    for i in range(1, 8):
+        col = f"answer{i}"
+        lbl = None
+        if not candidates.empty and col in candidates.columns:
+            vals = candidates[col].dropna().astype(str)
+            if not vals.empty:
+                lbl = vals.iloc[0].strip()
+        if not lbl:
+            lbl = f"Answer {i}"
+        labels.append((col, lbl))
+    return labels
 
-    # Scoped CSS: make ONLY the bottom action buttons red/white.
-    # Use very simple selectors so Streamlit theme cannot dodge it.
-    st.markdown(
-        """
-        <style>
-          .action-row { margin-top: .25rem; margin-bottom: .35rem; }
 
-          /* Red + white for the two bottom action buttons */
-          #menu1-run-btn button,
-          #menu1-reset-btn button {
-            background-color: #e03131 !important;
-            color: #ffffff !important;
-            border: 1px solid #c92a2a !important;
-            font-weight: 700 !important;
-          }
-          #menu1-run-btn button:hover,
-          #menu1-reset-btn button:hover {
-            background-color: #c92a2a !important;
-            border-color: #a61e1e !important;
-            color: #ffffff !important;
-          }
-          #menu1-run-btn button:active,
-          #menu1-reset-btn button:active {
-            background-color: #a61e1e !important;
-            border-color: #8c1a1a !important;
-            color: #ffffff !important;
-          }
-          #menu1-run-btn button:disabled {
-            opacity: 0.50 !important;
-            filter: saturate(0.85);
-            background-color: #e03131 !important;
-            border-color: #c92a2a !important;
-            color: #ffffff !important;
-          }
+def drop_na_999(df):
+    pos_col = "positive_pct" if "positive_pct" in df.columns else "POSITIVE" if "POSITIVE" in df.columns else None
+    neu_col = "neutral_pct" if "neutral_pct" in df.columns else "NEUTRAL" if "NEUTRAL" in df.columns else None
+    neg_col = "negative_pct" if "negative_pct" in df.columns else "NEGATIVE" if "NEGATIVE" in df.columns else None
+    n_col   = "n" if "n" in df.columns else "ANSCOUNT" if "ANSCOUNT" in df.columns else None
 
-          /* Keep the reset/clear button left-aligned; use default layout */
-          #menu1-reset-btn { text-align: left; }
-        </style>
-        """,
-        unsafe_allow_html=True
-    )
+    cols_check = [c for c in [f"answer{i}" for i in range(1, 8)] if c in df.columns]
+    cols_check += [c for c in [pos_col, neu_col, neg_col, n_col] if c]
 
-    left, center, right = layout.centered_page(CENTER_COLUMNS)
-    with center:
-        # Header
-        layout.banner()
-        layout.title("PSES Explorer Search")
-        ai_on, show_diag = layout.toggles()
+    if not cols_check:
+        return df
 
-        # [AI-toggle gate] Track toggle changes without triggering rebuilds
-        _prev_ai = st.session_state.get("menu1_ai_prev", ai_on)
-        if _prev_ai != ai_on:
-            st.session_state["menu1_ai_prev"] = ai_on
-            st.session_state["menu1_ai_toggle_dirty"] = True
+    mask_keep = pd.Series(True, index=df.index)
+    for c in cols_check:
+        vals = pd.to_numeric(df[c], errors="coerce")
+        mask_keep &= (vals != 999)
+    return df.loc[mask_keep].copy()
+
+
+def normalize_results_columns(df):
+    out = df.copy()
+    if "question_code" not in out.columns:
+        if "QUESTION" in out.columns:
+            out = out.rename(columns={"QUESTION": "question_code"})
         else:
-            # initialize on first load
-            if "menu1_ai_prev" not in st.session_state:
-                st.session_state["menu1_ai_prev"] = ai_on
-
-        layout.instructions()
-
-        # Reset when arriving fresh from another menu
-        if state.get_last_active_menu() != "menu1":
-            state.reset_menu1_state()
-            _clear_keyword_search_state()  # also clear keyword UI state on first arrival
-        state.set_last_active_menu("menu1")
-        state.set_defaults()  # idempotent
-
-        # Metadata (cached)
-        qdf = load_questions()
-        sdf = load_scales()
-        demo_df = load_demographics()
-
-        # Diagnostics (tabs)
-        if show_diag:
-            # show two tabs: existing diagnostics + AI diagnostics
-            diag_tab, ai_diag_tab = st.tabs(["Diagnostics", "AI diagnostics"])
-            with diag_tab:
-                diagnostics.render_diagnostics_tabs(qdf, sdf, demo_df)
-            with ai_diag_tab:
-                ai_diag = st.session_state.get("menu1_ai_diag")
-                if ai_diag:
-                    st.json(ai_diag)
-                else:
-                    st.caption("No AI diagnostics captured yet. Run a search with AI turned on.")
-
-        # Controls
-        question_codes = controls.question_picker(qdf)  # -> List[str] (codes)
-        years = controls.year_picker()                  # -> List[int]
-        demo_selection, sub_selection, demcodes, disp_map, category_in_play = controls.demographic_picker(demo_df)
-
-        # Action row: Search / Clear (side-by-side, aligned left)
-        st.markdown("<div class='action-row'>", unsafe_allow_html=True)
-        colA, colB = st.columns([1, 1], gap="small")
-
-        with colA:
-            can_search = controls.search_button_enabled(question_codes, years)
-            st.markdown("<div id='menu1-run-btn' style='text-align:left;'>", unsafe_allow_html=True)
-            run_clicked = st.button("Search the survey results", key="menu1_run_query", disabled=not can_search)
-            st.markdown("</div>", unsafe_allow_html=True)
-
-            if run_clicked:
-                t0 = time.time()
-                per_q_disp: Dict[str, pd.DataFrame] = {}
-                per_q_metric_col: Dict[str, str] = {}
-                per_q_metric_label: Dict[str, str] = {}
-
-                # Build per-question display tables
-                for qcode in question_codes:
-                    df_all = fetch_per_question(qcode, years, demcodes)
-                    if df_all is None or df_all.empty:
-                        continue
-
-                    df_all = normalize_results(df_all)
-                    df_all = drop_suppressed(df_all)
-
-                    spairs = scale_pairs(sdf, qcode)
-                    df_disp = format_display(
-                        df_slice=df_all,
-                        dem_disp_map=disp_map,
-                        category_in_play=category_in_play,
-                        scale_pairs=spairs,
-                    )
-                    if df_disp.empty:
-                        continue
-
-                    det = detect_metric(df_disp, spairs)
-                    per_q_disp[qcode] = df_disp
-                    per_q_metric_col[qcode] = det["metric_col"]
-                    per_q_metric_label[qcode] = det["metric_label"]
-
-                # Build pivot & stash results for centered rendering
-                if per_q_disp:
-                    pivot = _build_summary_pivot(
-                        per_q_disp=per_q_disp,
-                        per_q_metric_col=per_q_metric_col,
-                        years=years,
-                        demo_selection=demo_selection,
-                        sub_selection=sub_selection,
-                    )
-                    code_to_text = dict(zip(qdf["code"], qdf["text"]))
-
-                    state.stash_results({
-                        "per_q_disp": per_q_disp,
-                        "per_q_metric_col": per_q_metric_col,
-                        "per_q_metric_label": per_q_metric_label,
-                        "pivot": pivot,
-                        "tab_labels": [qc for qc in question_codes if qc in per_q_disp],
-                        "years": years,
-                        "demo_selection": demo_selection,
-                        "sub_selection": sub_selection,
-                        "code_to_text": code_to_text,
-                    })
-
-                # Mark diagnostics timing
-                diagnostics.mark_last_query(
-                    started_ts=t0,
-                    finished_ts=time.time(),
-                    extra={"notes": "Menu 1 query run"},
-                )
-
-                # [AI-toggle gate] A fresh Search clears the dirty flag
-                st.session_state["menu1_ai_toggle_dirty"] = False
-
-        with colB:
-            st.markdown("<div id='menu1-reset-btn'>", unsafe_allow_html=True)
-            # Label per your UX spec (“Clear parameters” beside Search)
-            if st.button("Clear parameters", key="menu1_reset_all"):
-                # Reset core menu state
-                state.reset_menu1_state()
-                # Also clear keyword-search UI state so no stale "No questions matched…" persists
-                _clear_keyword_search_state()
-                # Clear AI caches (to prevent reruns from showing stale narratives)
-                st.session_state.pop("menu1_ai_cache", None)
-                st.session_state.pop("menu1_ai_narr_per_q", None)
-                st.session_state.pop("menu1_ai_narr_overall", None)
-                # [AI-toggle gate] Clearing parameters also clears the dirty flag
-                st.session_state.pop("menu1_ai_toggle_dirty", None)
-                # Rerun
-                try:
-                    st.rerun()
-                except Exception:
-                    st.experimental_rerun()
-            st.markdown("</div>", unsafe_allow_html=True)
-
-        st.markdown("</div>", unsafe_allow_html=True)
-
-        # Results (center area)
-        if state.has_results():
-            # [AI-toggle gate] If the AI toggle changed since last Search, do not render results
-            if st.session_state.get("menu1_ai_toggle_dirty", False):
-                st.info("AI setting changed — click **Search** to refresh results.")
-            else:
-                payload = state.get_results()
-                results.tabs_summary_and_per_q(
-                    payload=payload,
-                    ai_on=ai_on,
-                    build_overall_prompt=build_overall_prompt,  # pass directly
-                    build_per_q_prompt=build_per_q_prompt,      # pass directly
-                    call_openai_json=call_openai_json,          # pass directly
-                    source_url=SOURCE_URL,
-                    source_title=SOURCE_TITLE,
-                )
+            for c in out.columns:
+                if c.strip().lower() == "question":
+                    out = out.rename(columns={c: "question_code"})
+                    break
+    if "year" not in out.columns:
+        if "SURVEYR" in out.columns:
+            out = out.rename(columns={"SURVEYR": "year"})
+        else:
+            for c in out.columns:
+                if c.strip().lower() in ("surveyr", "year"):
+                    out = out.rename(columns={c: "year"})
+                    break
+    if "group_value" not in out.columns:
+        if "DEMCODE" in out.columns:
+            out = out.rename(columns={"DEMCODE": "group_value"})
+        else:
+            for c in out.columns:
+                if c.strip().lower() == "demcode":
+                    out = out.rename(columns={c: "group_value"})
+                    break
+    if "positive_pct" not in out.columns and "POSITIVE" in out.columns:
+        out = out.rename(columns={"POSITIVE": "positive_pct"})
+    if "neutral_pct" not in out.columns and "NEUTRAL" in out.columns:
+        out = out.rename(columns={"NEUTRAL": "neutral_pct"})
+    if "negative_pct" not in out.columns and "NEGATIVE" in out.columns:
+        out = out.rename(columns={"NEGATIVE": "negative_pct"})
+    if "n" not in out.columns and "ANSCOUNT" in out.columns:
+        out = out.rename(columns={"ANSCOUNT": "n"})
+    return out
 
 
-if __name__ == "__main__":
-    run()
+def format_table_for_display(df_slice, dem_disp_map, category_in_play, scale_pairs):
+    if df_slice.empty:
+        return df_slice
+    out = df_slice.copy()
+    out["YearNum"] = pd.to_numeric(out["year"], errors="coerce").astype("Int64")
+    out["Year"] = out["YearNum"].astype(str)
 
-# --- keep this at the end of menu1/main.py ---
+    if category_in_play:
+        def lbl(code):
+            if code is None or (isinstance(code, float) and pd.isna(code)) or str(code).strip() == "":
+                return "All respondents"
+            return dem_disp_map.get(code, dem_disp_map.get(str(code), str(code)))
+        out["Demographic"] = out["group_value"].apply(lbl)
+
+    dist_cols = [k for k, _ in scale_pairs if k in out.columns]
+    rename_map = {k: v for k, v in scale_pairs if k in out.columns}
+    keep_cols = ["YearNum", "Year"] + (["Demographic"] if category_in_play else []) \
+                + dist_cols + ["positive_pct", "neutral_pct", "negative_pct", "n"]
+    out = out[keep_cols].copy()
+    out = out.rename(columns=rename_map)
+    out = out.rename(columns={"positive_pct": "Positive", "neutral_pct": "Neutral", "negative_pct": "Negative", "n": "n"})
+
+    sort_cols = ["YearNum"] + (["Demographic"] if category_in_play else [])
+    sort_asc  = [False] + ([True] if category_in_play else [])
+    out = out.sort_values(sort_cols, ascending=sort_asc, kind="mergesort").reset_index(drop=True)
+    out = out.drop(columns=["YearNum"])
+
+    for c in out.columns:
+        if c not in ("Year", "Demographic"):
+            out[c] = pd.to_numeric(out[c], errors="coerce")
+    pct_like = [c for c in out.columns if c not in ("Year", "Demographic", "n")]
+    out[pct_like] = out[pct_like].round(1)
+    if "n" in out.columns:
+        out["n"] = out["n"].astype("Int64")
+
+    return out
+
+
+def build_positive_only_narrative(df_disp, category_in_play):
+    if df_disp.empty or "Positive" not in df_disp.columns:
+        return "No results available to summarize."
+
+    t = df_disp.copy()
+    t["_Y"] = pd.to_numeric(t["Year"], errors="coerce")
+    latest_year = int(t["_Y"].max())
+    df_latest = t[t["_Y"] == latest_year]
+
+    lines = []
+
+    if category_in_play and "Demographic" in t.columns:
+        groups = df_latest.dropna(subset=["Positive"]).sort_values("Positive", ascending=False)
+        if len(groups) >= 2:
+            top = groups.iloc[0]; bot = groups.iloc[-1]
+            lines.append(
+                f"In {latest_year}, {top['Demographic']} is highest on Positive ({top['Positive']:.1f}%), "
+                f"while {bot['Demographic']} is lowest ({bot['Positive']:.1f}%)."
+            )
+        elif len(groups) == 1:
+            g = groups.iloc[0]
+            lines.append(f"In {latest_year}, {g['Demographic']} has Positive at {g['Positive']:.1f}%.")
+
+    def prev_year(subdf):
+        ys = sorted(pd.to_numeric(subdf["Year"], errors="coerce").dropna().unique().tolist())
+        return int(ys[-2]) if len(ys) >= 2 else None
+
+    if category_in_play and "Demographic" in t.columns:
+        top3 = df_latest.sort_values("Positive", ascending=False).head(3)["Demographic"].tolist()
+        for g in top3:
+            s = t[t["Demographic"] == g]
+            prev = prev_year(s)
+            if prev is not None:
+                latest_pos = s[s["Year"] == str(latest_year)]["Positive"].dropna()
+                prev_pos   = s[s["Year"] == str(prev)]["Positive"].dropna()
+                if not latest_pos.empty and not prev_pos.empty:
+                    delta = latest_pos.iloc[0] - prev_pos.iloc[0]
+                    lines.append(f"{g}: {latest_year} {latest_pos.iloc[0]:.1f}% ({delta:+.1f} pts vs {prev}).")
+    else:
+        prev = prev_year(t)
+        if prev is not None:
+            latest_pos = df_latest["Positive"].dropna()
+            prev_pos   = t[t["Year"] == str(prev)]["Positive"].dropna()
+            if not latest_pos.empty and not prev_pos.empty:
+                delta = latest_pos.iloc[0] - prev_pos.iloc[0]
+                lines.append(f"Overall: {latest_year} {latest_pos.iloc[0]:.1f}% ({delta:+.1f} pts vs {prev}).")
+
+    if not lines:
+        return "No notable changes to report based on Positive."
+    return " ".join(lines)
+
+
+# ─────────────────────────────
+# UI
+# ─────────────────────────────
 def run_menu1():
-    # backward-compat alias for older loaders that expect run_menu1
-    return run()
+    st.markdown("""
+        <style>
+            body { background-image: none !important; background-color: white !important; }
+            .block-container { padding-top: 1rem !important; }
+            .menu-banner { width: 100%; height: auto; display: block; margin-top: 0px; margin-bottom: 20px; }
+            .custom-header { font-size: 30px !important; font-weight: 700; margin-bottom: 10px; }
+            .custom-instruction { font-size: 16px !important; line-height: 1.4; margin-bottom: 10px; color: #333; }
+            .field-label { font-size: 18px !important; font-weight: 600 !important; margin-top: 12px !important; margin-bottom: 2px !important; color: #222 !important; }
+            .big-button button { font-size: 18px !important; padding: 0.75em 2em !important; margin-top: 20px; }
+        </style>
+    """, unsafe_allow_html=True)
+
+    demo_df = load_demographics_metadata()
+    qdf = load_questions_metadata()
+    sdf = load_scales_metadata()
+
+    left, center, right = st.columns([1, 3, 1])
+    with center:
+        st.markdown(
+            "<img class='menu-banner' src='https://raw.githubusercontent.com/Martin-Coder-Cloud/PSES---GPT/refs/heads/main/PSES%20email%20banner.png'>",
+            unsafe_allow_html=True
+        )
+        st.markdown('<div class="custom-header">🔍 Search by Question</div>', unsafe_allow_html=True)
+        st.markdown(
+            '<div class="custom-instruction">To conduct your search, please follow the 3 steps below to query and view the results of the Public Service Employee Survey:</div>',
+            unsafe_allow_html=True
+        )
+
+        # Question
+        st.markdown('<div class="field-label">Step 1: Select a survey question:</div>', unsafe_allow_html=True)
+        question_options = qdf["display"].tolist()
+        selected_label = st.selectbox(
+            "Choose from the official list (type Q# or keywords to filter):",
+            question_options,
+            key="question_dropdown",
+            label_visibility="collapsed"
+        )
+        question_code = qdf.loc[qdf["display"] == selected_label, "code"].values[0]
+        question_text = qdf.loc[qdf["display"] == selected_label, "text"].values[0]
+
+        # Years
+        st.markdown('<div class="field-label">Step 2: Select survey year(s):</div>', unsafe_allow_html=True)
+        all_years = [2024, 2022, 2020, 2019]
+        select_all = st.checkbox("All years", value=True, key="select_all_years")
+        selected_years = []
+        year_cols = st.columns(len(all_years))
+        for idx, yr in enumerate(all_years):
+            with year_cols[idx]:
+                checked = True if select_all else False
+                if st.checkbox(str(yr), value=checked, key=f"year_{yr}"):
+                    selected_years.append(yr)
+        selected_years = sorted(selected_years)
+        if not selected_years:
+            st.warning("⚠️ Please select at least one year.")
+            return
+
+        # Demographics
+        st.markdown('<div class="field-label">Step 3: Select a demographic category (optional):</div>', unsafe_allow_html=True)
+        DEMO_CAT_COL = "DEMCODE Category"
+        LABEL_COL = "DESCRIP_E"
+        demo_categories = ["All respondents"] + sorted(demo_df[DEMO_CAT_COL].dropna().astype(str).unique().tolist())
+        demo_selection = st.selectbox(
+            "Demographic category",
+            demo_categories,
+            key="demo_main",
+            label_visibility="collapsed"
+        )
+
+        sub_selection = None
+        if demo_selection != "All respondents":
+            st.markdown(f'<div class="field-label">Subgroup ({demo_selection}) (optional):</div>', unsafe_allow_html=True)
+            sub_items = demo_df.loc[demo_df[DEMO_CAT_COL] == demo_selection, LABEL_COL].dropna().astype(str).unique().tolist()
+            sub_items = sorted(sub_items)
+            sub_selection = st.selectbox(
+                "(leave blank to include all subgroups in this category)",
+                [""] + sub_items,
+                key=f"sub_{demo_selection.replace(' ', '_')}",
+                label_visibility="collapsed"
+            )
+            if sub_selection == "":
+                sub_selection = None
+
+        # Search
+        with st.container():
+            st.markdown('<div class="big-button">', unsafe_allow_html=True)
+            if st.button("🔎 Query and View Results"):
+                demcodes, disp_map, category_in_play = resolve_demographic_codes(demo_df, demo_selection, sub_selection)
+                scale_pairs = get_scale_labels(sdf, question_code)
+
+                parts = []
+                for code in demcodes:
+                    df_part = load_results2024_filtered(
+                        question_code=question_code,
+                        years=selected_years,
+                        group_value=code
+                    )
+                    if not df_part.empty:
+                        parts.append(df_part)
+
+                if not parts:
+                    st.info("No data found for this selection.")
+                    st.markdown('</div>', unsafe_allow_html=True)
+                    return
+
+                df = pd.concat(parts, ignore_index=True)
+                df = normalize_results_columns(df)
+
+                qmask = df["question_code"].astype(str).str.strip().str.upper() == str(question_code).strip().upper()
+                ymask = pd.to_numeric(df["year"], errors="coerce").astype("Int64").isin(selected_years)
+                if demo_selection == "All respondents":
+                    gmask = df["group_value"].isna() | (df["group_value"].astype(str).str.strip() == "")
+                else:
+                    gmask = df["group_value"].astype(str).isin([str(c) for c in demcodes])
+                df = df[qmask & ymask & gmask].
