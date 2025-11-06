@@ -73,7 +73,9 @@ def _run_keyword_search(qdf: pd.DataFrame, query: str, top_k: int = 120) -> pd.D
     """Use hybrid search if available; otherwise return empty."""
     if callable(hybrid_question_search):
         try:
-            hits_df = hybrid_question_search(qdf, query, top_k=top_k, min_score=MIN_SCORE)  # type: ignore
+            hits_df = hybrid_question_search(
+                qdf, query, top_k=top_k, min_score=MIN_SCORE
+            )  # type: ignore
             if isinstance(hits_df, pd.DataFrame) and not hits_df.empty:
                 return _dedupe_hits(hits_df).head(top_k)
         except Exception:
@@ -91,7 +93,6 @@ def _clear_all_step1_state():
     st.session_state[K_HITS_PAGE_LEX] = 0
     st.session_state[K_HITS_PAGE_SEM] = 0
     st.session_state[K_GLOBAL_HITS_SELECTED] = {}
-    # also clear dynamic checkboxes
     for k in list(st.session_state.keys()):
         if k.startswith("kwhit_") or k.startswith("sel_"):
             try:
@@ -110,7 +111,7 @@ def _maybe_auto_reset_on_mount():
 
 
 # ---------------------------------------------------------------------------
-# Step 1 – now in the same style as Step 2/3
+# Step 1 – make it look like Steps 2/3
 # ---------------------------------------------------------------------------
 def question_picker(qdf: pd.DataFrame) -> List[str]:
     # ensure keys exist
@@ -135,28 +136,23 @@ def question_picker(qdf: pd.DataFrame) -> List[str]:
 
     _maybe_auto_reset_on_mount()
 
-    # 1) Title, like Step 2 / Step 3
+    # 1) Title, same style as Step 2/3
     st.markdown('<div class="field-label">Step 1: Select a survey question (Max. 5):</div>', unsafe_allow_html=True)
 
-    # 2) Sub-label (just text, no extra wrapper)
-    st.markdown("**Search questionnaire by question number, keywords or theme**")
-
-    # 3) Search box directly under — no extra divs
+    # 2) Search box immediately under it (we put the text IN the label to kill spacing)
     query = st.text_input(
-        "Enter keywords",
+        "Search questionnaire by question number, keywords or theme",
         key=K_KW_QUERY,
-        label_visibility="collapsed",
         placeholder='e.g. “harassment”, “recognition”, “Q01”, “onboarding”',
     )
 
-    # 4) Buttons
+    # 3) Buttons side by side
     c1, c2 = st.columns([0.5, 0.5])
     with c1:
         if st.button("Search the questionnaire", key=K_FIND_HITS_BTN):
             q = (query or "").strip()
             st.session_state[K_GLOBAL_HITS_SELECTED] = {}
             if not q:
-                # empty search → show warning state
                 st.session_state[K_SEARCH_DONE] = True
                 st.session_state[K_LAST_QUERY] = ""
                 st.session_state[K_HITS] = []
@@ -181,7 +177,7 @@ def question_picker(qdf: pd.DataFrame) -> List[str]:
                 st.session_state[K_HITS_PAGE_LEX] = 0
                 st.session_state[K_HITS_PAGE_SEM] = 0
 
-                # best-effort diag log
+                # best-effort diagnostics log
                 try:
                     from .diagnostics import mark_last_query  # type: ignore
 
@@ -210,7 +206,7 @@ def question_picker(qdf: pd.DataFrame) -> List[str]:
             st.session_state[K_DO_CLEAR] = True
             st.experimental_rerun()
 
-    # 5) Feedback (same logic as before)
+    # 4) Feedback
     if st.session_state.get(K_SEARCH_DONE, False):
         hits = st.session_state.get(K_HITS, []) or []
         if hits:
@@ -223,7 +219,7 @@ def question_picker(qdf: pd.DataFrame) -> List[str]:
                 "Try different keywords, synonyms, or a question code like “Q01”."
             )
 
-    # 6) Results tabs (kept as-is)
+    # 5) Results tabs
     hits = st.session_state.get(K_HITS, [])
     if st.session_state.get(K_SEARCH_DONE, False) and hits:
         lex_hits = [r for r in hits if r.get("origin", "lex") == "lex"]
@@ -231,7 +227,7 @@ def question_picker(qdf: pd.DataFrame) -> List[str]:
 
         tabs = st.tabs(["Lexical matches", "Other matches (semantic)"])
 
-        # lexical tab
+        # Lexical tab
         with tabs[0]:
             total = len(lex_hits)
             page = int(st.session_state.get(K_HITS_PAGE_LEX, 0)) or 0
@@ -275,7 +271,7 @@ def question_picker(qdf: pd.DataFrame) -> List[str]:
                         on_click=lambda: st.session_state.update({K_HITS_PAGE_LEX: min(max_page, page + 1)}),
                     )
 
-        # semantic tab
+        # Semantic tab
         with tabs[1]:
             total = len(sem_hits)
             page = int(st.session_state.get(K_HITS_PAGE_SEM, 0)) or 0
@@ -320,7 +316,7 @@ def question_picker(qdf: pd.DataFrame) -> List[str]:
                         on_click=lambda: st.session_state.update({K_HITS_PAGE_SEM: min(max_page, page + 1)}),
                     )
 
-    # 7) final selected list — from the checkboxes in search results
+    # 6) Selected list (from the hits)
     selected_codes: List[str] = []
     gmap_all = st.session_state.get(K_GLOBAL_HITS_SELECTED, {})
     for rec in st.session_state.get(K_HITS, []):
@@ -350,14 +346,16 @@ def question_picker(qdf: pd.DataFrame) -> List[str]:
                     st.session_state[K_GLOBAL_HITS_SELECTED] = gmap
         st.session_state[K_SELECTED_CODES] = updated
 
+    # 7) separator (this was missing — add it back)
+    st.markdown("<hr style='margin-top:1rem;margin-bottom:1rem;'>", unsafe_allow_html=True)
+
     return st.session_state[K_SELECTED_CODES]
 
 
 # ---------------------------------------------------------------------------
-# Step 2 – years (unchanged)
+# Step 2 – years
 # ---------------------------------------------------------------------------
 def year_picker() -> List[int]:
-    # anchor for scroll
     st.markdown('<div id="step2_anchor"></div>', unsafe_allow_html=True)
 
     if st.session_state.get(K_SCROLL_TO_STEP2, False):
@@ -392,20 +390,21 @@ def year_picker() -> List[int]:
             if st.session_state.get(f"year_{yr}", False):
                 selected_years.append(yr)
 
-    # separator like you wanted
+    # separator before step 3
     st.markdown("<hr style='margin-top:1rem;margin-bottom:1rem;'>", unsafe_allow_html=True)
 
     return sorted(selected_years)
 
 
 # ---------------------------------------------------------------------------
-# Step 3 – demographics (unchanged)
+# Step 3 – demographics
 # ---------------------------------------------------------------------------
 def demographic_picker(demo_df: pd.DataFrame):
     st.markdown(
         '<div class="field-label">Step 3: Select a demographic category (optional):</div>',
         unsafe_allow_html=True,
     )
+
     DEMO_CAT_COL = "DEMCODE Category"
     LABEL_COL = "DESCRIP_E"
 
@@ -414,7 +413,10 @@ def demographic_picker(demo_df: pd.DataFrame):
     )
     st.session_state.setdefault("demo_main", "All respondents")
     demo_selection = st.selectbox(
-        "Demographic category", demo_categories, key="demo_main", label_visibility="collapsed"
+        "Demographic category",
+        demo_categories,
+        key="demo_main",
+        label_visibility="collapsed",
     )
 
     sub_selection: Optional[str] = None
@@ -453,13 +455,14 @@ def demographic_picker(demo_df: pd.DataFrame):
     if df_cat.empty:
         return demo_selection, sub_selection, [None], {None: "All respondents"}, False
 
-    # try to get code column
+    # try to find code column
     code_col = None
     for c in ["DEMCODE", "DemCode", "CODE", "Code", "CODE_E", "Demographic code"]:
         if c in demo_df.columns:
             code_col = c
             break
 
+    # single subgroup
     if sub_selection:
         if code_col and LABEL_COL in df_cat.columns:
             r = df_cat[df_cat[LABEL_COL] == sub_selection]
@@ -468,6 +471,7 @@ def demographic_picker(demo_df: pd.DataFrame):
                 return demo_selection, sub_selection, [code], {code: sub_selection}, True
         return demo_selection, sub_selection, [sub_selection], {sub_selection: sub_selection}, True
 
+    # all subgroups for a category
     if code_col and LABEL_COL in df_cat.columns:
         codes = df_cat[code_col].astype(str).tolist()
         labels = df_cat[LABEL_COL].astype(str).tolist()
@@ -484,7 +488,7 @@ def demographic_picker(demo_df: pd.DataFrame):
 
 
 # ---------------------------------------------------------------------------
-# Search button enablement
+# Enable bottom search button?
 # ---------------------------------------------------------------------------
 def search_button_enabled(question_codes: List[str], years: List[int]) -> bool:
     return bool(question_codes) and bool(years)
