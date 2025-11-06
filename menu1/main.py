@@ -87,14 +87,12 @@ def run() -> None:
     # NOTE: st.set_page_config() is intentionally NOT called here
     # to avoid double-calling it (root main.py calls it once).
 
-    # Scoped CSS: make ONLY the bottom action buttons red/white.
-    # Use very simple selectors so Streamlit theme cannot dodge it.
+    # Scoped CSS
     st.markdown(
         """
         <style>
           .action-row { margin-top: .25rem; margin-bottom: .35rem; }
 
-          /* Red + white for the two bottom action buttons */
           #menu1-run-btn button,
           #menu1-reset-btn button {
             background-color: #e03131 !important;
@@ -121,8 +119,6 @@ def run() -> None:
             border-color: #c92a2a !important;
             color: #ffffff !important;
           }
-
-          /* Keep the reset/clear button left-aligned; use default layout */
           #menu1-reset-btn { text-align: left; }
         </style>
         """,
@@ -136,33 +132,37 @@ def run() -> None:
         layout.title("PSES Explorer Search")
         ai_on, show_diag = layout.toggles()
 
+        # NEW instruction line here (replaces layout.instructions())
+        st.markdown(
+            '<div style="font-size:15px; color:#333; margin-bottom:0.5rem;">'
+            'To conduct your search, please follow the 3 steps below to query and view the results of the Public Service Employee Survey:'
+            '</div>',
+            unsafe_allow_html=True
+        )
+
         # [AI-toggle gate] Track toggle changes without triggering rebuilds
         _prev_ai = st.session_state.get("menu1_ai_prev", ai_on)
         if _prev_ai != ai_on:
             st.session_state["menu1_ai_prev"] = ai_on
             st.session_state["menu1_ai_toggle_dirty"] = True
         else:
-            # initialize on first load
             if "menu1_ai_prev" not in st.session_state:
                 st.session_state["menu1_ai_prev"] = ai_on
-
-        layout.instructions()
 
         # Reset when arriving fresh from another menu
         if state.get_last_active_menu() != "menu1":
             state.reset_menu1_state()
-            _clear_keyword_search_state()  # also clear keyword UI state on first arrival
+            _clear_keyword_search_state()
         state.set_last_active_menu("menu1")
         state.set_defaults()  # idempotent
 
-        # Metadata (cached)
+        # Metadata
         qdf = load_questions()
         sdf = load_scales()
         demo_df = load_demographics()
 
-        # Diagnostics (tabs)
+        # Diagnostics
         if show_diag:
-            # show two tabs: existing diagnostics + AI diagnostics
             diag_tab, ai_diag_tab = st.tabs(["Diagnostics", "AI diagnostics"])
             with diag_tab:
                 diagnostics.render_diagnostics_tabs(qdf, sdf, demo_df)
@@ -174,18 +174,19 @@ def run() -> None:
                     st.caption("No AI diagnostics captured yet. Run a search with AI turned on.")
 
         # Controls
-        question_codes = controls.question_picker(qdf)  # -> List[str] (codes)
+        question_codes = controls.question_picker(qdf)  # -> List[str]
         years = controls.year_picker()                  # -> List[int]
         demo_selection, sub_selection, demcodes, disp_map, category_in_play = controls.demographic_picker(demo_df)
 
-        # Action row: Search / Clear (side-by-side, aligned left)
+        # Action row
         st.markdown("<div class='action-row'>", unsafe_allow_html=True)
         colA, colB = st.columns([1, 1], gap="small")
 
         with colA:
             can_search = controls.search_button_enabled(question_codes, years)
             st.markdown("<div id='menu1-run-btn' style='text-align:left;'>", unsafe_allow_html=True)
-            run_clicked = st.button("Search the survey results", key="menu1_run_query", disabled=not can_search)
+            # UPDATED BUTTON TEXT HERE
+            run_clicked = st.button("Query and View Results", key="menu1_run_query", disabled=not can_search)
             st.markdown("</div>", unsafe_allow_html=True)
 
             if run_clicked:
@@ -194,7 +195,6 @@ def run() -> None:
                 per_q_metric_col: Dict[str, str] = {}
                 per_q_metric_label: Dict[str, str] = {}
 
-                # Build per-question display tables
                 for qcode in question_codes:
                     df_all = fetch_per_question(qcode, years, demcodes)
                     if df_all is None or df_all.empty:
@@ -218,7 +218,6 @@ def run() -> None:
                     per_q_metric_col[qcode] = det["metric_col"]
                     per_q_metric_label[qcode] = det["metric_label"]
 
-                # Build pivot & stash results for centered rendering
                 if per_q_disp:
                     pivot = _build_summary_pivot(
                         per_q_disp=per_q_disp,
@@ -241,31 +240,23 @@ def run() -> None:
                         "code_to_text": code_to_text,
                     })
 
-                # Mark diagnostics timing
                 diagnostics.mark_last_query(
                     started_ts=t0,
                     finished_ts=time.time(),
                     extra={"notes": "Menu 1 query run"},
                 )
 
-                # [AI-toggle gate] A fresh Search clears the dirty flag
                 st.session_state["menu1_ai_toggle_dirty"] = False
 
         with colB:
             st.markdown("<div id='menu1-reset-btn'>", unsafe_allow_html=True)
-            # Label per your UX spec (“Clear parameters” beside Search)
             if st.button("Clear parameters", key="menu1_reset_all"):
-                # Reset core menu state
                 state.reset_menu1_state()
-                # Also clear keyword-search UI state so no stale "No questions matched…" persists
                 _clear_keyword_search_state()
-                # Clear AI caches (to prevent reruns from showing stale narratives)
                 st.session_state.pop("menu1_ai_cache", None)
                 st.session_state.pop("menu1_ai_narr_per_q", None)
                 st.session_state.pop("menu1_ai_narr_overall", None)
-                # [AI-toggle gate] Clearing parameters also clears the dirty flag
                 st.session_state.pop("menu1_ai_toggle_dirty", None)
-                # Rerun
                 try:
                     st.rerun()
                 except Exception:
@@ -274,19 +265,18 @@ def run() -> None:
 
         st.markdown("</div>", unsafe_allow_html=True)
 
-        # Results (center area)
+        # Results
         if state.has_results():
-            # [AI-toggle gate] If the AI toggle changed since last Search, do not render results
             if st.session_state.get("menu1_ai_toggle_dirty", False):
-                st.info("AI setting changed — click **Search** to refresh results.")
+                st.info("AI setting changed — click **Query and View Results** to refresh results.")
             else:
                 payload = state.get_results()
                 results.tabs_summary_and_per_q(
                     payload=payload,
                     ai_on=ai_on,
-                    build_overall_prompt=build_overall_prompt,  # pass directly
-                    build_per_q_prompt=build_per_q_prompt,      # pass directly
-                    call_openai_json=call_openai_json,          # pass directly
+                    build_overall_prompt=build_overall_prompt,
+                    build_per_q_prompt=build_per_q_prompt,
+                    call_openai_json=call_openai_json,
                     source_url=SOURCE_URL,
                     source_title=SOURCE_TITLE,
                 )
@@ -295,7 +285,6 @@ def run() -> None:
 if __name__ == "__main__":
     run()
 
-# --- keep this at the end of menu1/main.py ---
+# backward-compat alias
 def run_menu1():
-    # backward-compat alias for older loaders that expect run_menu1
     return run()
