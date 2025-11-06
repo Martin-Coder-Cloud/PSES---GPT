@@ -9,7 +9,7 @@ import streamlit as st
 
 # Local modules (relative to the menu1 package)
 from .constants import (
-    PAGE_TITLE,          # kept for parity with your imports (not used directly here)
+    PAGE_TITLE,
     CENTER_COLUMNS,
     SOURCE_URL,
     SOURCE_TITLE,
@@ -19,7 +19,7 @@ from .metadata import load_questions, load_scales, load_demographics
 from .render import layout, controls, diagnostics, results
 from .queries import fetch_per_question, normalize_results
 from .formatters import drop_suppressed, scale_pairs, format_display, detect_metric
-from .ai import build_overall_prompt, build_per_q_prompt, call_openai_json  # direct imports
+from .ai import build_overall_prompt, build_per_q_prompt, call_openai_json
 
 
 def _build_summary_pivot(
@@ -29,12 +29,7 @@ def _build_summary_pivot(
     demo_selection: Optional[str],
     sub_selection: Optional[str],
 ) -> pd.DataFrame:
-    """
-    Create the Summary tabulation:
-      - Row index: Question code only (or Question×Demographic if a category is selected without a specific subgroup)
-      - Columns: selected years
-      - Values: detected metric per question (mean across demo rows when needed)
-    """
+    """Create Summary tabulation."""
     if not per_q_disp:
         return pd.DataFrame()
 
@@ -43,13 +38,11 @@ def _build_summary_pivot(
         metric_col = per_q_metric_col.get(qcode)
         if not metric_col or metric_col not in df_disp.columns:
             continue
-
         t = df_disp.copy()
-        t["QuestionLabel"] = qcode  # code only
+        t["QuestionLabel"] = qcode
         t["Year"] = pd.to_numeric(t["Year"], errors="coerce").astype("Int64")
         if "Demographic" not in t.columns:
             t["Demographic"] = None
-
         t = t.rename(columns={metric_col: "Value"})
         long_rows.append(t[["QuestionLabel", "Demographic", "Year", "Value"]])
 
@@ -64,12 +57,12 @@ def _build_summary_pivot(
         idx_cols = ["QuestionLabel"]
 
     pivot = long_df.pivot_table(index=idx_cols, columns="Year", values="Value", aggfunc="mean")
-    pivot = pivot.reindex(years, axis=1)  # ensure column order matches selected years
+    pivot = pivot.reindex(years, axis=1)
     return pivot
 
 
 def _clear_keyword_search_state() -> None:
-    """Remove all keys related to the keyword search so no stale warnings remain."""
+    """Remove all keys related to keyword search."""
     for k in [
         "menu1_hits",
         "menu1_search_done",
@@ -77,17 +70,12 @@ def _clear_keyword_search_state() -> None:
         "menu1_kw_query",
     ]:
         st.session_state.pop(k, None)
-    # Clear dynamic checkbox keys from previous hits and selections
     for k in list(st.session_state.keys()):
         if k.startswith("kwhit_") or k.startswith("sel_"):
             st.session_state.pop(k, None)
 
 
 def run() -> None:
-    # NOTE: st.set_page_config() is intentionally NOT called here
-    # to avoid double-calling it (root main.py calls it once).
-
-    # Scoped CSS
     st.markdown(
         """
         <style>
@@ -127,20 +115,27 @@ def run() -> None:
 
     left, center, right = layout.centered_page(CENTER_COLUMNS)
     with center:
-        # Header
         layout.banner()
         layout.title("PSES Explorer Search")
         ai_on, show_diag = layout.toggles()
 
-        # NEW instruction line here (replaces layout.instructions())
+        # --- Title 2 (improved visual hierarchy) ---
         st.markdown(
-            '<div style="font-size:15px; color:#333; margin-bottom:0.5rem;">'
-            'To conduct your search, please follow the 3 steps below to query and view the results of the Public Service Employee Survey:'
-            '</div>',
+            """
+            <div style="
+                font-size:18px;
+                font-weight:700;
+                color:#222;
+                margin-top:0.5rem;
+                margin-bottom:0.5rem;">
+                To conduct your search, please follow the 3 steps below to query and view the results of the Public Service Employee Survey:
+            </div>
+            <hr style="border:0;border-top:1px solid #ccc;margin-top:0.5rem;margin-bottom:1rem;">
+            """,
             unsafe_allow_html=True
         )
 
-        # [AI-toggle gate] Track toggle changes without triggering rebuilds
+        # Track AI toggle changes
         _prev_ai = st.session_state.get("menu1_ai_prev", ai_on)
         if _prev_ai != ai_on:
             st.session_state["menu1_ai_prev"] = ai_on
@@ -149,19 +144,19 @@ def run() -> None:
             if "menu1_ai_prev" not in st.session_state:
                 st.session_state["menu1_ai_prev"] = ai_on
 
-        # Reset when arriving fresh from another menu
+        # Reset if coming from another menu
         if state.get_last_active_menu() != "menu1":
             state.reset_menu1_state()
             _clear_keyword_search_state()
         state.set_last_active_menu("menu1")
-        state.set_defaults()  # idempotent
+        state.set_defaults()
 
-        # Metadata
+        # Load metadata
         qdf = load_questions()
         sdf = load_scales()
         demo_df = load_demographics()
 
-        # Diagnostics
+        # Diagnostics (if toggled)
         if show_diag:
             diag_tab, ai_diag_tab = st.tabs(["Diagnostics", "AI diagnostics"])
             with diag_tab:
@@ -174,9 +169,12 @@ def run() -> None:
                     st.caption("No AI diagnostics captured yet. Run a search with AI turned on.")
 
         # Controls
-        question_codes = controls.question_picker(qdf)  # -> List[str]
-        years = controls.year_picker()                  # -> List[int]
+        question_codes = controls.question_picker(qdf)
+        years = controls.year_picker()
         demo_selection, sub_selection, demcodes, disp_map, category_in_play = controls.demographic_picker(demo_df)
+
+        # --- Add separator line below Step 3 before Query button ---
+        st.markdown("<hr style='border:0;border-top:1px solid #ccc;margin:1.5rem 0;'>", unsafe_allow_html=True)
 
         # Action row
         st.markdown("<div class='action-row'>", unsafe_allow_html=True)
@@ -185,7 +183,6 @@ def run() -> None:
         with colA:
             can_search = controls.search_button_enabled(question_codes, years)
             st.markdown("<div id='menu1-run-btn' style='text-align:left;'>", unsafe_allow_html=True)
-            # UPDATED BUTTON TEXT HERE
             run_clicked = st.button("Query and View Results", key="menu1_run_query", disabled=not can_search)
             st.markdown("</div>", unsafe_allow_html=True)
 
@@ -285,6 +282,6 @@ def run() -> None:
 if __name__ == "__main__":
     run()
 
-# backward-compat alias
+
 def run_menu1():
     return run()
