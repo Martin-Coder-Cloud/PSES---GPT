@@ -16,32 +16,29 @@ DEFAULT_YEARS: list[int] = [2024, 2022, 2020, 2019]
 DEFAULT_AI_TOGGLE: bool = True  # AI on by default
 DEFAULT_DIAG_TOGGLE: bool = False  # Diagnostics off by default
 
-# --- AI / Model settings (non-secret; key stays in st.secrets or env) ---
+# --- AI / Model settings ---
 DEFAULT_OPENAI_MODEL: str = "gpt-4o-mini"
 
-# --- Analysis thresholds (points) ---
+# --- Thresholds ---
 TREND_THRESHOLDS = {
-    "stable": 1,   # ≤ 1 point
-    "slight": 2,   # >1–2 points
-    "notable": 999  # >2 points and above
+    "stable": 1,
+    "slight": 2,
+    "notable": 999
 }
-
 GAP_THRESHOLDS = {
-    "minimal": 2,  # ≤ 2 points
-    "notable": 5,  # >2–5 points
+    "minimal": 2,
+    "notable": 5,
     "important": 999
 }
 
-# --- Text/UI strings (keep here to avoid scattering copy) ---
+# --- Text/UI strings ---
 BANNER_URL: str = (
     "https://raw.githubusercontent.com/Martin-Coder-Cloud/PSES---GPT/refs/heads/main/"
     "PSES%20email%20banner.png"
 )
-
-# Plain text, rendered in layout.py as a subtitle
 INSTRUCTION_HTML: str = "To conduct your search, please follow the 3 steps below:"
 
-# --- CSS Styling ---
+# --- CSS ---
 BASE_CSS: str = """
 <style>
   body { background-image: none !important; background-color: white !important; }
@@ -56,25 +53,23 @@ BASE_CSS: str = """
   .tiny-note { font-size: 13px; color: #444; margin-bottom: 6px; }
   .diag-box { background: #fafafa; border: 1px solid #eee; border-radius: 8px; padding: 10px 12px; }
 
-  /* --- Step 1 buttons on Menu 1 --- */
-  #menu1-step1-search-btn .stButton > button,
-  #menu1-step1-clear-btn .stButton > button {
+  /* --- Final action buttons (Search results + Clear parameters) --- */
+  [data-testid="stAppViewContainer"] .block-container #menu1-run-btn .stButton > button,
+  [data-testid="stAppViewContainer"] .block-container #menu1-reset-btn .stButton > button {
     background-color: #e03131 !important;   /* bright red */
     color: #ffffff !important;              /* white text */
     border: 1px solid #c92a2a !important;
     font-weight: 700 !important;
   }
-  #menu1-step1-search-btn .stButton > button:hover,
-  #menu1-step1-clear-btn .stButton > button:hover {
-    background-color: #c92a2a !important;   /* darker red on hover */
+  [data-testid="stAppViewContainer"] .block-container #menu1-run-btn .stButton > button:hover,
+  [data-testid="stAppViewContainer"] .block-container #menu1-reset-btn .stButton > button:hover {
+    background-color: #c92a2a !important;   /* darker on hover */
     border-color: #a61e1e !important;
-    color: #ffffff !important;
   }
-  #menu1-step1-search-btn .stButton > button:active,
-  #menu1-step1-clear-btn .stButton > button:active {
-    background-color: #a61e1e !important;   /* deepest red on click */
+  [data-testid="stAppViewContainer"] .block-container #menu1-run-btn .stButton > button:active,
+  [data-testid="stAppViewContainer"] .block-container #menu1-reset-btn .stButton > button:active {
+    background-color: #a61e1e !important;   /* deepest red when clicked */
     border-color: #8c1a1a !important;
-    color: #ffffff !important;
   }
 </style>
 """
