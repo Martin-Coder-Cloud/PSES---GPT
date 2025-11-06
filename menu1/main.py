@@ -51,7 +51,6 @@ def _build_summary_pivot(
 
     long_df = pd.concat(long_rows, ignore_index=True)
 
-    # when a demographic category is selected but no subgroup, we keep Demographic in rows
     if (demo_selection is not None) and (demo_selection != "All respondents") and (sub_selection is None) and long_df["Demographic"].notna().any():
         idx_cols = ["QuestionLabel", "Demographic"]
     else:
@@ -77,7 +76,6 @@ def _clear_keyword_search_state() -> None:
 
 
 def run() -> None:
-    # Scoped CSS for buttons
     st.markdown(
         """
         <style>
@@ -115,19 +113,13 @@ def run() -> None:
         unsafe_allow_html=True
     )
 
-    # Centered layout
     left, center, right = layout.centered_page(CENTER_COLUMNS)
     with center:
-        # Banner (unchanged)
         layout.banner()
-
-        # Title 1 (main header) — UPDATED
         layout.title("PSES Data Explorer Workspace")
-
-        # Toggles (AI + diagnostics)
         ai_on, show_diag = layout.toggles()
 
-        # NEW Sub-header (title 2)
+        # Sub-header
         st.markdown(
             """
             <div style="font-size:15px; line-height:1.5; color:#333; margin-bottom:0.75rem;">
@@ -138,7 +130,7 @@ def run() -> None:
             unsafe_allow_html=True
         )
 
-        # NEW Title 3 (instructions) — replaces previous instruction line
+        # Instruction (Title 3)
         st.markdown(
             """
             <div style="font-size:17px; font-weight:600; color:#222; margin-top:0.5rem; margin-bottom:0.5rem;">
@@ -149,7 +141,7 @@ def run() -> None:
             unsafe_allow_html=True
         )
 
-        # Track AI toggle changes
+        # AI toggle tracking
         _prev_ai = st.session_state.get("menu1_ai_prev", ai_on)
         if _prev_ai != ai_on:
             st.session_state["menu1_ai_prev"] = ai_on
@@ -158,19 +150,16 @@ def run() -> None:
             if "menu1_ai_prev" not in st.session_state:
                 st.session_state["menu1_ai_prev"] = ai_on
 
-        # Reset when coming from another menu
         if state.get_last_active_menu() != "menu1":
             state.reset_menu1_state()
             _clear_keyword_search_state()
         state.set_last_active_menu("menu1")
         state.set_defaults()
 
-        # Load metadata
         qdf = load_questions()
         sdf = load_scales()
         demo_df = load_demographics()
 
-        # Diagnostics
         if show_diag:
             diag_tab, ai_diag_tab = st.tabs(["Diagnostics", "AI diagnostics"])
             with diag_tab:
@@ -182,22 +171,28 @@ def run() -> None:
                 else:
                     st.caption("No AI diagnostics captured yet. Run a search with AI turned on.")
 
-        # Controls (Step 1–3 in your render/controls files)
+        # --- Step 1 label updated here ---
+        st.markdown(
+            "<div style='font-size:16px;font-weight:600;color:#222;margin-top:1rem;margin-bottom:0.3rem;'>"
+            "Step 1: Select survey question(s) - Max. 5"
+            "</div>",
+            unsafe_allow_html=True
+        )
+
         question_codes = controls.question_picker(qdf)
         years = controls.year_picker()
         demo_selection, sub_selection, demcodes, disp_map, category_in_play = controls.demographic_picker(demo_df)
 
-        # Separator BEFORE the action buttons (as you asked earlier)
+        # Separator before action buttons
         st.markdown("<hr style='border:0;border-top:1px solid #ccc;margin:1.5rem 0 1rem 0;'>", unsafe_allow_html=True)
 
-        # Action row
+        # Action buttons
         st.markdown("<div class='action-row'>", unsafe_allow_html=True)
         colA, colB = st.columns([1, 1], gap="small")
 
         with colA:
             can_search = controls.search_button_enabled(question_codes, years)
             st.markdown("<div id='menu1-run-btn' style='text-align:left;'>", unsafe_allow_html=True)
-            # UPDATED TEXT (kept)
             run_clicked = st.button("Query and View Results", key="menu1_run_query", disabled=not can_search)
             st.markdown("</div>", unsafe_allow_html=True)
 
@@ -277,7 +272,7 @@ def run() -> None:
 
         st.markdown("</div>", unsafe_allow_html=True)
 
-        # Results
+        # Results section
         if state.has_results():
             if st.session_state.get("menu1_ai_toggle_dirty", False):
                 st.info("AI setting changed — click **Query and View Results** to refresh results.")
@@ -299,5 +294,4 @@ if __name__ == "__main__":
 
 
 def run_menu1():
-    # backward-compat alias
     return run()
