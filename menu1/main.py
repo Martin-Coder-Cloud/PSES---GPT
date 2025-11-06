@@ -25,7 +25,6 @@ from .formatters import (
     detect_metric,
 )
 
-
 # ─────────────────────────────────────────
 # Small helper: inject scroll JS on rerun
 # ─────────────────────────────────────────
@@ -39,6 +38,7 @@ def _scroll_if_needed() -> None:
     if not target:
         return
 
+    # try both inside app and outer frame
     st.components.v1.html(
         f"""
         <script>
@@ -48,11 +48,13 @@ def _scroll_if_needed() -> None:
                 el.scrollIntoView({{behavior: "smooth", block: "start"}});
             }}
         }};
+        // slight delay to let streamlit finish layout
         setTimeout(go, 200);
         </script>
         """,
         height=0,
     )
+    # reset so it doesn’t keep scrolling every rerun
     st.session_state["_menu1_scroll_target"] = None
 
 
@@ -71,52 +73,49 @@ def run() -> None:
     scales_df = load_scales()
     demo_df = load_demographics()
 
-    # ─────────────────────────────────────────
-    # HEADER / TITLE (safe version)
-    # ─────────────────────────────────────────
-    if hasattr(layout, "header"):
-        # if your layout module actually has it in the future
-        layout.header(title=PAGE_TITLE, source_title=SOURCE_TITLE, source_url=SOURCE_URL)
-    else:
-        # safe fallback
-        st.markdown(f"## {PAGE_TITLE}")
-        if SOURCE_TITLE and SOURCE_URL:
-            st.markdown(f"[{SOURCE_TITLE}]({SOURCE_URL})")
+    # header / title
+    layout.header(title=PAGE_TITLE, source_title=SOURCE_TITLE, source_url=SOURCE_URL)
 
     # ─────────────────────────────────────────
     # PART 1 — QUERY PARAMETERS
+    # we put an anchor here for “after questionnaire search”
     # ─────────────────────────────────────────
     st.markdown('<div id="menu1-part1"></div>', unsafe_allow_html=True)
 
+    # Render the controls
     params: Dict[str, Any] = controls.render(
         questions_df=questions_df,
         demographics_df=demo_df,
         scales_df=scales_df,
     )
 
-    # detect QUESTION change → scroll to rest of parameters
+    # 1) detect QUESTION change → scroll to rest of parameters (still part 1)
     current_q = params.get("question_code")
     last_q = st.session_state.get("_menu1_last_question")
     if current_q and current_q != last_q:
+        # user just picked a question from “Search questionnaire …”
         st.session_state["_menu1_scroll_target"] = "menu1-part1-params"
     st.session_state["_menu1_last_question"] = current_q
 
-    # anchor lower in part 1
+    # this is a second anchor a bit lower in part 1 (right before years/demographics)
     st.markdown('<div id="menu1-part1-params"></div>', unsafe_allow_html=True)
 
     # ─────────────────────────────────────────
-    # PART 2 — RESULTS
+    # PART 2 — RESULTS (we’ll scroll here after “Query and view results”)
     # ─────────────────────────────────────────
     st.markdown('<div id="menu1-part2-results"></div>', unsafe_allow_html=True)
 
     results_df: Optional[pd.DataFrame] = None
+    ai_summary: Optional[str] = None
 
+    # did the user click "Query and view results"?
     run_query = params.get("run_query", False)
 
     if run_query:
-        # scroll to results on next render
+        # user explicitly asked for results → after this run, scroll to results section
         st.session_state["_menu1_scroll_target"] = "menu1-part2-results"
 
+        # fetch data using your existing logic
         question_code = params.get("question_code")
         years = params.get("years", [])
         demo_codes = params.get("demo_codes", None) or params.get("demographics", None)
@@ -128,6 +127,7 @@ def run() -> None:
         )
 
         if raw is not None and not raw.empty:
+            # normalize / drop 999 / format as in your current app
             norm = normalize_results(raw)
             norm = drop_suppressed(norm)
             metric = detect_metric(norm)
@@ -152,26 +152,21 @@ def run() -> None:
     run_ai = params.get("run_ai", False)
 
     if run_ai:
+        # set the scroll target FIRST
         st.session_state["_menu1_scroll_target"] = "menu1-part3-ai"
 
-        _ = results.render_ai_summary(
+        ai_summary = results.render_ai_summary(
             question_label=params.get("question_label"),
             results_df=results_df,
             years=params.get("years", []),
             demographics=params.get("demographics_map", {}),
         )
 
-    # ─────────────────────────────────────────
-    # FOOTER (safe)
-    # ─────────────────────────────────────────
-    if hasattr(layout, "footer"):
-        layout.footer()
-    else:
-        # minimal footer or nothing
-        pass
+    # footer / navigation, if you have one
+    layout.footer()
 
 
-# app expects run_menu1
+# add the name your app expects
 def run_menu1() -> None:
     run()
 
