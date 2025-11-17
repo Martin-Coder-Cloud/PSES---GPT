@@ -114,7 +114,7 @@ AI_SYSTEM_PROMPT = (
 "ADDENDUM — Demographic gaps (latest year) and change-over-time\n"
 "- When the payload indicates `demographic_breakdown_present=true`, you MUST:\n"
 "  • Identify the latest year present in `years_present` and report the largest gap between demographic groups for the reported metric in that year, as an absolute difference in % points. Prefer integrated phrasing within the paragraph.\n"
-"  • Compute gap-over-time from the earliest comparable year to the latest year (or latest vs previous if only two comparable years exist), and state whether it widened, narrowed, or remained stable, with the absolute change in % points.\n"
+"  • Compute gap-over-time from the earliest comparable year to the latest year (or latest vs previous if only two comparable years exist), and state whether the gap widened, narrowed, or remained stable, with the absolute change in % points.\n"
 "- When `demographic_breakdown_present=true` and `allow_trend=true` and at least two years are listed in `years_present`, you must not write “There is no trend data available for prior years.” for the demographic portion; instead, state whether the demographic gap remained stable, widened, or narrowed over the available survey cycles.\n"
 "- Use only numbers visible in the table for the relevant groups and years. Do not infer values for missing years or groups.\n"
 "- If fewer than two groups have values in the latest year, omit gap reporting.\n"
@@ -183,7 +183,7 @@ AI_SYSTEM_PROMPT = (
 "- Identify the largest absolute gap in the latest year.\n"
 "- Apply the zero-gap rules strictly:\n"
 "  • ≤ 0.4 pts → “identical” or “72 % each.”\n"
-"  • 0.5–2 pts → “minimal difference.”\n"
+"  • 0.5–2.0 pts → “minimal difference.”\n"
 "  • 3–6 pts → “modest difference.”\n"
 "  • ≥ 7 pts → “notable difference.”\n"
 "- When all values are identical, explicitly write: “Results are identical for the groups (e.g., 72 % each).”\n\n"
@@ -268,7 +268,7 @@ def call_openai_json(*, system: str, user: str) -> Tuple[Optional[str], Optional
     return fb, f"LLM error: {type(last_err).__name__}"
 
 # --------------------------------------------------------------------------------------
-# Helpers (existing + normalization helper + NEW trend helper)
+# Helpers (existing + normalization helper + trend helper)
 # --------------------------------------------------------------------------------------
 
 def _df_to_records_sanitized(df) -> List[Dict[str, Any]]:
@@ -310,7 +310,7 @@ def _compute_trend_helpers(df, metric_col: Optional[str]) -> Optional[Dict[str, 
     - latest vs peak (highest value)
     - latest vs baseline (earliest year)
 
-    These helpers are intended primarily for overall public service results
+    These helpers are intended primarily for overall public-service-wide results
     (no demographic breakdown). If they cannot be computed safely, return None.
     """
     if df is None or pd is None or metric_col is None:
@@ -326,7 +326,9 @@ def _compute_trend_helpers(df, metric_col: Optional[str]) -> Optional[Dict[str, 
             return None
 
         # Aggregate to one value per year (for All respondents there is already one row/year)
-        agg = t.groupby("_Y")["_val"].first()
+        # Use max to guard against stray duplicates or artifacts.
+        agg = t.groupby("_Y")["_val"].max()
+
         years = sorted(int(y) for y in agg.index.tolist() if 1900 <= int(y) <= 2100)
         if len(years) < 2:
             return None
