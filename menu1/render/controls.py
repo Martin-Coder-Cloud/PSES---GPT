@@ -332,9 +332,26 @@ def question_picker(qdf: pd.DataFrame) -> List[str]:
 
     if selected_codes:
         st.markdown('<div class="field-label">Selected questions:</div>', unsafe_allow_html=True)
+
+        # Build a code -> text map from the question metadata so we can show "Qxx — text"
+        code_to_text = {}
+        if isinstance(qdf, pd.DataFrame) and "code" in qdf.columns and "text" in qdf.columns:
+            code_to_text = dict(
+                zip(
+                    qdf["code"].astype(str),
+                    qdf["text"].astype(str),
+                )
+            )
+
         updated = list(selected_codes)
         for code in list(updated):
-            keep = st.checkbox(code, value=True, key=f"sel_{code}")
+            label_text = code_to_text.get(str(code), "")
+            if label_text:
+                checkbox_label = f"{code} — {label_text}"
+            else:
+                checkbox_label = str(code)
+
+            keep = st.checkbox(checkbox_label, value=True, key=f"sel_{code}")
             if not keep:
                 updated = [c for c in updated if c != code]
                 hk = f"kwhit_{code}"
