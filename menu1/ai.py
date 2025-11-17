@@ -20,7 +20,7 @@ __all__ = [
 ]
 
 # --------------------------------------------------------------------------------------
-# SYSTEM PROMPT (with prior guards + analytical coverage + new GENERALIST LOGIC GUARDS)
+# SYSTEM PROMPT (existing content + small ADDENDUM for trend_clause)
 # --------------------------------------------------------------------------------------
 
 AI_SYSTEM_PROMPT = (
@@ -54,22 +54,18 @@ AI_SYSTEM_PROMPT = (
 "Trend rules (per-question; prioritize current year, then context)\n"
 "- When referencing differences between years (e.g. 2024 vs 2022), explicitly describe them as changes between survey cycles (e.g. “compared with the previous survey cycle (2022)”) rather than annual changes.\n"
 "- Start with the latest year vs the previous year only when at least two years are available: report the YoY change in % points "
-"(e.g., “In 2024, 54 % of respondents across the public service reported X, down 2 % points compared with the previous survey cycle (2022).”).\n"
-"- Then place this change in the context of all available years:\n"
-"  • Compute YoY deltas for each adjacent pair.\n"
-"  • Compute net change between the earliest year and the latest year.\n"
-"  • When a peak value exists in an earlier year (the highest percentage across all available years), also compute the change from that peak year to the latest year.\n"
+"(e.g., “2024: 54 %, down 2 % points vs 2023”).\n"
+"- Then place this YoY in the context of all available years:\n"
+"  • Compute YoY deltas for each adjacent pair and the earliest→latest net change.\n"
 "  • Classify the overall pattern using YoY signs: increasing, declining, stable, or mixed.\n"
-"  • Explain how the latest change relates to the long-term pattern (continuation, reversal, bump, or stabilization).\n"
+"  • Explain how the latest YoY relates to the long-term pattern (continuation, reversal, bump, or stabilization).\n"
 "- Small movements (±1 % point) → “little change.”  If only one year → “No trend (single year).”\n"
 "- Use only permitted math (differences in % points; no averages).\n\n"
 "Trend roll-up (overall synthesis)\n"
 "- Lead with the latest-year picture — which areas rose or fell vs previous year (only where multi-year data exist).\n"
 "- Summarize long-term patterns across questions: how many are increasing, declining, stable, or mixed.\n"
 "- Briefly indicate whether current movements continue prior patterns or appear as reversals or bumps.\n"
-"- Use numbers sparingly — only YoY and earliest→latest deltas, plus changes from peak to latest when provided in the payload.\n"
-"- Trend baselines must be correctly labelled: when describing a change “since <year>”, <year> must be the year whose value you subtracted. Do not describe a change from the peak year as “since the earliest year” if the earliest value is different.\n"
-"- Do not compute multi-year averages or other derived statistics.\n\n"
+"- Use numbers sparingly — only YoY and earliest→latest deltas. No new computations.\n\n"
 "Overall synthesis rules (when task = \"overall_synthesis\")\n"
 "- Purpose: summarize themes and implications across all selected questions — not to repeat each narrative.\n"
 "- Respect `overall_controls`:\n"
@@ -114,7 +110,7 @@ AI_SYSTEM_PROMPT = (
 "ADDENDUM — Demographic gaps (latest year) and change-over-time\n"
 "- When the payload indicates `demographic_breakdown_present=true`, you MUST:\n"
 "  • Identify the latest year present in `years_present` and report the largest gap between demographic groups for the reported metric in that year, as an absolute difference in % points. Prefer integrated phrasing within the paragraph.\n"
-"  • Compute gap-over-time from the earliest comparable year to the latest year (or latest vs previous if only two comparable years exist), and state whether the gap widened, narrowed, or remained stable, with the absolute change in % points.\n"
+"  • Compute gap-over-time from the earliest comparable year to the latest year (or latest vs previous if only two comparable years exist), and state whether it widened, narrowed, or remained stable, with the absolute change in % points.\n"
 "- When `demographic_breakdown_present=true` and `allow_trend=true` and at least two years are listed in `years_present`, you must not write “There is no trend data available for prior years.” for the demographic portion; instead, state whether the demographic gap remained stable, widened, or narrowed over the available survey cycles.\n"
 "- Use only numbers visible in the table for the relevant groups and years. Do not infer values for missing years or groups.\n"
 "- If fewer than two groups have values in the latest year, omit gap reporting.\n"
@@ -162,22 +158,19 @@ AI_SYSTEM_PROMPT = (
 "For each analytical summary (per-question or overall synthesis where applicable), ensure the narrative addresses the following analytical components in logical order. "
 "Each item must be covered briefly, in natural prose, using only the data supplied in the payload.\n\n"
 "1) Current result (latest year)\n"
-"- State the latest year and its percentage (e.g., “In 2024, 72 % of respondents across the public service …”).\n"
+"- State the latest year and its percentage (e.g., “In 2024, 72 %* …”).\n"
 "- If only one year is available, end the analysis with a note: “There is no trend data available for prior years.”\n\n"
 "2) Has the result changed over time, and how?\n"
 "- If multiple years exist, describe the overall movement using allowable differences.\n"
-"- Use only YoY and net changes constructed from the provided values.\n"
-"- When the payload provides a peak year (highest value across all years) and a baseline year (earliest year), you must:\n"
-"  • Describe the change from the peak year to the latest year (e.g., “down 6 % points from its peak in 2020”).\n"
-"  • Also describe the net change from the earliest year to the latest year when it differs from the peak comparison (e.g., “and 4 % points lower than in 2019”).\n"
+"- Use only YoY and earliest→latest comparisons.\n"
 "- Trend classification:\n"
 "  • One recent decrease after stability → “recent decline after a period of stability.”\n"
 "  • Two or more consecutive decreases → “declining trend.”\n"
 "  • Mixed pattern (up/down) → “mixed, with a recent change.”\n"
 "  • All ≤ ±1 pt → “little change.”\n"
-"- Phrase net change as “down X % points since <year>” or “up X % points since <year>”, ensuring that <year> matches the year whose value you used in the subtraction.\n\n"
+"- Phrase net change as “down X % points since <year>,” not “-X % points.”\n\n"
 "3) Current subgroup results (latest year)\n"
-"- If a demographic breakdown is present, give the latest-year values for available groups (e.g., “English 72 %, French 72 %.”).\n"
+"- If a demographic breakdown is present, give the latest-year values for available groups (e.g., “Group A 72 %, Group B 72 %.”).\n"
 "- Integrate these into one smooth sentence.\n\n"
 "4) Which subgroup differs currently (largest gap)\n"
 "- Identify the largest absolute gap in the latest year.\n"
@@ -210,20 +203,13 @@ AI_SYSTEM_PROMPT = (
 "  • Avoid “net change of -X % points”; prefer “down X % points since <year>” or “up X % points since <year>”.\n"
 "- Scope & repetition guard:\n"
 "  • Stay strictly within the supplied data and selection scope. Do not add external context or causes unless present in the payload.\n"
-"  • When `no_repetition=true`, do not restate per-question narratives in overall synthesis.\n"
-"\n"
-"ADDENDUM — Trend helpers in the payload\n"
-"- Some per-question payloads include a `trend_helpers` object that already contains:\n"
-"  • the latest year and its value,\n"
-"  • the peak year (highest value across all years) and its value,\n"
-"  • the baseline year (earliest year) and its value,\n"
-"  • the pre-computed deltas between these values (e.g., latest vs peak, latest vs baseline, latest vs previous year).\n"
-"- When `trend_helpers` is present and `trend_helpers.available=true`, you MUST:\n"
-"  • Treat these helper values as the authoritative basis for trend phrasing.\n"
-"  • Describe change from the peak year to the latest year using the provided delta, explicitly naming the peak year.\n"
-"  • Also describe change from the baseline (earliest) year to the latest year when it differs from the peak comparison, explicitly naming the baseline year.\n"
-"  • Ensure that any phrase like “since <year>” or “compared with <year>” matches the exact year used in the corresponding delta.\n"
-"- You must not contradict the helper values or recompute different deltas when `trend_helpers` is provided.\n"
+"  • When `no_repetition=true`, do not restate per-question narratives in overall synthesis.\n\n"
+"ADDENDUM — Trend clause from payload\n"
+"- Some per-question payloads include a `trend_clause` string that already expresses the key multi-year change.\n"
+"- When `trend_clause` is present and non-empty, you must:\n"
+"  • include this clause exactly once in the narrative;\n"
+"  • keep its numbers and years unchanged (do not recompute or relabel these deltas);\n"
+"  • you may adjust only the sentences around it for flow, but the clause itself must appear verbatim.\n"
 )
 
 # --------------------------------------------------------------------------------------
@@ -268,7 +254,7 @@ def call_openai_json(*, system: str, user: str) -> Tuple[Optional[str], Optional
     return fb, f"LLM error: {type(last_err).__name__}"
 
 # --------------------------------------------------------------------------------------
-# Helpers (existing + normalization helper + trend helper)
+# Helpers (existing + NEW trend clause helper)
 # --------------------------------------------------------------------------------------
 
 def _df_to_records_sanitized(df) -> List[Dict[str, Any]]:
@@ -303,20 +289,21 @@ def _distinct_valid_years(df, metric_col: Optional[str]) -> List[int]:
     except Exception:
         return []
 
-def _compute_trend_helpers(df, metric_col: Optional[str]) -> Optional[Dict[str, Any]]:
+def _compute_trend_clause(df, metric_col: Optional[str]) -> Optional[str]:
     """
-    Compute simple trend helpers for per-question summaries (Option B logic):
-    - latest vs previous year
-    - latest vs peak (highest value)
-    - latest vs baseline (earliest year)
-
-    These helpers are intended primarily for overall public-service-wide results
-    (no demographic breakdown). If they cannot be computed safely, return None.
+    Compute a fixed trend clause for overall public-service results (no demographics),
+    following Option B:
+    - latest vs peak (highest value, earliest occurrence);
+    - AND latest vs earliest year when different.
+    Returns a human-readable sentence like:
+      "This is down 6 % points from its peak of 78 % in 2020, and down 4 % points compared with 2019 (76 %)."
+    If it cannot be computed safely, returns None.
     """
     if df is None or pd is None or metric_col is None:
         return None
     if "Year" not in df.columns or metric_col not in df.columns:
         return None
+
     try:
         t = df.copy()
         t["_Y"] = pd.to_numeric(t["Year"], errors="coerce")
@@ -325,49 +312,58 @@ def _compute_trend_helpers(df, metric_col: Optional[str]) -> Optional[Dict[str, 
         if t.empty:
             return None
 
-        # Aggregate to one value per year (for All respondents there is already one row/year)
-        # Use max to guard against stray duplicates or artifacts.
-        agg = t.groupby("_Y")["_val"].max()
-
+        # One value per year (for All respondents, there should already be one row/year)
+        agg = t.groupby("_Y")["_val"].first()
         years = sorted(int(y) for y in agg.index.tolist() if 1900 <= int(y) <= 2100)
         if len(years) < 2:
             return None
 
-        latest_year = years[-1]
-        latest_value = int(round(float(agg.loc[latest_year])))
-
         baseline_year = years[0]
-        baseline_value = int(round(float(agg.loc[baseline_year])))
+        baseline_val = int(round(float(agg.loc[baseline_year])))
 
-        # Peak (highest value across all years); if multiple peaks, use earliest peak year
+        latest_year = years[-1]
+        latest_val = int(round(float(agg.loc[latest_year])))
+
+        # Peak: highest value; if multiple, use earliest peak year
         max_val = float(agg.max())
-        peak_year = years[0]
+        peak_year = None
         for y in years:
             if abs(float(agg.loc[y]) - max_val) < 0.0001:
-                peak_year = y
+                peak_year = int(y)
                 break
-        peak_value = int(round(float(agg.loc[peak_year])))
+        if peak_year is None:
+            return None
+        peak_val = int(round(max_val))
 
-        previous_year = years[-2]
-        previous_value = int(round(float(agg.loc[previous_year])))
+        delta_peak = latest_val - peak_val
+        delta_base = latest_val - baseline_val
 
-        helpers: Dict[str, Any] = {
-            "available": True,
-            "metric_column": metric_col,
-            "years": years,
-            "latest_year": int(latest_year),
-            "latest_value": latest_value,
-            "previous_year": int(previous_year),
-            "previous_value": previous_value,
-            "baseline_year": int(baseline_year),
-            "baseline_value": baseline_value,
-            "peak_year": int(peak_year),
-            "peak_value": peak_value,
-            "delta_latest_vs_previous": latest_value - previous_value,
-            "delta_peak_to_latest": latest_value - peak_value,
-            "delta_baseline_to_latest": latest_value - baseline_value,
-        }
-        return helpers
+        parts: List[str] = []
+
+        # Part for peak vs latest (only if peak ≠ latest and there is a non-zero change)
+        if peak_year != latest_year and delta_peak != 0:
+            direction = "down" if delta_peak < 0 else "up"
+            parts.append(
+                f"{direction} {abs(delta_peak)} % points from its peak of {peak_val} % in {peak_year}"
+            )
+
+        # Part for baseline vs latest (only if baseline ≠ latest and non-zero change)
+        if baseline_year != latest_year and delta_base != 0:
+            direction = "down" if delta_base < 0 else "up"
+            baseline_phrase = f"{direction} {abs(delta_base)} % points compared with {baseline_year} ({baseline_val} %)"
+            if parts:
+                parts.append("and " + baseline_phrase)
+            else:
+                parts.append(baseline_phrase)
+
+        # If no meaningful changes, provide a simple stability sentence
+        if not parts:
+            if baseline_year != latest_year:
+                return f"Results have remained stable, with no change between {baseline_year} and {latest_year}."
+            return None
+
+        sentence = "This is " + ", ".join(parts) + "."
+        return sentence
     except Exception:
         return None
 
@@ -454,7 +450,7 @@ def _normalize_meaning_labels(
     return final_labels
 
 # --------------------------------------------------------------------------------------
-# Prompt builders (same signatures; prior approved flags preserved)
+# Prompt builders (same signatures; plus trend_clause in per-question payload)
 # --------------------------------------------------------------------------------------
 
 def build_per_q_prompt(
@@ -476,11 +472,11 @@ def build_per_q_prompt(
     years_present = _distinct_valid_years(df_disp, metric_col)
     allow_trend = len(years_present) >= 2
 
-    # Compute trend helpers only for overall public-service-wide results
-    # (no demographic breakdown, df has Year + metric_col).
-    trend_helpers = None
-    if not category_in_play:
-        trend_helpers = _compute_trend_helpers(df_disp, metric_col)
+    # Build a fixed trend clause ONLY for overall public-service results,
+    # when trend analysis is allowed and this is not a distribution-only view.
+    trend_clause = None
+    if (not category_in_play) and allow_trend and (not distribution_only):
+        trend_clause = _compute_trend_clause(df_disp, metric_col)
 
     payload = {
         "task": "per_question",
@@ -502,7 +498,7 @@ def build_per_q_prompt(
         "gap_over_time_policy": "earliest_to_latest",
         "demographic_gap_trend_required": bool(category_in_play and allow_trend and len(years_present) >= 2),
         "zero_gap_guard": True,
-        "trend_helpers": trend_helpers,
+        "trend_clause": trend_clause,
         "output_format": {"type": "json", "key": "narrative"},
     }
     return json.dumps(payload, ensure_ascii=False)
