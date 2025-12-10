@@ -1,125 +1,110 @@
-# hybrid_search.py
+# utils/hybrid_search.py
 # -------------------------------------------------------------------------
-# Lexical-first questionnaire search with AI Semantic Search (OpenAI).
-#
-# - Input:  qdf with columns ['code', 'text', 'display'] from Survey Questions.xlsx
-# - Output: DataFrame with columns:
-#       code, text, display, score, origin
-#   where origin is 'lex' for lexical matches and 'sem' for AI semantic matches.
-#
-# Semantic engine:
-#   - Uses OpenAI embeddings (e.g. text-embedding-3-small).
-#   - Embeds the full catalogue of question texts once per process and caches.
-#   - Embeds each user query once and computes cosine similarity.
-#
-# Diagnostics:
-#   - get_embedding_status()      -> semantic engine status
-#   - get_last_search_metrics()   -> last search metrics
+# Lexical-first search with semantic complements (term-agnostic)
+# Returns ALL lexical hits, and ALSO semantic hits for items without lexical
+# evidence (UI separates by 'origin' = 'lex' or 'sem').
+# Adds lightweight diagnostics helpers:
+#   - get_embedding_status()
+#   - get_last_search_metrics()
 # -------------------------------------------------------------------------
 
 from __future__ import annotations
-
 from typing import List, Tuple, Optional, Dict, Set
 import hashlib
 import os
 import re
 import time
-
 import pandas as pd
 
-# -------------------------------------------------------------------------
-# Semantic engine flags / globals (OpenAI backend)
-# -------------------------------------------------------------------------
-
-_ST_OK: bool = False          # True if NumPy is available
-_ST_CLIENT = None             # OpenAI client (lazy-init)
-_ST_NAME = os.environ.get(
-    "PSES_EMBED_MODEL",       # optional override for this app
-    os.environ.get(           # optional override for menu1
-        "MENU1_EMBED_MODEL",
-        "text-embedding-3-small",  # default OpenAI embedding model
-    ),
-)
-_ST_LAST_ERROR: Optional[str] = None
+# Optional semantic support (graceful degradation)
+_ST_OK: bool = False
+_ST_MODEL = None
+_ST_NAME = os.environ.get("MENU1_EMBED_MODEL", os.environ.get("PSES_EMBED_MODEL", "all-MiniLM-L6-v2"))
 
 try:
+    from sentence_transformers import SentenceTransformer  # type: ignore
     import numpy as np  # type: ignore
     _ST_OK = True
 except Exception:
-    np = None  # type: ignore
     _ST_OK = False
 
-# -------------------------------------------------------------------------
-# Normalization / tokenization helpers
-# -------------------------------------------------------------------------
+try:
+    import torch  # type: ignore
+    _TORCH_VER = getattr(torch, "__version__", None)
+    _TORCH_DEV = "cuda" if (hasattr(torch, "cuda") and torch.cuda.is_available()) else ("mps" if getattr(torch.backends, "mps", None) and torch.backends.mps.is_available() else "cpu")
+except Exception:
+    _TORCH_VER = None
+    _TORCH_DEV = None
 
+# -----------------------------
+# Normalization / tokenization
+# -----------------------------
 _word_re = re.compile(r"[a-z0-9']+")
-
 _stop = {
-    "the", "and", "of", "to", "in", "for", "with", "by", "on", "at", "from",
-    "a", "an", "is", "are", "was", "were", "be", "been", "being",
-    "it", "its", "as", "that", "this", "these", "those", "or", "but", "if",
-    "i", "me", "my", "we", "our", "you", "your", "they", "them", "their",
+    "the","and","of","to","in","for","with","on","at","by","from",
+    "a","an","is","are","was","were","be","been","being","or","as",
+    "it","that","this","these","those","i","you","we","they","he","she"
 }
 
-
 def _norm(s: str) -> str:
-    return (s or "").strip().lower()
+    return re.sub(r"\s+", " ", s.lower()).strip()
 
+def _tokens(s: str) -> List[str]:
+    return [t for t in _word_re.findall(_norm(s)) if t and t not in _stop]
 
-def _tokens(text: str) -> List[str]:
-    text = _norm(text)
-    return _word_re.findall(text)
+def _uniq(seq: List[str]) -> List[str]:
+    seen = set(); out = []
+    for x in seq:
+        if x not in seen:
+            seen.add(x); out.append(x)
+    return out
 
+# -----------------------------
+# Lightweight stemming + 4-grams
+# -----------------------------
+def _stem(tok: str) -> str:
+    for suf in ("ments","ment","ings","ing","ities","ity","ions","ion",
+                "ness","ships","ship","ably","able","ally","al","ed","es","s","y"):
+        if tok.endswith(suf) and len(tok) > len(suf) + 2:
+            return tok[: -len(suf)]
+    return tok
 
 def _stems(tokens: List[str]) -> List[str]:
-    """
-    Very lightweight stemmer:
-    - drops plural 's', 'es'
-    - handles 'ies' -> 'y'
-    - skips stopwords
-    """
-    stems: List[str] = []
-    for t in tokens:
-        if t in _stop:
-            continue
-        if t.endswith("ies") and len(t) > 4:
-            stems.append(t[:-3] + "y")
-        elif t.endswith("es") and len(t) > 3:
-            stems.append(t[:-2])
-        elif t.endswith("s") and len(t) > 3:
-            stems.append(t[:-1])
-        else:
-            stems.append(t)
-    return stems
+    return [_stem(t) for t in tokens]
 
+def _char4(tok: str) -> List[str]:
+    return [tok[i:i+4] for i in range(len(tok)-3)] if len(tok) >= 4 else [tok]
 
-def _char4(token: str) -> List[str]:
-    token = "#" + token + "#"
-    grams: List[str] = []
-    for i in range(len(token) - 3):
-        grams.append(token[i : i + 4])
-    return grams
+# -----------------------------
+# +include / -exclude parsing
+# -----------------------------
+def _parse_req_exc(raw_q: str) -> Tuple[str, List[str], List[str]]:
+    parts = raw_q.split()
+    inc, exc, kept = [], [], []
+    for p in parts:
+        if p.startswith("+") and len(p) > 1: inc.append(_norm(p[1:]))
+        elif p.startswith("-") and len(p) > 1: exc.append(_norm(p[1:]))
+        else: kept.append(p)
+    return " ".join(kept).strip(), inc, exc
 
+# -----------------------------
+# Code-aware normalization / matching
+# -----------------------------
+_CODE_HINT_RE = re.compile(r"(?i)\b(?:q|question)\s*0*([0-9]+)\s*([a-z]?)\b")
 
-# -------------------------------------------------------------------------
-# Question code hints (e.g., "Q16", "question 27b")
-# -------------------------------------------------------------------------
-
-_CODE_HINT_RE = re.compile(r"(?i)(?:q|question)\s*([0-9]{1,3})([a-z]?)")
-
-
-def _parse_qcode_hint(text: str) -> Tuple[Optional[int], str]:
-    m = _CODE_HINT_RE.search(text or "")
+def _split_code_parts(code: str) -> Tuple[Optional[int], str]:
+    if not code:
+        return None, ""
+    s = _norm(code).replace(" ", "")
+    m = re.match(r"^([a-z]+)?0*([0-9]+)([a-z]*)$", s)
     if not m:
         return None, ""
-    num, suffix = m.groups()
+    _, num, suffix = m.groups()
     try:
         n = int(num)
     except Exception:
         return None, ""
     return n, (suffix or "")
-
 
 def _extract_code_hints(raw_query: str) -> List[Tuple[int, str]]:
     hints: List[Tuple[int, str]] = []
@@ -128,49 +113,77 @@ def _extract_code_hints(raw_query: str) -> List[Tuple[int, str]]:
             hints.append((int(num), _norm(suf)))
         except Exception:
             pass
-
     collapsed = _norm((raw_query or "")).replace(" ", "")
-    m = re.match(r"(?i)^(?:q|question)([0-9]{1,3})([a-z]?)$", collapsed)
+    m = re.match(r"(?i)^(?:q|question)0*([0-9]+)([a-z]?)$", collapsed)
     if m:
         num, suf = m.groups()
         try:
             hints.append((int(num), _norm(suf)))
         except Exception:
             pass
+    seen = set(); out = []
+    for h in hints:
+        if h not in seen:
+            seen.add(h); out.append(h)
+    return out
 
-    return hints
+def _code_hint_matches_item(hint: Tuple[int, str], item_code: str) -> bool:
+    n_item, suf_item = _split_code_parts(item_code)
+    if n_item is None:
+        return False
+    n_hint, suf_hint = hint
+    if n_hint != n_item:
+        return False
+    if not suf_hint:
+        return True
+    return suf_item.startswith(suf_hint)
 
+# -----------------------------
+# Embedding cache / status
+# -----------------------------
+_EMBED_CACHE: Dict[str, "np.ndarray"] = {}
+_TXT_CACHE: Dict[str, List[str]] = {}
+_LAST_SEARCH_METRICS: Dict[str, object] = {}  # exposed via get_last_search_metrics()
 
-# -------------------------------------------------------------------------
-# 4-gram / IDF-style weighting for lexical similarity
-# -------------------------------------------------------------------------
+def _index_key(texts: List[str]) -> str:
+    h = hashlib.md5()
+    for t in texts:
+        h.update((_norm(t)+"\n").encode("utf-8"))
+    return h.hexdigest()
 
-def _qgrams(text: str) -> Set[str]:
-    grams: Set[str] = set()
-    toks = _stems(_tokens(text))
-    for t in toks:
-        grams.update(_char4(t))
-    return grams
+def _get_semantic_matrix(texts: List[str]) -> Optional["np.ndarray"]:
+    if not _ST_OK: return None
+    global _ST_MODEL
+    if _ST_MODEL is None:
+        try:
+            _ST_MODEL = SentenceTransformer(_ST_NAME)
+        except Exception:
+            return None
+    key = _index_key(texts)
+    if key in _EMBED_CACHE and _TXT_CACHE.get(key) == texts:
+        return _EMBED_CACHE[key]
+    try:
+        mat = _ST_MODEL.encode(texts, normalize_embeddings=True)
+    except Exception:
+        return None
+    _EMBED_CACHE[key] = mat
+    _TXT_CACHE[key] = texts
+    return mat
 
+def _cosine_sim(vecA, matB):  # both normalized
+    return (matB @ vecA)
 
-_EMBED_CACHE: Dict[str, "np.ndarray"] = {}      # key -> embedding matrix
-_TXT_CACHE: Dict[str, List[str]] = {}           # key -> list[texts]
-_LAST_SEARCH_METRICS: Dict[str, object] = {}    # for diagnostics
-
+# -----------------------------
+# IDF for 4-grams
+# -----------------------------
 _GRAM_DF: Dict[str, int] = {}
 _GRAM_INFORMATIVE: Set[str] = set()
 _GRAM_READY: bool = False
 
-
 def _build_gram_df(texts: List[str]) -> None:
-    """
-    Build a simple DF-like document frequency for character 4-grams and
-    identify "informative" grams (not too rare or too common).
-    """
     global _GRAM_DF, _GRAM_INFORMATIVE, _GRAM_READY
     if _GRAM_READY:
         return
-
     df: Dict[str, int] = {}
     for txt in texts:
         grams = set()
@@ -179,19 +192,18 @@ def _build_gram_df(texts: List[str]) -> None:
             grams.update(_char4(t))
         for g in grams:
             df[g] = df.get(g, 0) + 1
-
+    if not df:
+        _GRAM_DF = {}
+        _GRAM_INFORMATIVE = set()
+        _GRAM_READY = True
+        return
+    counts = sorted(df.values(), reverse=True)
+    cutoff_index = int(0.15 * (len(counts)-1)) if len(counts) > 1 else 0
+    cutoff_val = counts[cutoff_index] if counts else 0
+    informative = {g for g, c in df.items() if c < cutoff_val}
     _GRAM_DF = df
-    total = len(texts) or 1
-    informative: Set[str] = set()
-    for g, c in df.items():
-        freq = c / total
-        # Keep grams that are neither too rare nor too common
-        if 0.01 <= freq <= 0.7:
-            informative.add(g)
-
     _GRAM_INFORMATIVE = informative
     _GRAM_READY = True
-
 
 def _jaccard_informative_grams(qgrams: Set[str], tgrams: Set[str]) -> float:
     if not _GRAM_READY:
@@ -204,314 +216,193 @@ def _jaccard_informative_grams(qgrams: Set[str], tgrams: Set[str]) -> float:
     union = len(iq | it)
     return inter / union if union else 0.0
 
-
-# -------------------------------------------------------------------------
-# Embedding helpers (OpenAI backend)
-# -------------------------------------------------------------------------
-
-def _index_key(texts: List[str]) -> str:
-    """
-    Stable hash key for a specific ordered list of texts.
-    Used to cache embeddings for the questionnaire.
-    """
-    h = hashlib.sha256()
-    for t in texts:
-        h.update((_norm(t) + "\n").encode("utf-8"))
-    return h.hexdigest()
-
-
-def _get_openai_client():
-    """
-    Lazily initialize and return an OpenAI client for embeddings.
-    Returns None if OPENAI_API_KEY is missing or client init fails.
-    """
-    global _ST_CLIENT, _ST_LAST_ERROR
-
-    if not _ST_OK:
-        _ST_LAST_ERROR = "NumPy not available for embeddings."
-        return None
-
-    api_key = os.environ.get("OPENAI_API_KEY", "").strip()
-    if not api_key:
-        _ST_LAST_ERROR = "OPENAI_API_KEY missing for AI Semantic Search."
-        return None
-
-    if _ST_CLIENT is None:
-        try:
-            from openai import OpenAI  # type: ignore
-            _ST_CLIENT = OpenAI(api_key=api_key)
-        except Exception as exc:  # pragma: no cover - environment-specific
-            _ST_LAST_ERROR = f"OpenAI client init failed: {type(exc).__name__}"
-            _ST_CLIENT = None
-            return None
-
-    return _ST_CLIENT
-
-
-def _get_semantic_matrix(texts: List[str]) -> Optional["np.ndarray"]:
-    """
-    Build (or reuse) a normalized embedding matrix for the given texts
-    using OpenAI embeddings. Results are cached by a stable hash key so
-    subsequent calls are cheap.
-
-    Returns:
-        np.ndarray of shape (N, D) with L2-normalized rows, or None on error.
-    """
-    if not _ST_OK:
-        return None
-
-    client = _get_openai_client()
-    if client is None:
-        return None
-
-    key = _index_key(texts)
-
-    # Reuse cached embeddings if the catalogue hasn't changed
-    if key in _EMBED_CACHE and _TXT_CACHE.get(key) == texts:
-        return _EMBED_CACHE[key]
-
-    try:
-        rsp = client.embeddings.create(model=_ST_NAME, input=texts)
-        vecs = [item.embedding for item in rsp.data]
-        mat = np.asarray(vecs, dtype="float32")
-
-        # L2 normalize rows so cosine similarity is just a dot product
-        norms = (mat ** 2).sum(axis=1, keepdims=True) ** 0.5
-        norms[norms == 0.0] = 1.0
-        mat = mat / norms
-
-    except Exception as exc:  # pragma: no cover - network / API dependent
-        global _ST_LAST_ERROR
-        _ST_LAST_ERROR = f"Embedding build error: {type(exc).__name__}"
-        return None
-
-    _EMBED_CACHE[key] = mat
-    _TXT_CACHE[key] = texts
-    return mat
-
-
-def _cosine_sim(vecA: "np.ndarray", matB: "np.ndarray") -> "np.ndarray":
-    """
-    Cosine similarity for normalized vectors: dot product of query with matrix.
-    """
-    return matB @ vecA
-
-
-# -------------------------------------------------------------------------
-# Public entry point: hybrid_question_search
-# -------------------------------------------------------------------------
-
+# -----------------------------
+# Public entry point
+# -----------------------------
 def hybrid_question_search(
     qdf: pd.DataFrame,
-    raw_query: str,
+    query: str,
     *,
-    max_rows: int = 100,
+    top_k: int = 120,
     min_score: float = 0.40,
 ) -> pd.DataFrame:
     """
-    Hybrid (lexical + AI Semantic Search) questionnaire search.
-
-    Parameters
-    ----------
-    qdf : DataFrame
-        Must contain columns: 'code', 'text', 'display'
-        (coming from Survey Questions.xlsx metadata).
-    raw_query : str
-        User-entered search query (keywords, codes, etc.).
-    max_rows : int
-        Maximum number of rows to return.
-    min_score : float
-        Minimum lexical score threshold to count as a lexical hit.
-
-    Returns
-    -------
-    DataFrame with columns:
-        code, text, display, score, origin
-    where:
-        origin = 'lex' for lexical hits
-        origin = 'sem' for AI semantic hits (OpenAI embeddings)
+    Returns DataFrame[code, text, display, score, origin] per policy.
     """
-    global _LAST_SEARCH_METRICS
-
     t0 = time.time()
-    raw_query = raw_query or ""
-    q = _norm(raw_query)
+    t_lex0 = time.time()
 
-    if not q.strip():
-        # Empty query -> empty result, but keep columns for safety
-        return qdf.head(0).assign(score=[], origin=[])
+    if qdf is None or qdf.empty or not query or not str(query).strip():
+        return qdf.head(0)
 
-    # Prepare base catalogue from metadata
-    base = qdf.copy()
-    base["__display__"] = base.get("display", base.get("text", ""))
-    base["__text__"] = base.get("text", base.get("display", ""))
+    for col in ("code","text","display"):
+        if col not in qdf.columns:
+            raise ValueError(f"qdf missing required column: {col}")
 
-    # Build gram DF once for lexical similarity
-    _build_gram_df(base["__text__"].tolist())
+    codes  = qdf["code"].astype(str).tolist()
+    texts  = qdf["text"].astype(str).tolist()
+    shows  = qdf["display"].astype(str).tolist()
 
-    # Query lexical signals
-    q_tokens = _tokens(q)
-    q_stems = _stems(q_tokens)
-    q_grams = _qgrams(q)
+    q_raw = str(query).strip()
+    q_clean, includes, excludes = _parse_req_exc(q_raw)
 
-    codes = base["code"].astype(str).fillna("").tolist()
-    texts = base["__text__"].astype(str).fillna("").tolist()
-    displays = base["__display__"].astype(str).fillna("").tolist()
+    _build_gram_df(texts)
 
-    lex_scores: List[float] = []
-    has_lex: List[bool] = []
+    qtoks  = _uniq(_tokens(q_clean))
+    qstems = _stems(qtoks)
+    qstem_set = set(qstems)
+    qgrams = set(g for t in qstems for g in _char4(t))
 
-    # Code hints (e.g., "Q16", "question 32b")
-    code_hints = _extract_code_hints(raw_query)
-    hint_nums = {n for (n, _) in code_hints}
+    # Include CODE + DISPLAY + TEXT in haystack
+    haystacks = [_norm(f"{code} {disp} {txt}") for code, disp, txt in zip(codes, shows, texts)]
+    code_hints = _extract_code_hints(q_raw)
 
-    # Lexical scoring loop
-    for code, text, disp in zip(codes, texts, displays):
-        score = 0.0
+    N = len(texts)
+    lex_scores = [0.0] * N
+    has_lex    = [False] * N
 
-        # Direct question code hint (e.g., user refers to "Q16")
-        try:
-            m = re.match(r"(?i)q?([0-9]{1,3})([a-z]?)", code or "")
-            if m:
-                num = int(m.group(1))
-                suf = _norm(m.group(2))
-                if num in hint_nums:
-                    score = max(score, 0.95)
-        except Exception:
-            pass
+    # --- Lexical evidence ---
+    JACCARD_CUTOFF = 0.22  # relaxed (typo tolerant)
 
-        # Token overlap (Jaccard on stems)
-        toks_t = _tokens(text + " " + disp)
-        stems_t = _stems(toks_t)
-        if q_stems and stems_t:
-            inter = len(set(q_stems) & set(stems_t))
-            union = len(set(q_stems) | set(stems_t))
-            if union:
-                score = max(score, inter / union)
+    for i, (code, txt, disp) in enumerate(zip(codes, texts, shows)):
+        # Code-aware (strong)
+        if any(_code_hint_matches_item(h, code) for h in code_hints):
+            has_lex[i] = True
+            lex_scores[i] = 1.0
+            continue
 
-        # 4-gram Jaccard (informative grams only)
-        grams_t = _qgrams(text + " " + disp)
-        gram_score = _jaccard_informative_grams(q_grams, grams_t)
-        score = max(score, gram_score)
+        # Stems across TEXT + DISPLAY
+        toks_text = _stems(_tokens(txt))
+        toks_disp = _stems(_tokens(disp))
+        toks_all  = set(toks_text) | set(toks_disp)
+        stem_o    = len(qstem_set & toks_all)
+        stem_cov  = (stem_o / max(1, len(qstems))) if qstems else 0.0
 
-        lex_scores.append(score)
-        has_lex.append(score >= min_score)
+        # Informative 4-gram Jaccard
+        grams_i = set(g for t in toks_all for g in _char4(t))
+        jacc = _jaccard_informative_grams(qgrams, grams_i)
 
-    df_all = pd.DataFrame(
-        {
-            "code": codes,
-            "text": texts,
-            "display": displays,
-            "lex_score": lex_scores,
-            "has_lex": has_lex,
-        }
-    )
+        is_lex = (stem_o > 0) or (jacc >= JACCARD_CUTOFF)
+        if is_lex:
+            stem_cov = max(stem_cov, 0.50)
+            has_lex[i] = True
+        lex_scores[i] = min(1.0, max(0.0, stem_cov))
 
-    # Lexical rows
-    df_lex = df_all[df_all["has_lex"]].copy()
-    df_lex["score"] = df_lex["lex_score"]
+    # include/exclude
+    def _contains_any(hay: str, needles: List[str]) -> bool:
+        return any(n and n in hay for n in needles)
+
+    for i, hay in enumerate(haystacks):
+        if excludes and _contains_any(hay, excludes):
+            lex_scores[i] = 0.0; has_lex[i] = False
+        if includes and not all(inc in hay for inc in includes):
+            lex_scores[i] = 0.0; has_lex[i] = False
+
+    df_all = pd.DataFrame({
+        "code": codes, "text": texts, "display": shows, "score": lex_scores, "has_lex": has_lex
+    })
+
+    df_lex = df_all[(df_all["has_lex"]) & (df_all["score"] > float(min_score))].copy()
     df_lex["origin"] = "lex"
+    df_lex = df_lex.sort_values(["score","code"], ascending=[False, True]).drop_duplicates("code", keep="first")
 
-    # Semantic side (AI Semantic Search) for NON-lex items
-    N = len(df_all)
+    t_lex1 = time.time()
+    t_sem0 = time.time()
+
+    # --- Semantic for NON-lex items ---
     df_nonlex = df_all[~df_all["has_lex"]].reset_index(drop=True)
 
     if _ST_OK and not df_nonlex.empty:
         try:
-            # Build / reuse embedding matrix for the full catalogue
             mat = _get_semantic_matrix(texts)
-            client = _get_openai_client()
-
-            if mat is not None and client is not None:
-                # Embed the raw query once (OpenAI)
-                rsp = client.embeddings.create(model=_ST_NAME, input=[raw_query])
-                qvec = np.asarray(rsp.data[0].embedding, dtype="float32")
-                norm = float((qvec ** 2).sum() ** 0.5)
-                if norm == 0.0:
-                    norm = 1.0
-                qvec = qvec / norm
-
-                sim = _cosine_sim(qvec, mat)        # [-1, 1]
-                sem_all = ((sim + 1.0) / 2.0).tolist()  # [0, 1]
+            if mat is not None:
+                global _ST_MODEL
+                qvec = _ST_MODEL.encode([q_raw], normalize_embeddings=True)[0]
+                sim  = _cosine_sim(qvec, mat)            # [-1,1]
+                sem_all = ((sim + 1.0) / 2.0).tolist()    # [0,1]
             else:
-                sem_all = [0.0] * N
-
-        except Exception as exc:  # defensive: never crash semantic
-            global _ST_LAST_ERROR
-            _ST_LAST_ERROR = f"Query embedding error: {type(exc).__name__}"
-            sem_all = [0.0] * N
+                sem_all = [0.0]*N
+        except Exception:
+            sem_all = [0.0]*N
     else:
-        sem_all = [0.0] * N
+        sem_all = [0.0]*N
 
-    SEM_FLOOR = 0.43  # semantic similarity threshold
+    # ---------- ONLY CHANGE REQUESTED ----------
+    SEM_FLOOR = 0.43  # semantic cosine threshold (no change to lexical)
+    # -------------------------------------------
 
-    sem_rows: List[Dict[str, object]] = []
+    sem_rows = []
     for i in range(N):
         if has_lex[i]:
-            continue  # semantic only used for non-lex rows
+            continue
         s = sem_all[i]
-        if s >= SEM_FLOOR:
-            sem_rows.append(
-                {
-                    "code": codes[i],
-                    "text": texts[i],
-                    "display": displays[i],
-                    "score": s,
-                    "origin": "sem",  # AI Semantic Search
-                }
-            )
+        if s < SEM_FLOOR:
+            continue
+        s_shaped = min(1.0, max(0.0, s * s))
+        sem_rows.append((codes[i], texts[i], shows[i], s_shaped, "sem"))
 
-    df_sem = pd.DataFrame(sem_rows)
+    df_sem = pd.DataFrame(sem_rows, columns=["code","text","display","score","origin"]) \
+             if sem_rows else pd.DataFrame(columns=["code","text","display","score","origin"])
 
-    # Combine, sort, cap rows
-    out = pd.concat(
-        [
-            df_lex[["code", "text", "display", "score", "origin"]],
-            df_sem[["code", "text", "display", "score", "origin"]],
-        ],
-        ignore_index=True,
-    )
-    out = out.sort_values(["score", "code"], ascending=[False, True])
-    out = out.head(max_rows).reset_index(drop=True)
+    out = pd.concat([
+        df_lex[["code","text","display","score","origin"]],
+        df_sem[["code","text","display","score","origin"]],
+    ], ignore_index=True)
+
+    if out.empty:
+        # record diagnostics even on empty
+        _LAST_SEARCH_METRICS.update({
+            "query": q_raw, "count_lex": int(len(df_lex)), "count_sem": int(len(df_sem)),
+            "total": 0, "top_k": int(top_k), "min_score": float(min_score),
+            "sem_floor": float(SEM_FLOOR), "jaccard_cutoff": float(JACCARD_CUTOFF),
+            "semantic_active": bool(_ST_OK and (_ST_MODEL is not None)),
+            "t_lex_ms": int((t_lex1 - t_lex0) * 1000),
+            "t_sem_ms": int((time.time() - t_sem0) * 1000),
+            "t_total_ms": int((time.time() - t0) * 1000),
+        })
+        return out
+
+    out = out.sort_values("score", ascending=False).drop_duplicates("code", keep="first")
+    out = out[out["score"] > float(min_score)]
+    if top_k and top_k > 0:
+        out = out.head(top_k)
+    out = out.sort_values(["score","code"], ascending=[False, True]).reset_index(drop=True)
 
     t1 = time.time()
-    _LAST_SEARCH_METRICS = {
-        "query": raw_query,
-        "rows_lex": int(df_lex.shape[0]),
-        "rows_sem": int(df_sem.shape[0]),
+    _LAST_SEARCH_METRICS.update({
+        "query": q_raw, "count_lex": int(len(df_lex)), "count_sem": int(len(df_sem)),
+        "total": int(len(out)), "top_k": int(top_k), "min_score": float(min_score),
+        "sem_floor": float(SEM_FLOOR), "jaccard_cutoff": float(JACCARD_CUTOFF),
+        "semantic_active": bool(_ST_OK and (_ST_MODEL is not None)),
+        "t_lex_ms": int((t_lex1 - t_lex0) * 1000),
+        "t_sem_ms": int((t1 - t_sem0) * 1000),
         "t_total_ms": int((t1 - t0) * 1000),
-        "semantic_enabled": bool(_ST_OK),
-        "semantic_model": _ST_NAME,
-    }
-
+    })
     return out
 
 
 # -------------------------------------------------------------------------
-# Diagnostics
+# Diagnostics helpers (imported by Diagnostics panel)
 # -------------------------------------------------------------------------
-
 def get_embedding_status() -> Dict[str, object]:
-    """
-    Return a snapshot of the AI Semantic Search engine status.
-    """
-    status: Dict[str, object] = {
+    """Return a snapshot of semantic engine status (safe to call any time)."""
+    try:
+        import sentence_transformers as _st  # type: ignore
+        st_ver = getattr(_st, "__version__", None)
+    except Exception:
+        st_ver = None
+    status = {
         "semantic_library_installed": bool(_ST_OK),
-        "sentence_transformers_version": None,   # no longer used (OpenAI backend)
-        "torch_version": None,
-        "device": "n/a",                         # purely API-based now
+        "sentence_transformers_version": st_ver,
+        "torch_version": _TORCH_VER,
+        "device": _TORCH_DEV or "cpu",
         "model_name": _ST_NAME,
-        "model_loaded": bool(_ST_CLIENT is not None),
-        "embedding_index_ready": bool(_EMBED_CACHE),
+        "model_loaded": bool(_ST_MODEL is not None),
+        "embedding_index_ready": bool(_EMBED_CACHE),  # True after first build
         "catalogues_indexed": len(_EMBED_CACHE) or 0,
     }
-    if _ST_LAST_ERROR:
-        status["last_error"] = _ST_LAST_ERROR
     return status
 
-
 def get_last_search_metrics() -> Dict[str, object]:
-    """
-    Return metrics of the last hybrid_question_search() call.
-    """
+    """Return metrics of the last hybrid_question_search() call."""
     return dict(_LAST_SEARCH_METRICS)
